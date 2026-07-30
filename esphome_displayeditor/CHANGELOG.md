@@ -26,6 +26,11 @@ was already a byte-identical port, so this release is purely the UI layer.
   count, so an added toolbar made the project bar absorb the canvas's space;
   and the toolbar's min-content width stretched the whole column past the
   space available to it.
+- Moved the hierarchy from the right panel to the left one, below the widget
+  palette, matching the desktop app's docking. It previously sat inside the
+  properties panel, which is hidden entirely below 900px - so on a narrow
+  Ingress frame the hierarchy was simply not reachable. Palette and hierarchy
+  now scroll independently.
 
 ## 0.2.5
 

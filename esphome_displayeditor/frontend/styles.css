@@ -36,7 +36,12 @@ main { height: calc(100% - 109px); }
 
 #designer { grid-template-columns: 220px minmax(420px, 1fr) 280px; }
 .panel { min-width: 0; background: var(--surface); }
-.palette-panel { border-right: 1px solid var(--line); }
+/* Palette and hierarchy share the left column (as in the desktop app, where
+   both are docked left). Each scrolls on its own so the hierarchy stays
+   reachable no matter how long the widget list gets. */
+.palette-panel { border-right: 1px solid var(--line); display: grid; grid-template-rows: auto auto auto minmax(80px, 1fr); min-height: 0; }
+.palette-panel .palette { overflow-y: auto; min-height: 0; }
+.palette-panel .widget-tree { overflow-y: auto; min-height: 0; }
 .properties-panel { border-left: 1px solid var(--line); overflow-y: auto; }
 .panel-heading { min-height: 64px; padding: 15px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
 small, .panel-heading small, .tree-heading small { color: var(--muted); font-size: 10px; letter-spacing: .12em; }
