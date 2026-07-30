@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: esphome_displayeditor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: esphome_displayeditor/requirements.txt
+      - name: Install test dependencies
+        run: pip install -r requirements.txt pytest httpx
+      - name: Compile Python sources
+        run: python -m compileall -q backend tests
+      - name: Run tests
+        run: pytest -q
+      - name: Validate repository YAML
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in (Path("config.yaml"), Path("../repository.yaml")):
+              with path.open(encoding="utf-8") as handle:
+                  assert isinstance(yaml.safe_load(handle), dict)
+          PY
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build amd64 app image
+        uses: docker/build-push-action@v6
+        with:
+          context: esphome_displayeditor
+          platforms: linux/amd64
+          push: false
+          build-args: |
+            BUILD_VERSION=0.1.0
+            BUILD_ARCH=amd64
+

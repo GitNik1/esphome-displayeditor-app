@@ -1,0 +1,36 @@
+name: ESPHome Display Editor
+version: "0.1.0"
+slug: esphome_displayeditor
+description: Visual LVGL designer and safe ESPHome configuration editor
+url: https://github.com/GitNik1/esphome-displayeditor-app
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+init: false
+stage: experimental
+ingress: true
+ingress_port: 8099
+ingress_stream: true
+panel_icon: mdi:monitor-edit
+panel_title: ESPHome Display Editor
+panel_admin: true
+ports: {}
+map:
+  - type: homeassistant_config
+    read_only: false
+    path: /homeassistant
+apparmor: true
+backup: cold
+options:
+  profile: native_filesystem
+  read_only: false
+  max_file_size_kib: 1024
+  protect_sensitive_paths: true
+schema:
+  profile: list(native_filesystem|read_only)
+  read_only: bool
+  max_file_size_kib: int(64,4096)
+  protect_sensitive_paths: bool
+

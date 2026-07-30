@@ -1,0 +1,27 @@
+#include <tunables/global>
+
+profile esphome_displayeditor flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network inet stream,
+  network inet6 stream,
+
+  /bin/bash ix,
+  /usr/bin/env ix,
+  /opt/esphome-displayeditor/bin/python3 ix,
+  /opt/esphome-displayeditor/** rix,
+  /app/** r,
+  /run.sh rix,
+
+  /data/ rw,
+  /data/** rwk,
+  /homeassistant/esphome/ r,
+  /homeassistant/esphome/** rwk,
+
+  /etc/** r,
+  /proc/** r,
+  /sys/devices/system/cpu/** r,
+  /tmp/ rw,
+  /tmp/** rwk,
+}
+

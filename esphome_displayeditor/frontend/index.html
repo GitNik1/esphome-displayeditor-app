@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>ESPHome Display Editor</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">ED</span>
+        <div><strong>ESPHome Display Editor</strong><small id="profile">Wird verbunden …</small></div>
+      </div>
+      <div id="health" class="health"><span></span> Backend</div>
+    </header>
+
+    <nav class="tabs" aria-label="Bereiche">
+      <button class="tab active" data-tab="designer">Designer</button>
+      <button class="tab" data-tab="configurations">Konfigurationen</button>
+      <button class="tab" data-tab="system">System</button>
+    </nav>
+
+    <main>
+      <section id="designer" class="view active">
+        <aside class="panel palette-panel">
+          <div class="panel-heading">
+            <div><small>BAUSTEINE</small><h2>Widgets</h2></div>
+          </div>
+          <div id="palette" class="palette"></div>
+        </aside>
+
+        <section class="workspace">
+          <div class="workspace-toolbar">
+            <label>Breite <input id="canvas-width" type="number" min="1" max="4096" value="480"></label>
+            <label>Höhe <input id="canvas-height" type="number" min="1" max="4096" value="480"></label>
+            <button id="new-project" class="button subtle">Neu</button>
+            <button id="open-project" class="button subtle">Öffnen</button>
+            <button id="save-project" class="button subtle">Projekt speichern</button>
+            <button id="export-project" class="button primary">YAML erzeugen</button>
+            <input id="project-file" class="hidden" type="file" accept=".lvgldesign,application/json">
+          </div>
+          <div class="canvas-stage">
+            <div id="canvas" class="canvas" aria-label="LVGL-Zeichenfläche"></div>
+          </div>
+          <div class="statusline"><span id="designer-status">Bereit</span><span id="widget-count">0 Widgets</span></div>
+        </section>
+
+        <aside class="panel properties-panel">
+          <div class="panel-heading"><div><small>AUSWAHL</small><h2>Eigenschaften</h2></div></div>
+          <div id="empty-properties" class="empty">Wähle ein Widget auf der Zeichenfläche aus.</div>
+          <form id="properties" class="properties hidden">
+            <label>ID <input id="prop-id" pattern="[A-Za-z_][A-Za-z0-9_]*"></label>
+            <div class="field-row">
+              <label>X <input id="prop-x" type="number"></label>
+              <label>Y <input id="prop-y" type="number"></label>
+            </div>
+            <div class="field-row">
+              <label>Breite <input id="prop-width" type="number" min="1"></label>
+              <label>Höhe <input id="prop-height" type="number" min="1"></label>
+            </div>
+            <label id="text-field">Text <input id="prop-text"></label>
+            <label>Hintergrund <input id="prop-color" type="color" value="#263345"></label>
+            <div class="actions"><button id="delete-widget" type="button" class="button danger">Widget löschen</button></div>
+          </form>
+          <div class="tree-heading"><small>HIERARCHIE</small></div>
+          <div id="widget-tree" class="widget-tree empty">Noch keine Widgets</div>
+        </aside>
+      </section>
+
+      <section id="configurations" class="view config-view">
+        <aside class="panel config-list-panel">
+          <div class="panel-heading">
+            <div><small>ESPHome</small><h2>Konfigurationen</h2></div>
+            <button id="refresh-configs" class="icon-button" title="Neu laden">↻</button>
+          </div>
+          <div id="config-list" class="config-list empty">Keine Dateien geladen.</div>
+        </aside>
+        <section class="editor-panel">
+          <div class="editor-toolbar">
+            <div><strong id="config-title">Keine Datei gewählt</strong><small id="revision"></small></div>
+            <div class="actions">
+              <button id="check-yaml" class="button subtle" disabled>Syntax prüfen</button>
+              <button id="show-diff" class="button subtle" disabled>Diff</button>
+              <button id="save-draft" class="button primary" disabled>Entwurf speichern</button>
+              <button id="publish" class="button warning" disabled>Veröffentlichen</button>
+            </div>
+          </div>
+          <textarea id="yaml-editor" spellcheck="false" disabled aria-label="YAML-Editor"></textarea>
+          <pre id="config-output" class="output hidden"></pre>
+        </section>
+      </section>
+
+      <section id="system" class="view system-view">
+        <div class="system-card"><small>STATUS</small><h2>System und Fähigkeiten</h2><pre id="system-json">Wird geladen …</pre></div>
+      </section>
+    </main>
+
+    <dialog id="yaml-dialog">
+      <div class="dialog-heading"><h2>Generiertes ESPHome YAML</h2><button id="close-dialog" class="icon-button">×</button></div>
+      <pre id="yaml-output"></pre>
+      <div class="dialog-actions"><button id="copy-yaml" class="button primary">In Zwischenablage kopieren</button></div>
+    </dialog>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
