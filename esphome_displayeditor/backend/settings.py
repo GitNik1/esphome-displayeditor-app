@@ -50,6 +50,7 @@ def capabilities(settings: Settings) -> dict[str, bool]:
         "configuration.validate_esphome": False,
         "designer.project": True,
         "designer.export_yaml": True,
+        "designer.project_write": writable,
         "firmware.compile": False,
         "firmware.upload": False,
         "device.info": False,
@@ -58,4 +59,3 @@ def capabilities(settings: Settings) -> dict[str, bool]:
         "device.logs": False,
         "device.control": False,
     }
-

@@ -1,9 +1,17 @@
 # Changelog
 
+## 0.2.0
+
+- Persist designer projects in Home Assistant's backup-enabled app data.
+- Protect project updates and deletes with SHA-256 revisions.
+- Add schema-driven content and style property controls.
+- Add nested widget creation and hierarchy display.
+- Add drag resizing and persistent selection across undo/redo.
+- Add browser-verified project save, load and YAML export workflows.
+
 ## 0.1.0
 
 - Initial Home Assistant App scaffold.
 - Ingress web interface and system capability API.
 - Safe ESPHome YAML listing, drafts, syntax checks, diffs and publishing.
 - Web-native LVGL project model, widget schema and YAML export API.
-

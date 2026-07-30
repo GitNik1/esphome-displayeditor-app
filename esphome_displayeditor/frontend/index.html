@@ -33,13 +33,26 @@
 
         <section class="workspace">
           <div class="workspace-toolbar">
-            <label>Breite <input id="canvas-width" type="number" min="1" max="4096" value="480"></label>
-            <label>Höhe <input id="canvas-height" type="number" min="1" max="4096" value="480"></label>
+            <div class="toolbar-group">
+              <label>Breite <input id="canvas-width" type="number" min="1" max="4096" value="480"></label>
+              <label>Höhe <input id="canvas-height" type="number" min="1" max="4096" value="480"></label>
+            </div>
+            <div class="toolbar-group">
+              <button id="undo" class="button subtle" title="Rückgängig (Strg+Z)" disabled>↶</button>
+              <button id="redo" class="button subtle" title="Wiederholen (Strg+Y)" disabled>↷</button>
             <button id="new-project" class="button subtle">Neu</button>
             <button id="open-project" class="button subtle">Öffnen</button>
-            <button id="save-project" class="button subtle">Projekt speichern</button>
+              <button id="save-project" class="button subtle">Download</button>
             <button id="export-project" class="button primary">YAML erzeugen</button>
             <input id="project-file" class="hidden" type="file" accept=".lvgldesign,application/json">
+            </div>
+          </div>
+          <div class="project-toolbar">
+            <input id="project-name" value="display.lvgldesign" aria-label="Projektname">
+            <select id="server-projects" aria-label="Gespeicherte Projekte"><option value="">Gespeicherte Projekte …</option></select>
+            <button id="load-server-project" class="button subtle" disabled>Laden</button>
+            <button id="save-server-project" class="button primary">In App speichern</button>
+            <button id="delete-server-project" class="button danger compact" disabled>Löschen</button>
           </div>
           <div class="canvas-stage">
             <div id="canvas" class="canvas" aria-label="LVGL-Zeichenfläche"></div>
@@ -60,8 +73,7 @@
               <label>Breite <input id="prop-width" type="number" min="1"></label>
               <label>Höhe <input id="prop-height" type="number" min="1"></label>
             </div>
-            <label id="text-field">Text <input id="prop-text"></label>
-            <label>Hintergrund <input id="prop-color" type="color" value="#263345"></label>
+            <div id="dynamic-properties"></div>
             <div class="actions"><button id="delete-widget" type="button" class="button danger">Widget löschen</button></div>
           </form>
           <div class="tree-heading"><small>HIERARCHIE</small></div>

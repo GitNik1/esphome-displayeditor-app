@@ -17,9 +17,10 @@ refreshed.
 
 ## Development status
 
-The first milestone provides the Home Assistant app container, stable health
-and capability endpoints, safe ESPHome YAML draft handling, and a web-native
-port of the model and YAML export engine from `esphome-lvgl-designer`.
+The current milestone provides the Home Assistant app container, stable health
+and capability endpoints, safe ESPHome YAML draft handling, persistent visual
+designer projects, and a web-native port of the model and YAML export engine
+from `esphome-lvgl-designer`.
 
 See [app documentation](esphome_displayeditor/DOCS.md) for configuration and
 security details.

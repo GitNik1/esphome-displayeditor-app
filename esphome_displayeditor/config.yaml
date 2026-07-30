@@ -1,5 +1,5 @@
 name: ESPHome Display Editor
-version: "0.1.0"
+version: "0.2.0"
 slug: esphome_displayeditor
 description: Visual LVGL designer and safe ESPHome configuration editor
 url: https://github.com/GitNik1/esphome-displayeditor-app
@@ -33,4 +33,3 @@ schema:
   read_only: bool
   max_file_size_kib: int(64,4096)
   protect_sensitive_paths: bool
-

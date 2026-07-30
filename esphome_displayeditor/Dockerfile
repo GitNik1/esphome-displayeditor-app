@@ -22,10 +22,10 @@ RUN chmod 0755 /run.sh
 
 ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
+    APP_VERSION=${BUILD_VERSION} \
     ESPHOME_CONFIG_ROOT=/homeassistant/esphome \
     ESPHOME_DATA_ROOT=/data
 
 WORKDIR /app
 EXPOSE 8099
 CMD ["/run.sh"]
-

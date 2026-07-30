@@ -125,6 +125,8 @@ class FilesystemBackend:
             descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         except FileNotFoundError as exc:
             raise ApiError(missing_error, "Configuration file was not found.", 404) from exc
+        except OSError as exc:
+            raise ApiError("invalid_path", "Configuration could not be opened safely.") from exc
         try:
             stat = os.fstat(descriptor)
             if not path.is_file() or path.is_symlink():

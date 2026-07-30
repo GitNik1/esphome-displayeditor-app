@@ -16,6 +16,7 @@ from .audit import AuditStore
 from .designer import DesignerService
 from .errors import ApiError, capability_unavailable
 from .filesystem import FilesystemBackend
+from .project_store import ProjectStore
 from .settings import Settings, capabilities
 
 
@@ -31,14 +32,21 @@ class DesignerProjectRequest(BaseModel):
     project: dict[str, Any]
 
 
+class SaveDesignerProjectRequest(DesignerProjectRequest):
+    expected_revision: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+
+
 def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool = True) -> FastAPI:
     settings = runtime_settings or Settings.load()
     filesystem = FilesystemBackend(settings)
     audit = AuditStore(settings.data_root)
     designer = DesignerService(settings.data_root)
+    projects = ProjectStore(settings.data_root, designer, settings.max_file_size)
     application = FastAPI(
         title="ESPHome Display Editor API",
-        version="0.1.0",
+        version=os.getenv("APP_VERSION", "0.2.0"),
         docs_url=None,
         redoc_url=None,
         openapi_url="/api/v1/openapi.json",
@@ -168,12 +176,80 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
 
     @application.post("/api/v1/designer/projects/validate")
     async def validate_project(body: DesignerProjectRequest) -> dict:
-        _project, issues = designer.validate(body.project)
-        return {"valid": not any(issue["severity"] == "error" for issue in issues), "issues": issues}
+        project, issues = designer.validate(body.project)
+        return {
+            "valid": not any(issue["severity"] == "error" for issue in issues),
+            "issues": issues,
+            "project": project.to_dict(),
+        }
 
     @application.post("/api/v1/designer/projects/export-yaml")
     async def export_project_yaml(body: DesignerProjectRequest) -> dict:
         return designer.export_yaml(body.project)
+
+    @application.get("/api/v1/designer/projects")
+    async def list_designer_projects() -> dict:
+        return {"projects": projects.list()}
+
+    @application.get("/api/v1/designer/projects/{name}")
+    async def get_designer_project(name: str) -> dict:
+        return projects.read(name)
+
+    @application.put("/api/v1/designer/projects/{name}")
+    async def save_designer_project(
+        name: str, body: SaveDesignerProjectRequest, request: Request
+    ) -> dict:
+        user_id = require_write(request, "designer.project_write")
+        try:
+            result = projects.save(name, body.project, body.expected_revision)
+        except ApiError as exc:
+            audit.record(
+                user_id=user_id,
+                action="designer.project.save",
+                configuration=name,
+                old_revision=body.expected_revision,
+                new_revision=None,
+                result=exc.error,
+            )
+            raise
+        audit.record(
+            user_id=user_id,
+            action="designer.project.save",
+            configuration=name,
+            old_revision=result["old_revision"],
+            new_revision=result["revision"],
+            result="success",
+        )
+        return result
+
+    @application.delete("/api/v1/designer/projects/{name}")
+    async def delete_designer_project(
+        name: str,
+        request: Request,
+        expected_revision: str = Query(pattern=r"^sha256:[0-9a-f]{64}$"),
+    ) -> dict:
+        user_id = require_write(request, "designer.project_write")
+        try:
+            result = projects.delete(name, expected_revision)
+        except ApiError as exc:
+            audit.record(
+                user_id=user_id,
+                action="designer.project.delete",
+                configuration=name,
+                old_revision=expected_revision,
+                new_revision=None,
+                result=exc.error,
+            )
+            raise
+        audit.record(
+            user_id=user_id,
+            action="designer.project.delete",
+            configuration=name,
+            old_revision=result["revision"],
+            new_revision=None,
+            result="success",
+        )
+        return result
 
     if serve_frontend:
         frontend = Path(__file__).resolve().parents[1] / "frontend"
