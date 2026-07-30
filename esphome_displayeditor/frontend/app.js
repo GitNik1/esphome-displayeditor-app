@@ -15,7 +15,12 @@ const state = {
   projectDirty: false,
   undo: [],
   redo: [],
+  zoom: 1,
+  backgroundPreview: null,
 };
+
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 8;
 
 function freshProject() {
   return {
@@ -119,21 +124,89 @@ function bindDesigner() {
     control.addEventListener("focus", pushUndo);
     control.addEventListener("input", updateSelectedWidget);
   });
+  $("#prop-locked").addEventListener("change", () => toggleWidgetFlag("locked"));
+  $("#prop-hidden").addEventListener("change", () => toggleWidgetFlag("hidden"));
+  $("#style-mode").addEventListener("change", changeStyleMode);
+  $("#style-ref").addEventListener("change", changeStyleRef);
+  $("#save-as-style").addEventListener("click", saveCurrentStyleAsNamed);
+
+  $("#zoom-in").addEventListener("click", () => setZoom(state.zoom * 1.25));
+  $("#zoom-out").addEventListener("click", () => setZoom(state.zoom / 1.25));
+  $("#zoom-100").addEventListener("click", () => setZoom(1));
+  $("#zoom-fit").addEventListener("click", fitCanvasToView);
+
+  $("#bg-path").addEventListener("focus", pushUndo);
+  $("#bg-path").addEventListener("input", updateBackgroundFields);
+  $("#bg-image-id").addEventListener("focus", pushUndo);
+  $("#bg-image-id").addEventListener("input", updateBackgroundFields);
+  $("#bg-export").addEventListener("change", updateBackgroundFields);
+  $("#bg-opacity").addEventListener("input", updateBackgroundFields);
+  $("#bg-preview-pick").addEventListener("click", () => $("#bg-preview-file").click());
+  $("#bg-preview-file").addEventListener("change", loadBackgroundPreview);
+  $("#bg-preview-clear").addEventListener("click", clearBackgroundPreview);
   $("#close-dialog").addEventListener("click", () => $("#yaml-dialog").close());
   $("#copy-yaml").addEventListener("click", async () => {
     await navigator.clipboard.writeText($("#yaml-output").textContent);
     toast("YAML wurde kopiert.");
   });
   document.addEventListener("keydown", (event) => {
-    if (!event.ctrlKey || !$("#designer").classList.contains("active")) return;
-    if (event.key.toLowerCase() === "z") {
+    if (!$("#designer").classList.contains("active")) return;
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName);
+
+    if (event.key === "Delete" && !typing) {
       event.preventDefault();
-      undoDesignerChange();
-    } else if (event.key.toLowerCase() === "y") {
+      deleteSelectedWidget();
+      return;
+    }
+    if (!event.ctrlKey) return;
+
+    const key = event.key.toLowerCase();
+    const actions = {
+      z: undoDesignerChange,
+      y: redoDesignerChange,
+      n: newDesignerProject,
+      o: () => $("#project-file").click(),
+      s: downloadDesignerProject,
+      e: exportDesignerYaml,
+      0: fitCanvasToView,
+      1: () => setZoom(1),
+      "+": () => setZoom(state.zoom * 1.25),
+      "-": () => setZoom(state.zoom / 1.25),
+    };
+    if (actions[key]) {
       event.preventDefault();
-      redoDesignerChange();
+      actions[key]();
     }
   });
+}
+
+function setZoom(value) {
+  state.zoom = clamp(Number(value) || 1, MIN_ZOOM, MAX_ZOOM);
+  applyZoom();
+}
+
+function applyZoom() {
+  const { width, height } = state.project.canvas;
+  // A CSS transform does not affect layout, so the canvas is scaled from its
+  // top-left corner while the wrapper reserves the resulting visual size -
+  // otherwise the stage would scroll against the unscaled box.
+  $("#canvas").style.transform = `scale(${state.zoom})`;
+  const scaler = $("#canvas-scaler");
+  scaler.style.width = `${width * state.zoom}px`;
+  scaler.style.height = `${height * state.zoom}px`;
+  $("#zoom-label").textContent = `${Math.round(state.zoom * 100)} %`;
+}
+
+function fitCanvasToView() {
+  const stage = $(".canvas-stage");
+  const styles = getComputedStyle(stage);
+  const available = {
+    width: stage.clientWidth - parseFloat(styles.paddingLeft) - parseFloat(styles.paddingRight),
+    height: stage.clientHeight - parseFloat(styles.paddingTop) - parseFloat(styles.paddingBottom),
+  };
+  const { width, height } = state.project.canvas;
+  if (!width || !height || available.width <= 0 || available.height <= 0) return;
+  setZoom(Math.min(available.width / width, available.height / height));
 }
 
 function newDesignerProject() {
@@ -143,9 +216,11 @@ function newDesignerProject() {
   state.projectRevision = null;
   state.projectDirty = false;
   state.selectedWidget = null;
+  state.backgroundPreview = null;
   resetHistory();
   $("#project-name").value = "display.lvgldesign";
   renderDesigner();
+  fitCanvasToView();
 }
 
 async function openDesignerProject(event) {
@@ -424,6 +499,7 @@ function visualWidgets() {
 
 function renderDesigner() {
   renderCanvas();
+  renderBackgroundFields();
   renderProperties();
   renderTree();
   renderDesignerStatus();
@@ -436,9 +512,66 @@ function renderCanvas() {
   canvas.style.height = `${state.project.canvas.height}px`;
   $("#canvas-width").value = state.project.canvas.width;
   $("#canvas-height").value = state.project.canvas.height;
-  canvas.replaceChildren();
+  canvas.replaceChildren(renderCanvasBackground());
   visualWidgets().forEach((item) => canvas.append(renderWidget(item)));
   $("#widget-count").textContent = `${allWidgets().length} Widgets`;
+  applyZoom();
+}
+
+function renderCanvasBackground() {
+  const layer = document.createElement("div");
+  layer.id = "canvas-background";
+  layer.className = "canvas-background";
+  const background = state.project.background || {};
+  if (state.backgroundPreview) {
+    layer.style.backgroundImage = `url("${state.backgroundPreview}")`;
+    layer.style.opacity = String(clamp(Number(background.opacity_in_editor ?? 40), 0, 100) / 100);
+  }
+  return layer;
+}
+
+function renderBackgroundFields() {
+  const background = state.project.background || {};
+  $("#bg-path").value = background.path || "";
+  $("#bg-image-id").value = background.image_id || "bg_image";
+  $("#bg-export").checked = Boolean(background.export_as_lvgl_image);
+  $("#bg-opacity").value = Number(background.opacity_in_editor ?? 40);
+  $("#bg-preview-clear").disabled = !state.backgroundPreview;
+}
+
+function updateBackgroundFields() {
+  const background = state.project.background || (state.project.background = {});
+  background.path = $("#bg-path").value;
+  background.image_id = $("#bg-image-id").value || "bg_image";
+  background.export_as_lvgl_image = $("#bg-export").checked;
+  background.opacity_in_editor = clamp(Number($("#bg-opacity").value), 0, 100);
+  markProjectDirty();
+  renderCanvas();
+}
+
+async function loadBackgroundPreview(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  if (file.size > 8 * 1024 * 1024) {
+    toast("Das Vorschaubild ist zu groß (max. 8 MB).", true);
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    state.backgroundPreview = reader.result;
+    $("#bg-preview-clear").disabled = false;
+    renderCanvas();
+    toast("Vorschaubild geladen (nur im Editor sichtbar).");
+  };
+  reader.onerror = () => toast("Vorschaubild konnte nicht gelesen werden.", true);
+  reader.readAsDataURL(file);
+}
+
+function clearBackgroundPreview() {
+  state.backgroundPreview = null;
+  $("#bg-preview-clear").disabled = true;
+  renderCanvas();
 }
 
 function renderDesignerStatus() {
@@ -456,8 +589,10 @@ function renderWidget(item) {
   node.style.width = `${Number(widget.width) || 1}px`;
   node.style.height = `${Number(widget.height) || 1}px`;
   node.style.opacity = widget.hidden ? "0.35" : "1";
-  if (widget.style_tree.bg_color) {
-    const color = String(widget.style_tree.bg_color).replace("#", "");
+  if (widget.locked) node.classList.add("locked");
+  const effectiveStyle = effectiveStyleTree(widget);
+  if (effectiveStyle.bg_color) {
+    const color = String(effectiveStyle.bg_color).replace("#", "");
     if (/^[0-9a-f]{6}$/i.test(color)) node.style.backgroundColor = `#${color}`;
   }
   node.textContent = widget.properties.text || widget.id;
@@ -469,6 +604,16 @@ function renderWidget(item) {
     node.append(handle);
   }
   return node;
+}
+
+function effectiveStyleTree(widget) {
+  if (widget.style_mode !== "named") return widget.style_tree || {};
+  const merged = {};
+  (widget.style_refs || []).forEach((ref) => {
+    const entry = styleLibrary().find((item) => item.id === ref);
+    if (entry) Object.assign(merged, entry.style_tree || {});
+  });
+  return merged;
 }
 
 function beginDrag(event, widget, node, offsetX, offsetY) {
@@ -484,8 +629,10 @@ function beginDrag(event, widget, node, offsetX, offsetY) {
   node.addEventListener("pointermove", move);
   node.addEventListener("pointerup", end, { once: true });
   function move(moveEvent) {
-    widget.x = clamp(Math.round(origin.x + moveEvent.clientX - origin.clientX), 0, state.project.canvas.width - Number(widget.width));
-    widget.y = clamp(Math.round(origin.y + moveEvent.clientY - origin.clientY), 0, state.project.canvas.height - Number(widget.height));
+    const deltaX = (moveEvent.clientX - origin.clientX) / state.zoom;
+    const deltaY = (moveEvent.clientY - origin.clientY) / state.zoom;
+    widget.x = clamp(Math.round(origin.x + deltaX), 0, state.project.canvas.width - Number(widget.width));
+    widget.y = clamp(Math.round(origin.y + deltaY), 0, state.project.canvas.height - Number(widget.height));
     node.style.left = `${offsetX + widget.x}px`;
     node.style.top = `${offsetY + widget.y}px`;
     $("#prop-x").value = widget.x;
@@ -508,8 +655,10 @@ function beginResize(event, widget, node) {
   event.target.addEventListener("pointermove", resize);
   event.target.addEventListener("pointerup", end, { once: true });
   function resize(moveEvent) {
-    widget.width = clamp(Math.round(origin.width + moveEvent.clientX - origin.clientX), 8, 4096);
-    widget.height = clamp(Math.round(origin.height + moveEvent.clientY - origin.clientY), 8, 4096);
+    const deltaX = (moveEvent.clientX - origin.clientX) / state.zoom;
+    const deltaY = (moveEvent.clientY - origin.clientY) / state.zoom;
+    widget.width = clamp(Math.round(origin.width + deltaX), 8, 4096);
+    widget.height = clamp(Math.round(origin.height + deltaY), 8, 4096);
     node.style.width = `${widget.width}px`;
     node.style.height = `${widget.height}px`;
     $("#prop-width").value = widget.width;
@@ -529,7 +678,99 @@ function renderProperties() {
   $("#prop-y").value = widget.y;
   $("#prop-width").value = widget.width;
   $("#prop-height").value = widget.height;
+  $("#prop-locked").checked = Boolean(widget.locked);
+  $("#prop-hidden").checked = Boolean(widget.hidden);
+  renderStyleControls(widget);
   renderDynamicProperties(widget);
+}
+
+function toggleWidgetFlag(flag) {
+  const widget = state.selectedWidget;
+  if (!widget) return;
+  pushUndo();
+  widget[flag] = $(`#prop-${flag}`).checked;
+  markProjectDirty();
+  renderCanvas();
+  renderTree();
+}
+
+// --- Named styles -----------------------------------------------------
+// The model persists exactly two style modes: "inline" (style_tree applies
+// directly to the widget) and "named" (style_refs point into the project's
+// style library). "Save as named style" is a UI action that moves the
+// inline tree into the library and switches the mode - not a third state.
+
+function styleLibrary() {
+  if (!Array.isArray(state.project.styles)) state.project.styles = [];
+  return state.project.styles;
+}
+
+function renderStyleControls(widget) {
+  const mode = widget.style_mode === "named" ? "named" : "inline";
+  $("#style-mode").value = mode;
+
+  const select = $("#style-ref");
+  select.replaceChildren(new Option("— keiner —", ""));
+  styleLibrary().forEach((entry) => select.append(new Option(entry.id, entry.id)));
+  const current = (widget.style_refs || [])[0] || "";
+  if (current && !styleLibrary().some((entry) => entry.id === current)) {
+    select.append(new Option(`${current} (fehlt)`, current));
+  }
+  select.value = current;
+
+  $("#style-ref-field").classList.toggle("hidden", mode !== "named");
+  $("#save-as-style").disabled = mode !== "inline";
+  // In named mode the widget's own style tree is not what gets rendered,
+  // so editing the inline style properties would be misleading.
+  $("#dynamic-properties").classList.toggle("style-locked", mode === "named");
+}
+
+function changeStyleMode() {
+  const widget = state.selectedWidget;
+  if (!widget) return;
+  pushUndo();
+  widget.style_mode = $("#style-mode").value === "named" ? "named" : "inline";
+  if (widget.style_mode === "inline") widget.style_refs = [];
+  markProjectDirty();
+  renderDesigner();
+}
+
+function changeStyleRef() {
+  const widget = state.selectedWidget;
+  if (!widget) return;
+  pushUndo();
+  const value = $("#style-ref").value;
+  widget.style_refs = value ? [value] : [];
+  markProjectDirty();
+  renderCanvas();
+}
+
+function saveCurrentStyleAsNamed() {
+  const widget = state.selectedWidget;
+  if (!widget) return;
+  if (!Object.keys(widget.style_tree || {}).length) {
+    toast("Dieses Widget hat noch keinen eigenen Stil zum Speichern.", true);
+    return;
+  }
+  const suggestion = `style_${styleLibrary().length + 1}`;
+  const name = (prompt("Name für den neuen Stil:", suggestion) || "").trim();
+  if (!name) return;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    toast("Stilname muss mit einem Buchstaben beginnen (nur A-Z, 0-9, _).", true);
+    return;
+  }
+  if (styleLibrary().some((entry) => entry.id === name)) {
+    toast(`Ein Stil namens ${name} existiert bereits.`, true);
+    return;
+  }
+  pushUndo();
+  styleLibrary().push({ id: name, style_tree: JSON.parse(JSON.stringify(widget.style_tree)) });
+  widget.style_tree = {};
+  widget.style_mode = "named";
+  widget.style_refs = [name];
+  markProjectDirty();
+  renderDesigner();
+  toast(`Stil ${name} gespeichert und zugewiesen.`);
 }
 
 function renderDynamicProperties(widget) {
@@ -650,12 +891,42 @@ function renderTree() {
     const item = document.createElement("div");
     item.className = `tree-item${state.selectedWidget === widget ? " selected" : ""}`;
     item.style.paddingLeft = `${9 + depth * 16}px`;
-    item.textContent = `${widget.id} · ${widget.widget_type}${widget.locked ? " · 🔒" : ""}`;
-    item.addEventListener("click", () => { state.selectedWidget = widget; renderDesigner(); });
+
+    const label = document.createElement("span");
+    label.className = "tree-label";
+    label.textContent = `${widget.id} · ${widget.widget_type}`;
+    label.addEventListener("click", () => { state.selectedWidget = widget; renderDesigner(); });
+
+    const glyphs = document.createElement("span");
+    glyphs.className = "tree-glyphs";
+    glyphs.append(
+      treeGlyph(widget, "hidden", widget.hidden ? "🙈" : "👁", widget.hidden ? "Einblenden" : "Ausblenden"),
+      treeGlyph(widget, "locked", widget.locked ? "🔒" : "🔓", widget.locked ? "Entsperren" : "Sperren"),
+    );
+
+    item.append(label, glyphs);
     tree.append(item);
     appendNodes(widget.children || [], depth + 1);
   });
   appendNodes(state.project.widgets);
+}
+
+function treeGlyph(widget, flag, symbol, title) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `tree-glyph${widget[flag] ? " active" : ""}`;
+  button.textContent = symbol;
+  button.title = title;
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    pushUndo();
+    widget[flag] = !widget[flag];
+    markProjectDirty();
+    renderCanvas();
+    renderTree();
+    if (state.selectedWidget === widget) renderProperties();
+  });
+  return button;
 }
 
 async function exportDesignerYaml() {
@@ -665,12 +936,36 @@ async function exportDesignerYaml() {
       method: "POST", body: JSON.stringify({ project: state.project }),
     });
     $("#yaml-output").textContent = result.yaml;
+    renderExportIssues(result.issues || []);
     $("#yaml-dialog").showModal();
     renderDesignerStatus();
   } catch (error) {
     $("#designer-status").textContent = "Export fehlgeschlagen";
+    renderExportIssues(error.details?.issues || []);
     toast(error.message, true);
   }
+}
+
+function renderExportIssues(issues) {
+  const container = $("#yaml-issues");
+  container.replaceChildren();
+  container.classList.toggle("hidden", issues.length === 0);
+  if (!issues.length) return;
+  const heading = document.createElement("strong");
+  heading.textContent = `${issues.length} Hinweis(e) beim Export`;
+  container.append(heading);
+  const list = document.createElement("ul");
+  issues.forEach((issue) => {
+    const entry = document.createElement("li");
+    // Validation issues use severity "error"; yamlexport uses "A" (blocking)
+    // vs "B"/"C" (reported but non-fatal).
+    const blocking = issue.severity === "error" || issue.severity === "A";
+    entry.className = blocking ? "issue-error" : "issue-warning";
+    const where = issue.widget_id || issue.widget || issue.resource || "";
+    entry.textContent = where ? `${where}: ${issue.message}` : issue.message;
+    list.append(entry);
+  });
+  container.append(list);
 }
 
 function bindConfigurations() {

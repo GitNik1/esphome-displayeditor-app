@@ -46,17 +46,25 @@ h2 { margin: 3px 0 0; font-size: 16px; }
 .palette button:hover { border-color: var(--accent); transform: translateY(-1px); }
 .palette .widget-icon { display: block; font-size: 18px; color: var(--accent); margin-bottom: 6px; }
 
-.workspace { min-width: 0; display: grid; grid-template-rows: 58px 48px minmax(0, 1fr) 30px; }
-.workspace-toolbar, .editor-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--surface); }
-.toolbar-group { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Rows: toolbar, reference image, project bar, canvas stage, status line.
+   Only the canvas stage flexes - the bars size to their content, so adding
+   another bar does not shift which row absorbs the free space. */
+.workspace { min-width: 0; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
+/* Wrap rather than overflow: the toolbar's min-content width would otherwise
+   stretch the whole workspace grid column past the space available to it. */
+.workspace-toolbar, .editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.toolbar-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .workspace-toolbar label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 input, select { width: 100%; border: 1px solid var(--line); border-radius: 7px; padding: 8px; color: var(--text); background: #0c1420; outline: none; }
 input:focus { border-color: var(--accent); }
 .workspace-toolbar input { width: 72px; padding: 6px; }
 .project-toolbar { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(170px, 1.2fr) auto auto auto; gap: 8px; align-items: center; padding: 7px 14px; border-bottom: 1px solid var(--line); background: #0e1722; }
 .project-toolbar input, .project-toolbar select { min-width: 0; padding: 7px 9px; }
-.canvas-stage { overflow: auto; padding: 32px; display: grid; place-items: center; background-color: #080d13; background-image: radial-gradient(#263548 1px, transparent 1px); background-size: 20px 20px; }
-.canvas { position: relative; flex: none; width: 480px; height: 480px; background: #f5f7fa; box-shadow: 0 18px 60px #0009; overflow: hidden; touch-action: none; }
+.canvas-stage { overflow: auto; padding: 32px; display: grid; place-items: safe center; background-color: #080d13; background-image: radial-gradient(#263548 1px, transparent 1px); background-size: 20px 20px; }
+.canvas-scaler { flex: none; }
+.canvas { position: relative; transform-origin: top left; flex: none; width: 480px; height: 480px; background: #f5f7fa; box-shadow: 0 18px 60px #0009; overflow: hidden; touch-action: none; }
+.canvas-background { position: absolute; inset: 0; background-position: center; background-size: contain; background-repeat: no-repeat; pointer-events: none; }
+.canvas-widget.locked { cursor: not-allowed; }
 .canvas-widget { position: absolute; display: grid; place-items: center; min-width: 8px; min-height: 8px; border: 1px solid #44556a; border-radius: 4px; color: #f4f7fa; background: #263345; cursor: move; user-select: none; overflow: hidden; font-size: 13px; }
 .canvas-widget.selected { outline: 2px solid var(--accent-2); outline-offset: 2px; }
 .canvas-widget[data-type="label"] { color: #17202b; border-color: transparent; background: transparent !important; justify-content: start; }
@@ -86,8 +94,41 @@ input:focus { border-color: var(--accent); }
 .icon-button { padding: 5px 9px; }
 .tree-heading { padding: 16px 16px 5px; border-top: 1px solid var(--line); }
 .widget-tree { padding: 8px; }
-.tree-item { padding: 8px 9px; border-radius: 6px; color: var(--muted); cursor: pointer; font-size: 12px; }
+.tree-item { display: flex; align-items: center; gap: 6px; padding: 8px 9px; border-radius: 6px; color: var(--muted); cursor: pointer; font-size: 12px; }
 .tree-item:hover, .tree-item.selected { color: var(--text); background: var(--surface-2); }
+.tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-glyphs { display: flex; gap: 2px; flex: none; }
+.tree-glyph { border: 0; border-radius: 5px; background: transparent; padding: 2px 4px; font-size: 12px; line-height: 1; cursor: pointer; opacity: .5; }
+.tree-glyph:hover { opacity: 1; background: var(--line); }
+.tree-glyph.active { opacity: 1; }
+
+/* Zoom */
+.zoom-group { flex: none; }
+.zoom-label { min-width: 52px; text-align: center; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.button.compact { padding: 5px 9px; font-size: 12px; width: auto; }
+
+/* Reference image */
+.background-bar { border-bottom: 1px solid var(--line); background: #0e1722; }
+.background-bar > summary { padding: 8px 14px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
+.background-bar > summary:hover { color: var(--text); }
+.background-fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 0 14px 12px; }
+.background-fields label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
+.background-fields label.grow { flex: 1 1 240px; }
+.background-fields input[type="range"] { width: 130px; padding: 0; }
+.background-fields .checkbox-field { flex-direction: row !important; align-items: center; }
+.background-preview-actions { display: flex; gap: 8px; }
+.hint { flex-basis: 100%; margin: 2px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.warning-hint { color: #ffd57b; }
+
+/* Style section */
+.style-actions { margin-bottom: 14px; }
+.style-locked { opacity: .55; pointer-events: none; }
+
+/* Export issues */
+.issues { margin: 0 0 12px; padding: 12px 14px; border: 1px solid #ad7d20; border-radius: 8px; background: #372b16; color: #ffd57b; font-size: 12px; }
+.issues ul { margin: 8px 0 0; padding-left: 18px; }
+.issues li { margin-bottom: 4px; line-height: 1.5; }
+.issue-error { color: #ff9cab; }
 
 .config-view { grid-template-columns: 290px minmax(0, 1fr); }
 .config-list-panel { border-right: 1px solid var(--line); }

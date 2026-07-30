@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.0
+
+Brings the web UI up to the desktop ESPHome LVGL Designer's feature set. The
+domain core (`model`, `widgetschema`, `yamlexport`, `projectformat`, `idgen`)
+was already a byte-identical port, so this release is purely the UI layer.
+
+- Named style library: switch a widget between an inline style and a named
+  one, assign a style from the project, and move the current inline style
+  into the library ("save as named style"). The canvas resolves named styles
+  for its preview, and the export emits `style_definitions:` plus a
+  `styles:` reference, matching the desktop app.
+- Canvas zoom: in/out, 1:1 and fit-to-view, with `Ctrl` `+`/`-`/`0`/`1`.
+  Drag and resize now scale their pointer deltas accordingly.
+- Reference image under the canvas as an alignment guide, with adjustable
+  editor opacity. The preview is browser-only and deliberately not persisted;
+  exporting local image assets stays disabled in the backend, so that
+  checkbox is disabled rather than silently producing unexportable projects.
+- Lock and visibility are now toggleable - from the hierarchy glyphs and from
+  the property panel, kept in sync as in the desktop app.
+- Export warnings from the YAML exporter and validator are shown instead of
+  being discarded.
+- Shortcuts: `Del` deletes, `Ctrl+N/O/S/E` for new/open/download/export.
+- Fixed the workspace layout: the row heights were pinned to an exact row
+  count, so an added toolbar made the project bar absorb the canvas's space;
+  and the toolbar's min-content width stretched the whole column past the
+  space available to it.
+
 ## 0.2.5
 
 - Fix `ModuleNotFoundError: No module named 'backend'` at startup. The

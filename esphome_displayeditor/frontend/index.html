@@ -37,6 +37,13 @@
               <label>Breite <input id="canvas-width" type="number" min="1" max="4096" value="480"></label>
               <label>Höhe <input id="canvas-height" type="number" min="1" max="4096" value="480"></label>
             </div>
+            <div class="toolbar-group zoom-group">
+              <button id="zoom-out" class="button subtle compact" title="Verkleinern (Strg+-)">−</button>
+              <span id="zoom-label" class="zoom-label">100 %</span>
+              <button id="zoom-in" class="button subtle compact" title="Vergrößern (Strg++)">+</button>
+              <button id="zoom-fit" class="button subtle compact" title="Einpassen (Strg+0)">Einpassen</button>
+              <button id="zoom-100" class="button subtle compact" title="Originalgröße (Strg+1)">1:1</button>
+            </div>
             <div class="toolbar-group">
               <button id="undo" class="button subtle" title="Rückgängig (Strg+Z)" disabled>↶</button>
               <button id="redo" class="button subtle" title="Wiederholen (Strg+Y)" disabled>↷</button>
@@ -47,6 +54,28 @@
             <input id="project-file" class="hidden" type="file" accept=".lvgldesign,application/json">
             </div>
           </div>
+          <details class="background-bar">
+            <summary>Referenzbild</summary>
+            <div class="background-fields">
+              <label class="grow">Pfad auf dem Gerät
+                <input id="bg-path" placeholder="z. B. /config/www/mockup.png">
+              </label>
+              <label>Deckkraft
+                <input id="bg-opacity" type="range" min="0" max="100" value="40">
+              </label>
+              <label>Bild-ID <input id="bg-image-id" value="bg_image"></label>
+              <label class="checkbox-field" title="Im Backend derzeit deaktiviert">Als LVGL-Bild exportieren
+                <input id="bg-export" type="checkbox" disabled>
+              </label>
+              <div class="background-preview-actions">
+                <button id="bg-preview-pick" type="button" class="button subtle compact">Vorschaubild wählen …</button>
+                <button id="bg-preview-clear" type="button" class="button subtle compact" disabled>Vorschau entfernen</button>
+                <input id="bg-preview-file" class="hidden" type="file" accept="image/*">
+              </div>
+              <p class="hint">Die Vorschau dient nur der Ausrichtung im Editor und wird nicht mit dem Projekt gespeichert.</p>
+              <p class="hint warning-hint">Der Export lokaler Bild-/Font-Dateien ist im Backend bewusst abgeschaltet (kein beliebiger Dateizugriff). Solange das so ist, bleibt „Als LVGL-Bild exportieren“ deaktiviert — sonst ließe sich das Projekt gar nicht mehr exportieren.</p>
+            </div>
+          </details>
           <div class="project-toolbar">
             <input id="project-name" value="display.lvgldesign" aria-label="Projektname">
             <select id="server-projects" aria-label="Gespeicherte Projekte"><option value="">Gespeicherte Projekte …</option></select>
@@ -55,7 +84,11 @@
             <button id="delete-server-project" class="button danger compact" disabled>Löschen</button>
           </div>
           <div class="canvas-stage">
-            <div id="canvas" class="canvas" aria-label="LVGL-Zeichenfläche"></div>
+            <div id="canvas-scaler" class="canvas-scaler">
+              <div id="canvas" class="canvas" aria-label="LVGL-Zeichenfläche">
+                <div id="canvas-background" class="canvas-background"></div>
+              </div>
+            </div>
           </div>
           <div class="statusline"><span id="designer-status">Bereit</span><span id="widget-count">0 Widgets</span></div>
         </section>
@@ -73,6 +106,25 @@
               <label>Breite <input id="prop-width" type="number" min="1"></label>
               <label>Höhe <input id="prop-height" type="number" min="1"></label>
             </div>
+            <div class="field-row toggle-row">
+              <label class="checkbox-field">Gesperrt <input id="prop-locked" type="checkbox"></label>
+              <label class="checkbox-field">Ausgeblendet <input id="prop-hidden" type="checkbox"></label>
+            </div>
+
+            <div class="property-section">Stil</div>
+            <label>Modus
+              <select id="style-mode">
+                <option value="inline">Eigener Stil (inline)</option>
+                <option value="named">Benannter Stil</option>
+              </select>
+            </label>
+            <label id="style-ref-field">Stil aus Bibliothek
+              <select id="style-ref"><option value="">— keiner —</option></select>
+            </label>
+            <div class="actions style-actions">
+              <button id="save-as-style" type="button" class="button subtle compact">Als benannten Stil speichern</button>
+            </div>
+
             <div id="dynamic-properties"></div>
             <div class="actions"><button id="delete-widget" type="button" class="button danger">Widget löschen</button></div>
           </form>
@@ -111,6 +163,7 @@
 
     <dialog id="yaml-dialog">
       <div class="dialog-heading"><h2>Generiertes ESPHome YAML</h2><button id="close-dialog" class="icon-button">×</button></div>
+      <div id="yaml-issues" class="issues hidden"></div>
       <pre id="yaml-output"></pre>
       <div class="dialog-actions"><button id="copy-yaml" class="button primary">In Zwischenablage kopieren</button></div>
     </dialog>
