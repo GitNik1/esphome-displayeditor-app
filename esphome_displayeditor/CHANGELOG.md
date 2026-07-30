@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3
+
+- Fix `ModuleNotFoundError: No module named 'backend'` on startup under
+  Supervisor: Supervisor's container creation does not reliably preserve the
+  image's `WORKDIR`/`PYTHONPATH`, so `run.sh` now `cd`s into `/app` and passes
+  `--app-dir /app` to uvicorn explicitly instead of relying on those alone.
+
 ## 0.2.2
 
 - Fix container failing to start under Supervisor's read-only container
