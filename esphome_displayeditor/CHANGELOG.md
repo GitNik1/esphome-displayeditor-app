@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Allow the Home Assistant base image's S6 `/init` process and Bashio runtime
+  in the custom AppArmor profile.
+
 ## 0.2.0
 
 - Persist designer projects in Home Assistant's backup-enabled app data.
