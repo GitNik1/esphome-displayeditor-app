@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.4
+
+- Debugging: `run.sh` still hits `ModuleNotFoundError: No module named
+  'backend'` on the real Supervisor host even with `--app-dir /app` and an
+  explicit `cd /app`, despite an identical local rebuild working fine. Added
+  temporary `ls -la /app` / `/app/backend` diagnostics to `run.sh` to see what
+  the real container's filesystem actually looks like before import.
+
 ## 0.2.3
 
 - Fix `ModuleNotFoundError: No module named 'backend'` on startup under
