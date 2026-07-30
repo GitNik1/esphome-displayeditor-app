@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.1
+
+- The image widget's source is now a picker over the project's image library
+  instead of a free-text field, with "＋ new image source" to add one. The
+  widget resizes itself to the picture's native size on pick, as the desktop
+  app does.
+- Image widgets render the actual picture on the canvas rather than a
+  placeholder box, falling back to a labelled marker if the URL cannot be
+  loaded in the browser. The reference image behaves the same way.
+- Asset validation now distinguishes local files from remote URLs. Importing
+  files off the host stays blocked - that would allow arbitrary file reads -
+  but `http(s)` URLs are allowed, which the exporter already passed through
+  verbatim and which ESPHome resolves at compile time. Previously *every*
+  asset source was rejected, so no image could be exported at all. The
+  reference image's "export as LVGL image" option is usable again as a
+  result.
+
 ## 0.3.0
 
 Brings the web UI up to the desktop ESPHome LVGL Designer's feature set. The

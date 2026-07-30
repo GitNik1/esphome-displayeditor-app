@@ -59,15 +59,15 @@
           <details class="background-bar">
             <summary>Referenzbild</summary>
             <div class="background-fields">
-              <label class="grow">Pfad auf dem Gerät
-                <input id="bg-path" placeholder="z. B. /config/www/mockup.png">
+              <label class="grow">Bildquelle (URL)
+                <input id="bg-path" placeholder="https://…/mockup.png">
               </label>
               <label>Deckkraft
                 <input id="bg-opacity" type="range" min="0" max="100" value="40">
               </label>
               <label>Bild-ID <input id="bg-image-id" value="bg_image"></label>
-              <label class="checkbox-field" title="Im Backend derzeit deaktiviert">Als LVGL-Bild exportieren
-                <input id="bg-export" type="checkbox" disabled>
+              <label class="checkbox-field" title="Nur mit http(s)-URL als Quelle exportierbar">Als LVGL-Bild exportieren
+                <input id="bg-export" type="checkbox">
               </label>
               <div class="background-preview-actions">
                 <button id="bg-preview-pick" type="button" class="button subtle compact">Vorschaubild wählen …</button>
@@ -75,7 +75,7 @@
                 <input id="bg-preview-file" class="hidden" type="file" accept="image/*">
               </div>
               <p class="hint">Die Vorschau dient nur der Ausrichtung im Editor und wird nicht mit dem Projekt gespeichert.</p>
-              <p class="hint warning-hint">Der Export lokaler Bild-/Font-Dateien ist im Backend bewusst abgeschaltet (kein beliebiger Dateizugriff). Solange das so ist, bleibt „Als LVGL-Bild exportieren“ deaktiviert — sonst ließe sich das Projekt gar nicht mehr exportieren.</p>
+              <p class="hint warning-hint">Für den Export muss die Quelle eine <code>http(s)</code>-URL sein — lokale Dateien vom Host werden bewusst nicht eingelesen.</p>
             </div>
           </details>
           <div class="project-toolbar">

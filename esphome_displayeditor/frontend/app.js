@@ -523,8 +523,16 @@ function renderCanvasBackground() {
   layer.id = "canvas-background";
   layer.className = "canvas-background";
   const background = state.project.background || {};
-  if (state.backgroundPreview) {
-    layer.style.backgroundImage = `url("${state.backgroundPreview}")`;
+  // A remote path is the exported source and can be shown directly; the local
+  // preview is the editor-only fallback for mockups that never get exported.
+  const source = isRemoteAsset(background.path)
+    ? background.path
+    : state.backgroundPreview;
+  if (source) {
+    // Escape for a quoted url() token - CSS.escape() is for identifiers and
+    // would mangle the URL's own separators.
+    const escaped = String(source).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    layer.style.backgroundImage = `url("${escaped}")`;
     layer.style.opacity = String(clamp(Number(background.opacity_in_editor ?? 40), 0, 100) / 100);
   }
   return layer;
@@ -595,7 +603,27 @@ function renderWidget(item) {
     const color = String(effectiveStyle.bg_color).replace("#", "");
     if (/^[0-9a-f]{6}$/i.test(color)) node.style.backgroundColor = `#${color}`;
   }
-  node.textContent = widget.properties.text || widget.id;
+  const imageSource = widget.widget_type === "image"
+    ? displayableImageSource(widget.properties.src)
+    : null;
+  if (imageSource) {
+    const picture = document.createElement("img");
+    picture.className = "widget-image";
+    picture.src = imageSource;
+    picture.draggable = false;
+    picture.alt = "";
+    // Fall back to a label if the URL cannot be loaded in the browser. Replace
+    // only the image - setting textContent here would drop the resize handle.
+    picture.addEventListener("error", () => {
+      const fallback = document.createElement("span");
+      fallback.textContent = `${widget.properties.src || widget.id} ⚠`;
+      picture.replaceWith(fallback);
+      node.title = "Bild konnte im Editor nicht geladen werden.";
+    });
+    node.append(picture);
+  } else {
+    node.textContent = widget.properties.text || widget.id;
+  }
   node.addEventListener("pointerdown", (event) => beginDrag(event, widget, node, offsetX, offsetY));
   if (state.selectedWidget === widget && !widget.locked) {
     const handle = document.createElement("span");
@@ -809,9 +837,73 @@ function propertyTarget(widget, property, create) {
   return widget.style_tree[property.part];
 }
 
+const ADD_IMAGE_OPTION = "__add_image__";
+
+function imageLibrary() {
+  if (!Array.isArray(state.project.images)) state.project.images = [];
+  return state.project.images;
+}
+
+function imageEntry(id) {
+  return id ? imageLibrary().find((entry) => entry.id === id) : undefined;
+}
+
+function isRemoteAsset(path) {
+  return /^https?:\/\//i.test(String(path || ""));
+}
+
+// The canvas can only show sources the browser itself can fetch, i.e. URLs.
+function displayableImageSource(id) {
+  const entry = imageEntry(id);
+  return entry && isRemoteAsset(entry.file_path) ? entry.file_path : null;
+}
+
+function addImageSource() {
+  const url = (prompt("Bildquelle als http(s)-URL:", "https://") || "").trim();
+  if (!url || url === "https://") return null;
+  if (!isRemoteAsset(url)) {
+    toast("Nur http(s)-URLs werden unterstützt - lokale Dateien liest das Add-on bewusst nicht.", true);
+    return null;
+  }
+  const base = (url.split("/").pop() || "bild").replace(/\.[^.]*$/, "");
+  const slug = base.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "bild";
+  let id = `img_${slug}`;
+  let counter = 2;
+  while (imageEntry(id)) id = `img_${slug}_${counter++}`;
+  imageLibrary().push({ id, file_path: url, resize: "", dither: "", transparency: "opaque" });
+  return id;
+}
+
+// Sizing a widget to the asset it was just given is what most design tools
+// do on drop; the desktop app does the same via ImageRefEditor.imagePicked.
+function resizeWidgetToImage(widget, id) {
+  const source = displayableImageSource(id);
+  if (!source) return;
+  const probe = new Image();
+  probe.onload = () => {
+    if (!probe.naturalWidth || !probe.naturalHeight) return;
+    widget.width = clamp(probe.naturalWidth, 8, 4096);
+    widget.height = clamp(probe.naturalHeight, 8, 4096);
+    markProjectDirty();
+    renderCanvas();
+    if (state.selectedWidget === widget) {
+      $("#prop-width").value = widget.width;
+      $("#prop-height").value = widget.height;
+    }
+  };
+  probe.src = source;
+}
+
 function propertyControl(property, value, index) {
   let control;
-  if (property.kind === "bool") {
+  if (property.kind === "image_ref") {
+    control = document.createElement("select");
+    control.append(new Option("—", ""));
+    imageLibrary().forEach((entry) => control.append(new Option(entry.id, entry.id)));
+    if (value && !imageEntry(value)) control.append(new Option(`${value} (fehlt)`, value));
+    control.value = value ?? "";
+    control.append(new Option("＋ Neue Bildquelle …", ADD_IMAGE_OPTION));
+  } else if (property.kind === "bool") {
     control = document.createElement("input");
     control.type = "checkbox";
     control.checked = value ?? Boolean(property.default);
@@ -837,6 +929,18 @@ function propertyControl(property, value, index) {
 
 function updateDynamicProperty(widget, property, control) {
   const target = propertyTarget(widget, property, true);
+  if (property.kind === "image_ref" && control.value === ADD_IMAGE_OPTION) {
+    pushUndo();
+    const id = addImageSource();
+    // Cancelling the prompt must not leave the sentinel option selected.
+    control.value = id || target[property.key] || "";
+    if (!id) return;
+    target[property.key] = id;
+    markProjectDirty();
+    resizeWidgetToImage(widget, id);
+    renderDesigner();
+    return;
+  }
   let value;
   if (property.kind === "bool") value = control.checked;
   else if (["int", "float"].includes(property.kind)) value = control.value === "" ? null : Number(control.value);

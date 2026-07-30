@@ -70,6 +70,8 @@ input:focus { border-color: var(--accent); }
 .canvas { position: relative; transform-origin: top left; flex: none; width: 480px; height: 480px; background: #f5f7fa; box-shadow: 0 18px 60px #0009; overflow: hidden; touch-action: none; }
 .canvas-background { position: absolute; inset: 0; background-position: center; background-size: contain; background-repeat: no-repeat; pointer-events: none; }
 .canvas-widget.locked { cursor: not-allowed; }
+.canvas-widget[data-type="image"] { background: transparent; border-style: dashed; padding: 0; }
+.widget-image { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; }
 .canvas-widget { position: absolute; display: grid; place-items: center; min-width: 8px; min-height: 8px; border: 1px solid #44556a; border-radius: 4px; color: #f4f7fa; background: #263345; cursor: move; user-select: none; overflow: hidden; font-size: 13px; }
 .canvas-widget.selected { outline: 2px solid var(--accent-2); outline-offset: 2px; }
 .canvas-widget[data-type="label"] { color: #17202b; border-color: transparent; background: transparent !important; justify-content: start; }

@@ -17,6 +17,12 @@ from .errors import ApiError
 _ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _is_remote_asset(path: str) -> bool:
+    """Whether an asset source is fetched by ESPHome at compile time rather
+    than read off this host. Mirrors the exporter's own URL handling."""
+    return path.startswith(("http://", "https://"))
+
+
 class DesignerService:
     def __init__(self, data_root: Path) -> None:
         self.export_root = data_root / "exports"
@@ -92,19 +98,36 @@ class DesignerService:
                 registry.claim(entry.id, f"{kind}[{index}]")
         issues.extend({"severity": "error", "message": message} for message in registry.collisions())
 
-        # Local resource import is deliberately disabled until uploads can be
-        # confined to a dedicated asset store. This prevents arbitrary file reads.
-        local_resources = [image.file_path for image in project.images if image.file_path]
+        # Importing assets from the local filesystem stays disabled until
+        # uploads can be confined to a dedicated asset store - it would let a
+        # project read arbitrary files off the host. Remote URLs carry no such
+        # risk: this add-on never fetches them, it only writes them into the
+        # exported YAML, and ESPHome resolves them at compile time. The
+        # exporter already passes URLs through verbatim (see _copy_asset).
+        local_resources = [
+            image.file_path
+            for image in project.images
+            if image.file_path and not _is_remote_asset(image.file_path)
+        ]
         local_resources.extend(
-            font.file_path for font in project.fonts if font.source_kind == "file" and font.file_path
+            font.file_path
+            for font in project.fonts
+            if font.source_kind == "file" and font.file_path and not _is_remote_asset(font.file_path)
         )
-        if project.background.export_as_lvgl_image and project.background.path:
+        if (
+            project.background.export_as_lvgl_image
+            and project.background.path
+            and not _is_remote_asset(project.background.path)
+        ):
             local_resources.append(project.background.path)
         if local_resources:
             issues.append(
                 {
                     "severity": "error",
-                    "message": "Local image and font assets are not enabled in this milestone.",
+                    "message": (
+                        "Local image and font files cannot be imported yet - "
+                        "use an http(s) URL as the asset source."
+                    ),
                 }
             )
         return project, issues
