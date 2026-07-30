@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2
+
+- Fix container failing to start under Supervisor's read-only container
+  filesystem: run `run.sh` directly as PID 1 (`ENTRYPOINT []`) instead of
+  going through the base image's S6 Overlay `/init`, and drop the Bashio
+  shebang, since S6's runtime state under `/run` isn't writable/executable
+  in that mode.
+- Trim the custom AppArmor profile to drop the now-unused S6/Bashio rules.
+
 ## 0.2.1
 
 - Allow the Home Assistant base image's S6 `/init` process and Bashio runtime

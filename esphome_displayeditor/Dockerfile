@@ -28,4 +28,5 @@ ENV PYTHONPATH=/app \
 
 WORKDIR /app
 EXPOSE 8099
+ENTRYPOINT []
 CMD ["/run.sh"]

@@ -8,18 +8,8 @@ profile esphome_displayeditor flags=(attach_disconnected,mediate_deleted) {
   network inet stream,
   network inet6 stream,
 
-  # S6 Overlay and Bashio are provided by the Home Assistant base image.
-  /init ix,
+  # The container runs run.sh directly as PID 1 (no S6 Overlay/Bashio).
   /bin/** ix,
-  /usr/bin/** ix,
-  /run/{s6,s6-rc*,service}/** ix,
-  /package/** ix,
-  /command/** ix,
-  /etc/services.d/** rwix,
-  /etc/cont-init.d/** rwix,
-  /etc/cont-finish.d/** rwix,
-  /run/{,**} rwk,
-  /usr/lib/bashio/** ix,
 
   /opt/esphome-displayeditor/bin/python3 ix,
   /opt/esphome-displayeditor/** rix,
