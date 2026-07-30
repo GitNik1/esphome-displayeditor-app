@@ -13,6 +13,9 @@ profile esphome_displayeditor flags=(attach_disconnected,mediate_deleted) {
 
   /opt/esphome-displayeditor/bin/python3 ix,
   /opt/esphome-displayeditor/** rix,
+  # /app itself must be listable, not just its contents: it is a sys.path
+  # entry, so Python scans the directory to find the `backend` package.
+  /app/ r,
   /app/** r,
   /run.sh rix,
 
