@@ -83,8 +83,21 @@ def _validate_host(host: str) -> None:
     except ValueError:
         if not _HOSTNAME.fullmatch(host):
             raise ApiError("invalid_device_host", "The device host is invalid.", 422) from None
+        normalized = host.rstrip(".").lower()
+        if normalized == "localhost" or (
+            "." in normalized
+            and not normalized.endswith((".local", ".lan", ".home.arpa"))
+        ):
+            raise ApiError(
+                "invalid_device_host", "Only local device host names are allowed.", 422
+            )
         return
-    if address.is_loopback or address.is_multicast or address.is_unspecified:
+    if (
+        address.is_loopback
+        or address.is_multicast
+        or address.is_unspecified
+        or not (address.is_private or address.is_link_local)
+    ):
         raise ApiError("invalid_device_host", "The device host is not allowed.", 422)
 
 

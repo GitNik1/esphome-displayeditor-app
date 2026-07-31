@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from backend.version import APP_VERSION
+
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 
@@ -56,3 +58,19 @@ def test_container_includes_native_api_and_websocket_runtimes() -> None:
 
     assert "aioesphomeapi" in requirements
     assert "websockets" in requirements
+
+
+def test_release_version_is_consistent() -> None:
+    config = yaml.safe_load((APP_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    changelog = (APP_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    assert config["version"] == APP_VERSION
+    assert f"## {APP_VERSION}\n" in changelog
+
+
+def test_full_profile_has_fail_closed_builder_options() -> None:
+    config = yaml.safe_load((APP_ROOT / "config.yaml").read_text(encoding="utf-8"))
+
+    assert config["options"]["builder_provider"] == "disabled"
+    assert config["options"]["profile"] != "full"
+    assert "full" in config["schema"]["profile"]

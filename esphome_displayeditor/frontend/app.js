@@ -50,6 +50,8 @@ const state = {
   editingDevice: null,
   deviceSocket: null,
   deviceStates: [],
+  builderJobs: {},
+  builderSocket: null,
 
   // Glow lines (ported GlowLine editor). Editing widgets and editing lines are
   // mutually exclusive modes, matching the desktop app being a separate tool -
@@ -167,6 +169,10 @@ async function initialize() {
     }
     await Promise.all(initialLoads);
     connectDeviceEvents();
+    if (state.capabilities["firmware.compile"]) {
+      await loadBuilderJobs();
+      connectBuilderEvents();
+    }
   } catch (error) {
     $("#profile").textContent = "Backend nicht erreichbar";
     toast(error.message, true);
@@ -2928,8 +2934,12 @@ function bindConfigurations() {
   $("#refresh-configs").addEventListener("click", loadConfigurations);
   $("#save-draft").addEventListener("click", saveDraft);
   $("#check-yaml").addEventListener("click", checkYaml);
+  $("#validate-esphome").addEventListener("click", validateEspHome);
   $("#show-diff").addEventListener("click", showDiff);
   $("#publish").addEventListener("click", publishDraft);
+  $("#compile-config").addEventListener("click", compileConfiguration);
+  $("#install-config").addEventListener("click", installConfiguration);
+  $("#refresh-jobs").addEventListener("click", loadBuilderJobs);
   // Phone layout only: list <-> detail is one pane at a time there, so this
   // is what "leaving" the detail view means. A no-op above the breakpoint,
   // where both panels already show side by side regardless of the class.
@@ -2986,6 +2996,7 @@ async function loadConfiguration(configuration) {
     $("#check-yaml").disabled = false;
     $("#show-diff").disabled = !state.hasDraft;
     $("#publish").disabled = !state.hasDraft || !state.capabilities["configuration.publish"];
+    updateBuilderButtons();
     $("#config-output").classList.add("hidden");
     await loadConfigurations();
   } catch (error) { toast(error.message, true); }
@@ -3000,6 +3011,7 @@ async function saveDraft() {
     state.hasDraft = true;
     $("#show-diff").disabled = false;
     $("#publish").disabled = !state.capabilities["configuration.publish"];
+    updateBuilderButtons();
     toast("Entwurf gespeichert.");
     await loadConfigurations();
   } catch (error) { toast(error.message, true); }
@@ -3038,9 +3050,135 @@ async function publishDraft() {
     $("#revision").textContent = result.revision;
     $("#show-diff").disabled = true;
     $("#publish").disabled = true;
+    updateBuilderButtons();
     toast("Konfiguration atomar veröffentlicht.");
     await loadConfigurations();
   } catch (error) { toast(error.message, true); }
+}
+
+function updateBuilderButtons() {
+  const activePublishedConfiguration = Boolean(state.activeConfig) && !state.hasDraft;
+  $("#validate-esphome").disabled = !activePublishedConfiguration || !state.capabilities["configuration.validate_esphome"];
+  $("#compile-config").disabled = !activePublishedConfiguration || !state.capabilities["firmware.compile"];
+  $("#install-config").disabled = !activePublishedConfiguration || !state.capabilities["firmware.upload"];
+}
+
+async function validateEspHome() {
+  if (!state.activeConfig || state.hasDraft) return;
+  const output = $("#config-output");
+  output.textContent = "ESPHome-Validierung läuft …";
+  output.classList.remove("hidden");
+  try {
+    const result = await api(`configurations/${encodedName(state.activeConfig)}/validate`, { method: "POST" });
+    const lines = Array.isArray(result.output) ? result.output.join("\n") : "";
+    output.textContent = `${result.valid ? "✓ ESPHome-Konfiguration gültig" : "ESPHome-Validierung fehlgeschlagen"}\nRevision: ${result.revision}\n\n${lines}`.trim();
+  } catch (error) {
+    output.textContent = `${error.code || "Fehler"}: ${error.message}`;
+    toast(error.message, true);
+  }
+}
+
+async function compileConfiguration() {
+  if (!state.activeConfig || state.hasDraft) return;
+  try {
+    const result = await api(`configurations/${encodedName(state.activeConfig)}/compile`, { method: "POST" });
+    state.builderJobs[result.job.job_id] = result.job;
+    renderBuilderJobs();
+    toast(`Kompilierjob ${result.job.job_id} gestartet.`);
+  } catch (error) { toast(error.message, true); }
+}
+
+async function installConfiguration() {
+  if (!state.activeConfig || state.hasDraft) return;
+  if (!confirm(`Firmware für ${state.activeConfig} jetzt über OTA kompilieren und installieren?`)) return;
+  try {
+    const result = await api(`configurations/${encodedName(state.activeConfig)}/install`, {
+      method: "POST", body: JSON.stringify({ port: "OTA", confirmed: true }),
+    });
+    state.builderJobs[result.job.job_id] = result.job;
+    renderBuilderJobs();
+    toast(`OTA-Job ${result.job.job_id} gestartet.`);
+  } catch (error) { toast(error.message, true); }
+}
+
+async function loadBuilderJobs() {
+  if (!state.capabilities["firmware.compile"]) return;
+  try {
+    const result = await api("jobs");
+    state.builderJobs = Object.fromEntries((result.jobs || []).map((job) => [job.job_id, job]));
+    renderBuilderJobs();
+  } catch (error) { toast(error.message, true); }
+}
+
+function renderBuilderJobs() {
+  const panel = $("#builder-jobs");
+  const list = $("#builder-job-list");
+  const jobs = Object.values(state.builderJobs).sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  panel.classList.toggle("hidden", !state.capabilities["firmware.compile"]);
+  list.replaceChildren();
+  if (!jobs.length) {
+    list.textContent = "Keine Jobs.";
+    return;
+  }
+  jobs.forEach((job) => {
+    const row = document.createElement("div");
+    row.className = "builder-job";
+    const description = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `${job.configuration || "—"} · ${job.job_type || "Job"}`;
+    const meta = document.createElement("small");
+    meta.textContent = `${job.status || "unbekannt"}${Number.isFinite(job.progress) ? ` · ${job.progress}%` : ""} · ${job.job_id}`;
+    description.append(title, meta);
+    if (job.last_output) {
+      const log = document.createElement("pre");
+      log.className = "builder-job-output";
+      log.textContent = job.last_output;
+      description.append(log);
+    }
+    row.append(description);
+    if (["queued", "running"].includes(job.status)) {
+      const cancel = document.createElement("button");
+      cancel.className = "button subtle compact";
+      cancel.textContent = "Abbrechen";
+      cancel.addEventListener("click", async () => {
+        try {
+          await api(`jobs/${encodeURIComponent(job.job_id)}/cancel`, { method: "POST" });
+          await loadBuilderJobs();
+        } catch (error) { toast(error.message, true); }
+      });
+      row.append(cancel);
+    }
+    list.append(row);
+  });
+}
+
+function connectBuilderEvents() {
+  if (!state.capabilities["firmware.compile"] || state.builderSocket) return;
+  const appBase = window.location.pathname.endsWith("/") ? window.location.pathname : `${window.location.pathname}/`;
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(`${protocol}//${window.location.host}${appBase}api/v1/jobs/events`);
+  state.builderSocket = socket;
+  socket.addEventListener("message", (message) => {
+    let payload;
+    try { payload = JSON.parse(message.data); } catch { return; }
+    if (payload.type === "resync_required") {
+      loadBuilderJobs();
+      return;
+    }
+    if (payload.type !== "builder_job" || !payload.data) return;
+    const data = payload.data;
+    if (payload.event === "job_output" && data.job_id) {
+      const job = state.builderJobs[data.job_id];
+      if (job) job.last_output = String(data.line || "").slice(-4096);
+    } else if (data.job_id) {
+      state.builderJobs[data.job_id] = { ...(state.builderJobs[data.job_id] || {}), ...data };
+    }
+    renderBuilderJobs();
+  });
+  socket.addEventListener("close", () => {
+    if (state.builderSocket === socket) state.builderSocket = null;
+    window.setTimeout(connectBuilderEvents, 3000);
+  });
 }
 
 function clamp(value, minimum, maximum) {
