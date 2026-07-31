@@ -230,6 +230,17 @@ def test_viewer_cannot_manage_devices(tmp_path: Path) -> None:
     assert response.json()["details"]["required_role"] == "administrator"
 
 
+def test_local_development_websocket_receives_initial_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ESPHOME_ALLOW_ANONYMOUS_WRITE", "1")
+    settings = make_settings(tmp_path)
+    with TestClient(create_app(settings, serve_frontend=False)) as client:
+        with client.websocket_connect("/api/v1/devices/events") as websocket:
+            message = websocket.receive_json()
+    assert message == {"type": "devices", "devices": []}
+
+
 def test_connection_errors_do_not_log_secret(tmp_path: Path, caplog) -> None:
     class InvalidEncryptionKeyAPIError(Exception):
         pass

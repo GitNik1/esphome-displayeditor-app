@@ -11,6 +11,8 @@ Phase 3 ESPHome Native API runtime:
   codes and unavailable marking for cached states after disconnects.
 - Add device information, entity, latest-state and bounded live-log APIs plus
   an Ingress-compatible WebSocket event stream with backpressure.
+- Include the Uvicorn WebSocket runtime required to serve that event stream
+  from the production container.
 - Add administrator-only device, key and reconnect operations with audit
   events; entity commands remain unavailable.
 - Add a Geräte view for connection status, configuration, metadata, entities,

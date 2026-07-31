@@ -529,7 +529,11 @@ def create_app(
             await websocket.close(code=4403, reason="ingress_required")
             return
         user_id = websocket.headers.get("X-Remote-User-Id", "").strip() or None
-        role = settings.role_for(user_id)
+        if not user_id and os.getenv("ESPHOME_ALLOW_ANONYMOUS_WRITE") == "1":
+            user_id = "local-development"
+            role = "administrator"
+        else:
+            role = settings.role_for(user_id)
         if not user_id or not capabilities(settings, role).get("device.states", False):
             await websocket.close(code=4403, reason="permission_denied")
             return
