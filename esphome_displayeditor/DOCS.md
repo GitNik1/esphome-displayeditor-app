@@ -9,6 +9,7 @@ does not publish a LAN port.
 - Active ESPHome files: `/homeassistant/esphome`
 - Drafts and app state: `/data`
 - Persistent designer projects: `/data/projects`
+- Viewer runtime bindings: `/data/viewer_bindings`
 - Native API device registry: `/data/runtime/devices.json`
 - Native API keys: `/data/runtime/native_api_keys.json` (mode `0600`)
 
@@ -73,6 +74,40 @@ plaintext or legacy password authentication. It keeps one connection per
 configured device, reconnects with exponential backoff, and exposes device
 information, entity metadata, latest states and a bounded live-log buffer.
 Phase 3 deliberately does not expose entity commands.
+
+### Live-Daten im Viewer
+
+For a stored project, select a `label`, `slider`, `bar`, `arc` or `switch` in the Designer.
+The **Live-Daten im Viewer** section maps its text, value or checked state to
+an entity of a configured ESPHome device. Labels additionally support
+`{state}`, numeric formats such as `{state:.1f}`, a fallback text and a stale
+timeout. Save the project before saving its binding.
+
+The entity list is filtered to the selected target: numeric sources for
+sliders, bars and arcs and boolean-capable sources for switches; labels accept every entity.
+The panel shows the current value and its online, offline, unavailable or
+stale state. A binding can be copied to another compatible widget or applied
+to several compatible widgets in one save. Bindings whose widget was deleted,
+renamed or changed to an incompatible type are listed above the property form
+and can be cleaned after the project has been saved.
+
+**Live-Werte auf Zeichenfläche** applies saved bindings to the Designer canvas
+as an optional preview. This changes only DOM text and status decoration; it
+does not mutate the project, enter undo history or alter exported YAML. Turning
+the option off redraws the original project values.
+
+`bar` and `arc` are add-on-only schema extensions. They use the existing
+generic project model and therefore do not modify the synchronized desktop
+core or project format. Their ESPHome properties are editable, import/export
+round-trips them, and numeric bindings share the same filtering and safety
+rules as sliders. Adjustable arcs can be changed locally in the Viewer; this
+still never sends a device command.
+
+Bindings are stored separately from `.lvgldesign` files, do not enter the
+generated ESPHome YAML and never change the read-only desktop core. The Viewer
+loads one filtered snapshot and then follows filtered WebSocket updates. The
+Viewer endpoint omits host names, ports, key references, encryption keys and
+logs. It is read-only; no Native API command is available from the Viewer.
 
 Device records form a server-side allow-list. Browser requests contain only a
 device ID; they cannot supply an arbitrary network target. API keys are stored

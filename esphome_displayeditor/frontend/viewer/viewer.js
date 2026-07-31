@@ -2,7 +2,7 @@ import { computeLayout } from "../layout.js";
 import { drawDocument, hasFlow } from "../glowline/renderer.js";
 
 const SUPPORTED_WIDGETS = new Set([
-  "obj", "container", "label", "button", "switch", "slider", "image", "animimg",
+  "obj", "container", "label", "button", "switch", "slider", "bar", "arc", "image", "animimg",
 ]);
 const STYLE_BRANCHES = new Set([
   "states", "indicator", "knob", "items", "ticks", "selected", "scrollbar", "cursor",
@@ -259,6 +259,109 @@ function findWidget(project, id) {
   return found;
 }
 
+const RUNTIME_TARGET_WIDGET = {
+  text: new Set(["label"]),
+  value: new Set(["slider", "bar", "arc"]),
+  state_checked: new Set(["switch"]),
+};
+
+export function runtimeBoolean(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (["1", "true", "on", "yes", "an", "ein", "locked"].includes(normalized)) return true;
+  if (["0", "false", "off", "no", "aus", "unlocked"].includes(normalized)) return false;
+  return null;
+}
+
+export function entityMatchesRuntimeTarget(entity, target, runtimeState = null) {
+  if (!entity || target === "text") return Boolean(entity);
+  const type = String(entity.type || "").toLowerCase();
+  if (target === "value") {
+    if (["sensor", "number"].includes(type)) return true;
+    const value = Number(runtimeState?.state);
+    return runtimeState?.state !== "" && runtimeState?.state !== null
+      && runtimeState?.state !== undefined && Number.isFinite(value);
+  }
+  if (target === "state_checked") {
+    if (["binary_sensor", "switch", "light", "fan", "lock"].includes(type)) return true;
+    return runtimeState && runtimeBoolean(runtimeState.state) !== null;
+  }
+  return false;
+}
+
+export function runtimeBindingHealth(binding, runtimeSnapshot, { now = Date.now() } = {}) {
+  if (!binding?.device_id || !binding?.entity_id) {
+    return { status: "unconfigured", device: null, state: null, stale: false };
+  }
+  const device = (runtimeSnapshot?.devices || []).find((item) => item.id === binding.device_id) || null;
+  if (!device) return { status: "missing_device", device: null, state: null, stale: false };
+  const runtimeState = (device.states || []).find((item) => item.entity_id === binding.entity_id) || null;
+  if (device.status !== "ready") {
+    return { status: "offline", device, state: runtimeState, stale: false };
+  }
+  if (!runtimeState) return { status: "missing_entity", device, state: null, stale: false };
+  const receivedAt = Date.parse(runtimeState.received_at || "");
+  const staleAfter = Math.max(0, Number(binding.stale_after) || 0);
+  const stale = staleAfter > 0 && Number.isFinite(receivedAt) && now - receivedAt > staleAfter * 1000;
+  if (stale) return { status: "stale", device, state: runtimeState, stale: true };
+  if (runtimeState.available === false || runtimeState.state === undefined || runtimeState.state === null) {
+    return { status: "unavailable", device, state: runtimeState, stale: false };
+  }
+  return { status: "online", device, state: runtimeState, stale: false };
+}
+
+export function formatRuntimeValue(value, template = "{state}") {
+  const source = String(template || "{state}");
+  return source.replace(/\{state(?::\.(\d)f)?\}/g, (_match, decimals) => {
+    if (decimals === undefined) return String(value ?? "");
+    const number = Number(value);
+    return Number.isFinite(number) ? number.toFixed(Number(decimals)) : String(value ?? "");
+  });
+}
+
+export function applyRuntimeBinding(
+  project,
+  sourceProject,
+  binding,
+  runtimeState,
+  { deviceAvailable = true, now = Date.now() } = {},
+) {
+  const widget = findWidget(project, binding?.widget_id);
+  const sourceWidget = findWidget(sourceProject, binding?.widget_id);
+  const target = String(binding?.target || "");
+  if (!widget || !sourceWidget || !RUNTIME_TARGET_WIDGET[target]?.has(widget.widget_type)) return false;
+  const receivedAt = Date.parse(runtimeState?.received_at || "");
+  const staleAfter = Math.max(0, Number(binding.stale_after) || 0);
+  const stale = staleAfter > 0 && Number.isFinite(receivedAt) && now - receivedAt > staleAfter * 1000;
+  const available = Boolean(deviceAvailable && runtimeState?.available !== false && !stale
+    && runtimeState && runtimeState.state !== undefined && runtimeState.state !== null);
+  widget.properties ||= {};
+
+  if (!available) {
+    if (target !== "text") return false; // Numeric/boolean widgets deliberately retain their last value.
+    const next = binding.fallback !== "" && binding.fallback !== undefined
+      ? String(binding.fallback)
+      : String(sourceWidget.properties?.text ?? "");
+    if (widget.properties.text === next) return false;
+    widget.properties.text = next;
+    return true;
+  }
+
+  let next;
+  if (target === "text") next = formatRuntimeValue(runtimeState.state, binding.value_format);
+  else if (target === "value") {
+    next = Number(runtimeState.state);
+    if (!Number.isFinite(next)) return false;
+  } else {
+    next = runtimeBoolean(runtimeState.state);
+    if (next === null) return false;
+  }
+  if (widget.properties[target] === next) return false;
+  widget.properties[target] = next;
+  return true;
+}
+
 function pageActionId(payload) {
   return actionIds(payload)[0] || "";
 }
@@ -381,8 +484,25 @@ export function applyViewerAction(project, action, runtime = {}) {
     "lvgl.widget.update": new Set(["hidden", "text", "value", "state_checked"]),
     "lvgl.label.update": new Set(["text"]),
     "lvgl.slider.update": new Set(["value"]),
+    "lvgl.bar.update": new Set(["value", "start_value", "min_value", "max_value", "mode", "animated"]),
+    "lvgl.arc.update": new Set([
+      "value", "min_value", "max_value", "mode", "start_angle", "end_angle",
+      "rotation", "adjustable", "change_rate",
+    ]),
     "lvgl.switch.update": new Set(["state_checked"]),
   };
+  const updateWidgetTypes = {
+    "lvgl.label.update": "label",
+    "lvgl.slider.update": "slider",
+    "lvgl.bar.update": "bar",
+    "lvgl.arc.update": "arc",
+    "lvgl.switch.update": "switch",
+  };
+  const numericUpdateKeys = new Set([
+    "value", "start_value", "min_value", "max_value", "start_angle", "end_angle",
+    "rotation", "change_rate",
+  ]);
+  const booleanUpdateKeys = new Set(["hidden", "state_checked", "animated", "adjustable"]);
   if (updateKeys[name]) {
     let changed = false;
     const notes = [];
@@ -397,25 +517,29 @@ export function applyViewerAction(project, action, runtime = {}) {
         notes.push(`${update.id}: nicht gefunden`);
         return;
       }
+      if (updateWidgetTypes[name] && widget.widget_type !== updateWidgetTypes[name]) {
+        notes.push(`${update.id}: kein ${updateWidgetTypes[name]}-Widget`);
+        return;
+      }
       Object.entries(update).forEach(([key, value]) => {
         if (key === "id") return;
         if (!updateKeys[name].has(key) || !safeLiteral(value)) {
           notes.push(`${widget.id}.${key}: nicht erlaubt`);
           return;
         }
-        if (["hidden", "state_checked"].includes(key) && typeof value !== "boolean") {
+        if (booleanUpdateKeys.has(key) && typeof value !== "boolean") {
           notes.push(`${widget.id}.${key}: Boolescher Wert erwartet`);
           return;
         }
-        if (key === "value" && !Number.isFinite(Number(value))) {
+        if (numericUpdateKeys.has(key) && !Number.isFinite(Number(value))) {
           notes.push(`${widget.id}.${key}: numerischer Wert erwartet`);
           return;
         }
         if (key === "hidden") widget.hidden = value;
         else {
           widget.properties ||= {};
-          if (key === "state_checked") widget.properties[key] = value;
-          else if (key === "value") widget.properties[key] = Number(value);
+          if (booleanUpdateKeys.has(key)) widget.properties[key] = value;
+          else if (numericUpdateKeys.has(key)) widget.properties[key] = Number(value);
           else widget.properties[key] = String(value ?? "");
         }
         changed = true;
@@ -453,6 +577,146 @@ function renderImage(project, widget, sourceId) {
     image.replaceWith(fallback);
   });
   return image;
+}
+
+function numericWidgetRange(widget) {
+  const minimum = Number(widget.properties?.min_value) || 0;
+  const rawMaximum = Number(widget.properties?.max_value);
+  const maximum = Number.isFinite(rawMaximum) && rawMaximum !== minimum ? rawMaximum : 100;
+  const value = clamp(Number(widget.properties?.value) || 0, Math.min(minimum, maximum), Math.max(minimum, maximum));
+  const percentage = maximum === minimum ? 0 : clamp((value - minimum) / (maximum - minimum), 0, 1);
+  return { minimum, maximum, value, percentage };
+}
+
+export function viewerBarGeometry(widget) {
+  const { minimum, maximum, percentage } = numericWidgetRange(widget);
+  const mode = String(widget.properties?.mode || "NORMAL").toUpperCase();
+  const startValue = mode === "RANGE"
+    ? clamp(Number(widget.properties?.start_value) || 0, Math.min(minimum, maximum), Math.max(minimum, maximum))
+    : mode === "SYMMETRICAL" ? (minimum + maximum) / 2 : minimum;
+  const start = maximum === minimum ? 0 : clamp((startValue - minimum) / (maximum - minimum), 0, 1);
+  const lower = Math.min(start, percentage);
+  const upper = Math.max(start, percentage);
+  const vertical = Number(widget.height) > Number(widget.width);
+  return { lower, upper, vertical, percentage };
+}
+
+function renderBar(project, widget, activeStates) {
+  const { lower, upper, vertical } = viewerBarGeometry(widget);
+  const control = document.createElement("span");
+  control.className = `viewer-bar-control${vertical ? " vertical" : ""}`;
+  const track = document.createElement("span");
+  track.className = "viewer-bar-track";
+  const fill = document.createElement("span");
+  fill.className = "viewer-bar-fill";
+  if (vertical) {
+    fill.style.bottom = `${lower * 100}%`;
+    fill.style.height = `${(upper - lower) * 100}%`;
+  } else {
+    fill.style.left = `${lower * 100}%`;
+    fill.style.width = `${(upper - lower) * 100}%`;
+  }
+  applyPartStyle(fill, project, widget, "indicator", activeStates);
+  track.append(fill);
+  control.append(track);
+  return control;
+}
+
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+
+function arcPoint(angle, radius = 40) {
+  const radians = angle * Math.PI / 180;
+  return { x: 50 + radius * Math.cos(radians), y: 50 + radius * Math.sin(radians) };
+}
+
+export function describeViewerArc(startAngle, sweepAngle, radius = 40) {
+  const sweep = Math.max(-359.999, Math.min(359.999, Number(sweepAngle) || 0));
+  const start = arcPoint(Number(startAngle) || 0, radius);
+  const end = arcPoint((Number(startAngle) || 0) + sweep, radius);
+  return [
+    `M ${start.x.toFixed(3)} ${start.y.toFixed(3)}`,
+    `A ${radius} ${radius} 0 ${Math.abs(sweep) > 180 ? 1 : 0} ${sweep >= 0 ? 1 : 0} ${end.x.toFixed(3)} ${end.y.toFixed(3)}`,
+  ].join(" ");
+}
+
+function viewerArcOpacity(value) {
+  const opacity = viewerOpacity(value);
+  return opacity === null ? 1 : opacity;
+}
+
+function updateArcVisual(control, project, widget, activeStates = []) {
+  const { percentage } = numericWidgetRange(widget);
+  const start = Number(widget.properties?.start_angle ?? 135) + Number(widget.properties?.rotation || 0);
+  const end = Number(widget.properties?.end_angle ?? 45) + Number(widget.properties?.rotation || 0);
+  const sweep = ((end - start) % 360 + 360) % 360 || 360;
+  const mode = String(widget.properties?.mode || "NORMAL").toUpperCase();
+  let indicatorStart = start;
+  let indicatorSweep = sweep * percentage;
+  if (mode === "REVERSE") {
+    indicatorStart = start + sweep;
+    indicatorSweep = -sweep * (1 - percentage);
+  } else if (mode === "SYMMETRICAL") {
+    indicatorStart = start + sweep / 2;
+    indicatorSweep = sweep * (percentage - 0.5);
+  }
+  const mainStyle = effectiveViewerStyle(project, widget, activeStates);
+  const indicatorStyle = effectiveViewerPartStyle(project, widget, "indicator", activeStates);
+  const knobStyle = effectiveViewerPartStyle(project, widget, "knob", activeStates);
+  const nominalSize = Math.max(1, Math.min(Number(widget.width) || 120, Number(widget.height) || 120));
+  const mainWidth = clamp((Number(mainStyle.arc_width) || 10) * 100 / nominalSize, 1, 30);
+  const indicatorWidth = clamp((Number(indicatorStyle.arc_width) || Number(mainStyle.arc_width) || 10) * 100 / nominalSize, 1, 30);
+  const background = control.querySelector(".viewer-arc-background");
+  const indicator = control.querySelector(".viewer-arc-indicator");
+  const knob = control.querySelector(".viewer-arc-knob");
+  background.setAttribute("d", describeViewerArc(start, sweep));
+  background.setAttribute("stroke", resolveViewerColor(project, mainStyle.arc_color) || "#657386");
+  background.setAttribute("stroke-width", String(mainWidth));
+  background.setAttribute("stroke-linecap", mainStyle.arc_rounded === false ? "butt" : "round");
+  background.setAttribute("opacity", String(viewerArcOpacity(mainStyle.arc_opa)));
+  indicator.setAttribute("d", describeViewerArc(indicatorStart, indicatorSweep));
+  indicator.setAttribute("stroke", resolveViewerColor(project, indicatorStyle.arc_color)
+    || resolveViewerColor(project, indicatorStyle.bg_color) || "#20c7b7");
+  indicator.setAttribute("stroke-width", String(indicatorWidth));
+  indicator.setAttribute("stroke-linecap", indicatorStyle.arc_rounded === false ? "butt" : "round");
+  indicator.setAttribute("opacity", String(viewerArcOpacity(indicatorStyle.arc_opa)));
+  const currentPoint = arcPoint(start + sweep * percentage);
+  knob.setAttribute("cx", currentPoint.x.toFixed(3));
+  knob.setAttribute("cy", currentPoint.y.toFixed(3));
+  knob.setAttribute("r", String(Math.max(3, indicatorWidth * 0.75)));
+  knob.setAttribute("fill", resolveViewerColor(project, knobStyle.bg_color) || "#ffffff");
+  knob.hidden = !widget.properties?.adjustable;
+}
+
+function renderArc(project, widget, activeStates) {
+  const control = document.createElement("span");
+  control.className = "viewer-arc-control";
+  const svg = document.createElementNS(SVG_NAMESPACE, "svg");
+  svg.classList.add("viewer-arc-svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("aria-hidden", "true");
+  const background = document.createElementNS(SVG_NAMESPACE, "path");
+  background.classList.add("viewer-arc-background");
+  background.setAttribute("fill", "none");
+  const indicator = document.createElementNS(SVG_NAMESPACE, "path");
+  indicator.classList.add("viewer-arc-indicator");
+  indicator.setAttribute("fill", "none");
+  const knob = document.createElementNS(SVG_NAMESPACE, "circle");
+  knob.classList.add("viewer-arc-knob");
+  svg.append(background, indicator, knob);
+  control.append(svg);
+  if (widget.properties?.adjustable) {
+    const { minimum, maximum, value } = numericWidgetRange(widget);
+    const input = document.createElement("input");
+    input.className = "viewer-arc-input";
+    input.type = "range";
+    input.min = String(minimum);
+    input.max = String(maximum);
+    input.value = String(value);
+    input.setAttribute("aria-label", widget.name || widget.id || "Arc");
+    control.append(input);
+  }
+  updateArcVisual(control, project, widget, activeStates);
+  return control;
 }
 
 function renderWidgetContent(project, widget, timers, activeStates = []) {
@@ -501,6 +765,8 @@ function renderWidgetContent(project, widget, timers, activeStates = []) {
     control.append(track, input);
     return control;
   }
+  if (widget.widget_type === "bar") return renderBar(project, widget, activeStates);
+  if (widget.widget_type === "arc") return renderArc(project, widget, activeStates);
   if (widget.widget_type === "image") {
     return renderImage(project, widget, widget.properties?.src);
   }
@@ -599,6 +865,10 @@ export class ViewerController {
     this.logEntries = [];
     this.renderWarnings = new Set();
     this.runtime = { activePageId: "" };
+    this.runtimeBindings = [];
+    this.runtimeStates = new Map();
+    this.runtimeDevices = new Map();
+    this.runtimeTimer = null;
     this.animationFrame = null;
     this.resizeObserver = new ResizeObserver(() => {
       if (this.dialog.open && this.fitMode) this.fit();
@@ -606,8 +876,11 @@ export class ViewerController {
     this.resizeObserver.observe(this.stage);
   }
 
-  open(project, { name = "Lokales Projekt", backgroundPreview = null } = {}) {
+  open(project, {
+    name = "Lokales Projekt", backgroundPreview = null, runtimeBindings = [], runtimeSnapshot = null,
+  } = {}) {
     this.stopAnimations();
+    this.stopRuntimeTimer();
     this.sourceProject = cloneViewerProject(project);
     this.project = cloneViewerProject(this.sourceProject);
     this.name = name;
@@ -618,17 +891,29 @@ export class ViewerController {
     this.fitMode = true;
     this.logEntries = [];
     this.runtime = { activePageId: this.project.pages?.[0]?.id || "" };
+    this.runtimeBindings = cloneViewerProject(runtimeBindings);
+    this.runtimeStates = new Map();
+    this.runtimeDevices = new Map();
+    if (runtimeSnapshot) this.setRuntimeSnapshot(runtimeSnapshot, { render: false });
+    this.applyAllRuntimeBindings({ render: false });
     this.renderEventLog();
     this.title.textContent = name;
     this.render();
     if (!this.dialog.open) this.dialog.showModal();
+    if (this.runtimeBindings.length) {
+      this.runtimeTimer = window.setInterval(() => this.applyAllRuntimeBindings(), 5000);
+    }
     window.requestAnimationFrame(() => this.fit());
   }
 
   close() {
     this.stopAnimations();
+    this.stopRuntimeTimer();
     this.sourceProject = null;
     this.project = null;
+    this.runtimeBindings = [];
+    this.runtimeStates.clear();
+    this.runtimeDevices.clear();
     this.display.replaceChildren();
     if (this.dialog.open) this.dialog.close();
   }
@@ -639,8 +924,75 @@ export class ViewerController {
     this.project = cloneViewerProject(this.sourceProject);
     this.runtime = { activePageId: this.project.pages?.[0]?.id || "" };
     this.logEntries = [];
+    this.applyAllRuntimeBindings({ render: false });
     this.renderEventLog();
     this.render();
+  }
+
+  stopRuntimeTimer() {
+    if (this.runtimeTimer !== null) window.clearInterval(this.runtimeTimer);
+    this.runtimeTimer = null;
+  }
+
+  setRuntimeSnapshot(snapshot, { render = true } = {}) {
+    this.runtimeStates = new Map();
+    this.runtimeDevices = new Map();
+    (snapshot?.devices || []).forEach((device) => {
+      this.runtimeDevices.set(device.id, {
+        id: device.id, name: device.name, status: device.status, last_seen: device.last_seen,
+      });
+      (device.states || []).forEach((item) => {
+        if (item.entity_id) this.runtimeStates.set(`${device.id}:${item.entity_id}`, item);
+      });
+    });
+    this.applyAllRuntimeBindings({ render });
+  }
+
+  applyRuntimeEvent(event) {
+    if (!this.project || !event || event.type === "heartbeat") return;
+    if (event.type === "snapshot") {
+      this.setRuntimeSnapshot(event);
+      return;
+    }
+    if (event.type === "device_snapshot" && event.device?.id) {
+      const device = event.device;
+      this.runtimeDevices.set(device.id, {
+        id: device.id, name: device.name, status: device.status, last_seen: device.last_seen,
+      });
+      [...this.runtimeStates.keys()].filter((key) => key.startsWith(`${device.id}:`))
+        .forEach((key) => this.runtimeStates.delete(key));
+      (device.states || []).forEach((item) => {
+        if (item.entity_id) this.runtimeStates.set(`${device.id}:${item.entity_id}`, item);
+      });
+    } else if (event.type === "state" && event.device_id && event.state?.entity_id) {
+      this.runtimeStates.set(`${event.device_id}:${event.state.entity_id}`, event.state);
+      const device = this.runtimeDevices.get(event.device_id);
+      if (device) device.last_seen = event.state.received_at;
+    } else if (event.type === "connection" && event.device_id) {
+      const device = this.runtimeDevices.get(event.device_id) || { id: event.device_id, name: event.device_id };
+      device.status = event.status;
+      this.runtimeDevices.set(event.device_id, device);
+    } else if (event.type === "device_removed" && event.device_id) {
+      this.runtimeDevices.delete(event.device_id);
+    } else {
+      return;
+    }
+    this.applyAllRuntimeBindings();
+  }
+
+  applyAllRuntimeBindings({ render = true } = {}) {
+    if (!this.project || !this.sourceProject) return false;
+    let changed = false;
+    this.runtimeBindings.forEach((binding) => {
+      const device = this.runtimeDevices.get(binding.device_id);
+      const runtimeState = this.runtimeStates.get(`${binding.device_id}:${binding.entity_id}`);
+      changed = applyRuntimeBinding(this.project, this.sourceProject, binding, runtimeState, {
+        deviceAvailable: device?.status === "ready",
+      }) || changed;
+    });
+    if (changed && render) this.render();
+    else this.refreshStatus();
+    return changed;
   }
 
   recordEvent(kind, message) {
@@ -654,9 +1006,14 @@ export class ViewerController {
     if (!this.status) return;
     const runtimeWarnings = this.logEntries.filter((entry) => entry.kind === "warning");
     const warningCount = this.renderWarnings.size + runtimeWarnings.length;
+    const liveDevices = new Set(this.runtimeBindings.map((binding) => binding.device_id));
+    const online = [...liveDevices].filter((id) => this.runtimeDevices.get(id)?.status === "ready").length;
+    const live = this.runtimeBindings.length
+      ? ` · Live ${online}/${liveDevices.size} Gerät(e) · ${this.runtimeBindings.length} Bindung(en)`
+      : "";
     this.status.textContent = warningCount
-      ? `Browser-Simulation · ${warningCount} Hinweis(e)`
-      : "Browser-Simulation · nicht pixelgenau";
+      ? `Browser-Simulation${live} · ${warningCount} Hinweis(e)`
+      : `Browser-Simulation${live} · nicht pixelgenau`;
     this.status.title = [
       ...this.renderWarnings,
       ...runtimeWarnings.map((entry) => entry.message),
@@ -811,6 +1168,25 @@ export class ViewerController {
         this.recordEvent("state", `${widget.id || "slider"}: ${input.value}`);
         const changed = this.runEvent(widget, "on_value");
         if (changed) this.render();
+      });
+      return;
+    }
+
+    if (widget.widget_type === "arc" && widget.properties?.adjustable) {
+      node.classList.add("viewer-interactive");
+      const input = node.querySelector(".viewer-arc-input");
+      const control = node.querySelector(".viewer-arc-control");
+      if (!input || !control) return;
+      input.addEventListener("input", () => {
+        widget.properties ||= {};
+        widget.properties.value = Number(input.value);
+        updateArcVisual(control, this.project, widget);
+      });
+      input.addEventListener("change", () => {
+        this.recordEvent("state", `${widget.id || "arc"}: ${input.value}`);
+        const valueChanged = this.runEvent(widget, "on_value");
+        const changeChanged = this.runEvent(widget, "on_change");
+        if (valueChanged || changeChanged) this.render();
       });
     }
   }

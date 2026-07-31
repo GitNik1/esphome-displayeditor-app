@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 
 import {
+  applyRuntimeBinding,
   applyViewerAction,
   cloneViewerProject,
+  describeViewerArc,
   effectiveViewerPartStyle,
   effectiveViewerStyle,
+  entityMatchesRuntimeTarget,
+  formatRuntimeValue,
+  runtimeBindingHealth,
+  viewerBarGeometry,
 } from "../../frontend/viewer/viewer.js";
 
 const project = {
@@ -97,3 +103,92 @@ assert.equal(applyViewerAction(pageProject, { "lvgl.page.previous": {} }, runtim
 assert.equal(runtime.activePageId, "main");
 assert.equal(applyViewerAction(pageProject, { "lvgl.page.show": "service" }, runtime).changed, true);
 assert.equal(runtime.activePageId, "service", "page.show may open a skipped page directly");
+
+assert.equal(formatRuntimeValue(21.56, "{state:.1f} °C"), "21.6 °C");
+const liveSource = {
+  widgets: [
+    { id: "temperature", widget_type: "label", properties: { text: "Original" }, children: [] },
+    { id: "level_live", widget_type: "slider", properties: { value: 5 }, children: [] },
+    { id: "switch_live", widget_type: "switch", properties: { state_checked: false }, children: [] },
+    { id: "bar_live", widget_type: "bar", properties: { value: 5, min_value: 0, max_value: 100 }, children: [] },
+    { id: "arc_live", widget_type: "arc", properties: { value: 5, min_value: 0, max_value: 100 }, children: [] },
+  ],
+};
+const liveProject = cloneViewerProject(liveSource);
+const receivedAt = new Date().toISOString();
+assert.equal(applyRuntimeBinding(liveProject, liveSource, {
+  widget_id: "temperature", target: "text", value_format: "{state:.1f} °C", fallback: "--.- °C",
+}, { state: 21.56, available: true, received_at: receivedAt }), true);
+assert.equal(liveProject.widgets[0].properties.text, "21.6 °C");
+assert.equal(applyRuntimeBinding(liveProject, liveSource, {
+  widget_id: "temperature", target: "text", fallback: "offline", stale_after: 1,
+}, { state: 21.56, available: true, received_at: "2020-01-01T00:00:00Z" }), true);
+assert.equal(liveProject.widgets[0].properties.text, "offline");
+applyRuntimeBinding(liveProject, liveSource, {
+  widget_id: "level_live", target: "value",
+}, { state: "42.5", available: true, received_at: receivedAt });
+assert.equal(liveProject.widgets[1].properties.value, 42.5);
+applyRuntimeBinding(liveProject, liveSource, {
+  widget_id: "switch_live", target: "state_checked",
+}, { state: "ON", available: true, received_at: receivedAt });
+assert.equal(liveProject.widgets[2].properties.state_checked, true);
+applyRuntimeBinding(liveProject, liveSource, {
+  widget_id: "bar_live", target: "value",
+}, { state: "72", available: true, received_at: receivedAt });
+applyRuntimeBinding(liveProject, liveSource, {
+  widget_id: "arc_live", target: "value",
+}, { state: "33", available: true, received_at: receivedAt });
+assert.equal(liveProject.widgets[3].properties.value, 72);
+assert.equal(liveProject.widgets[4].properties.value, 33);
+
+assert.equal(applyViewerAction(liveProject, {
+  "lvgl.bar.update": { id: "bar_live", value: 81, mode: "RANGE", start_value: 15 },
+}).changed, true);
+assert.equal(liveProject.widgets[3].properties.value, 81);
+assert.equal(liveProject.widgets[3].properties.start_value, 15);
+assert.equal(applyViewerAction(liveProject, {
+  "lvgl.arc.update": { id: "arc_live", value: 44, adjustable: true, start_angle: 120 },
+}).changed, true);
+assert.equal(liveProject.widgets[4].properties.adjustable, true);
+const wrongWidgetUpdate = applyViewerAction(liveProject, {
+  "lvgl.arc.update": { id: "bar_live", value: 10 },
+});
+assert.equal(wrongWidgetUpdate.changed, false);
+assert.equal(wrongWidgetUpdate.warning, true);
+assert.match(describeViewerArc(135, 270), /^M [\d.]+ [\d.]+ A 40 40 0 1 1 [\d.]+ [\d.]+$/);
+assert.equal(describeViewerArc(Number.NaN, Number.POSITIVE_INFINITY).includes("NaN"), false);
+assert.deepEqual(viewerBarGeometry({
+  width: 200, height: 20,
+  properties: { min_value: 0, max_value: 100, mode: "RANGE", start_value: 20, value: 75 },
+}), { lower: 0.2, upper: 0.75, vertical: false, percentage: 0.75 });
+assert.deepEqual(viewerBarGeometry({
+  width: 20, height: 200,
+  properties: { min_value: -100, max_value: 100, mode: "SYMMETRICAL", value: -25 },
+}), { lower: 0.375, upper: 0.5, vertical: true, percentage: 0.375 });
+
+assert.equal(entityMatchesRuntimeTarget({ type: "sensor" }, "value"), true);
+assert.equal(entityMatchesRuntimeTarget({ type: "binary_sensor" }, "value", { state: "ON" }), false);
+assert.equal(entityMatchesRuntimeTarget({ type: "binary_sensor" }, "state_checked"), true);
+assert.equal(entityMatchesRuntimeTarget({ type: "lock" }, "state_checked", { state: "LOCKED" }), true);
+assert.equal(entityMatchesRuntimeTarget({ type: "text_sensor" }, "state_checked", { state: "maybe" }), false);
+assert.equal(entityMatchesRuntimeTarget({ type: "text_sensor" }, "text"), true);
+
+const runtimeSnapshot = {
+  devices: [{
+    id: "display-1",
+    status: "ready",
+    states: [{ entity_id: "sensor:temperature", state: 21.5, available: true, received_at: receivedAt }],
+  }],
+};
+const healthBinding = {
+  device_id: "display-1", entity_id: "sensor:temperature", stale_after: 60,
+};
+assert.equal(runtimeBindingHealth(healthBinding, runtimeSnapshot).status, "online");
+assert.equal(runtimeBindingHealth(
+  { ...healthBinding, stale_after: 1 },
+  runtimeSnapshot,
+  { now: Date.parse(receivedAt) + 2000 },
+).status, "stale");
+assert.equal(runtimeBindingHealth(healthBinding, {
+  devices: [{ ...runtimeSnapshot.devices[0], status: "disconnected" }],
+}).status, "offline");

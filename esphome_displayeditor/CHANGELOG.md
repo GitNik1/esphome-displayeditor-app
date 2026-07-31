@@ -19,6 +19,22 @@
   preserves page layout, styles, skip/page-wrap settings and layer widgets;
   the Viewer adds page selection and previous/next controls plus safe
   `lvgl.page.show/next/previous` action handling.
+- Added read-only Native API data bindings for Viewer labels, sliders and
+  switches. Bindings are revision-protected add-on sidecars, runtime snapshots
+  and WebSocket events expose only filtered entity/state data, and disconnects
+  or stale values use the configured label fallback without enabling device
+  commands.
+- Improved the binding editor with target-compatible entity filters, current
+  value plus online/offline/stale health, copy/paste and multi-widget apply,
+  orphan detection/cleanup, and an optional DOM-only live preview on the
+  Designer canvas.
+- Added add-on-only `bar` and `arc` schemas without changing the synchronized
+  desktop core. Both widgets render in Designer and Viewer, round-trip through
+  ESPHome YAML, support numeric Native API bindings and safe local update
+  actions; adjustable arcs also simulate value changes in the Viewer.
+- Added deterministic bar/arc geometry checks and a browser acceptance harness
+  covering visual output and literal-text injection. Frontend responses now
+  include a restrictive Content Security Policy and Permissions Policy.
 
 ## 0.10.0
 

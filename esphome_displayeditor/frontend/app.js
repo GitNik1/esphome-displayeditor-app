@@ -2,7 +2,16 @@ import { computeLayout, contentOrigin } from "./layout.js";
 import { boundingBox, nearestSegment } from "./glowline/geometry.js";
 import { drawDocument, flowBoundsDocument, hasFlow, strokePath } from "./glowline/renderer.js";
 import { format565, hsvToRgb, quantizeImageData, rgb565to888, rgb888to565 } from "./glowline/rgb565.js";
-import { ViewerController } from "./viewer/viewer.js";
+import {
+  ViewerController,
+  describeViewerArc,
+  entityMatchesRuntimeTarget,
+  formatRuntimeValue,
+  resolveViewerColor,
+  runtimeBindingHealth,
+  runtimeBoolean,
+  viewerBarGeometry,
+} from "./viewer/viewer.js";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -51,6 +60,15 @@ const state = {
   editingDevice: null,
   deviceSocket: null,
   deviceStates: [],
+  viewerBindings: [],
+  viewerBindingsRevision: null,
+  viewerRuntimeSources: { devices: [] },
+  viewerRuntimeSocket: null,
+  viewerRuntimeReconnect: null,
+  viewerRuntimeActive: false,
+  designerRuntimePreview: false,
+  copiedRuntimeBinding: null,
+  runtimeStatusTimer: null,
   builderJobs: {},
   builderSocket: null,
 
@@ -168,7 +186,7 @@ async function initialize() {
     $("#profile").textContent = `${system.profile} · ${system.user.role} · ${system.user.display_name || system.user.name || "Ingress"}`;
     $("#system-json").textContent = JSON.stringify({ system, ...capabilityData }, null, 2);
     renderPalette();
-    const initialLoads = [loadServerProjects(), loadDevices()];
+    const initialLoads = [loadServerProjects(), loadDevices(), loadViewerRuntimeSources()];
     if (state.capabilities["configuration.list"]) initialLoads.push(loadConfigurations());
     else {
       $("#config-list").textContent = "Dateisystemzugriff ist in diesem Profil deaktiviert.";
@@ -445,18 +463,137 @@ function connectDeviceEvents() {
     }
     if (["devices", "connection", "snapshot", "device_removed", "resync_required"].includes(event.type)) {
       await loadDevices();
-    } else if (event.type === "state" && event.device_id === state.selectedDevice) {
-      const key = `${event.state.type}:${event.state.key ?? event.state.object_id ?? "unknown"}`;
-      const index = state.deviceStates.findIndex((item) => `${item.type}:${item.key ?? item.object_id ?? "unknown"}` === key);
-      if (index >= 0) state.deviceStates[index] = event.state;
-      else state.deviceStates.push(event.state);
-      renderDeviceTable($("#device-states"), state.deviceStates, ["type", "key", "available", "state"]);
+      if (["devices", "snapshot", "device_removed", "resync_required"].includes(event.type)) {
+        await loadViewerRuntimeSources();
+      }
+      updateViewerRuntimeEvent(event);
+      renderProperties();
+      applyDesignerRuntimePreview();
+    } else if (event.type === "state") {
+      if (event.device_id === state.selectedDevice) {
+        const key = `${event.state.type}:${event.state.key ?? event.state.object_id ?? "unknown"}`;
+        const index = state.deviceStates.findIndex((item) => `${item.type}:${item.key ?? item.object_id ?? "unknown"}` === key);
+        if (index >= 0) state.deviceStates[index] = event.state;
+        else state.deviceStates.push(event.state);
+        renderDeviceTable($("#device-states"), state.deviceStates, ["type", "key", "available", "state"]);
+      }
+      updateViewerRuntimeEvent(event);
+      renderRuntimeBindingStatus();
+      applyDesignerRuntimePreview();
     }
   });
   socket.addEventListener("close", () => {
     if (state.deviceSocket === socket) state.deviceSocket = null;
     window.setTimeout(connectDeviceEvents, 3000);
   });
+}
+
+async function loadViewerRuntimeSources() {
+  if (!state.capabilities["device.states"]) {
+    state.viewerRuntimeSources = { devices: [] };
+    return state.viewerRuntimeSources;
+  }
+  try {
+    state.viewerRuntimeSources = await api("viewer/runtime");
+  } catch {
+    state.viewerRuntimeSources = { devices: [] };
+  }
+  return state.viewerRuntimeSources;
+}
+
+function updateViewerRuntimeEvent(event) {
+  const devices = state.viewerRuntimeSources.devices || (state.viewerRuntimeSources.devices = []);
+  if (event.type === "device_removed") {
+    state.viewerRuntimeSources.devices = devices.filter((device) => device.id !== event.device_id);
+    return;
+  }
+  const device = devices.find((item) => item.id === event.device_id);
+  if (!device) return;
+  if (event.type === "connection") {
+    device.status = event.status;
+    return;
+  }
+  if (event.type !== "state" || !event.state) return;
+  const runtimeState = { ...event.state };
+  runtimeState.entity_id ||= `${runtimeState.type}:${runtimeState.key ?? runtimeState.object_id ?? "unknown"}`;
+  device.states ||= [];
+  const index = device.states.findIndex((item) => item.entity_id === runtimeState.entity_id);
+  if (index >= 0) device.states[index] = runtimeState;
+  else device.states.push(runtimeState);
+  device.last_seen = runtimeState.received_at || device.last_seen;
+}
+
+async function loadViewerBindings(name) {
+  clearViewerBindings();
+  if (!name) return;
+  try {
+    const result = await api("viewer/bindings/" + encodeURIComponent(name));
+    state.viewerBindings = result.bindings || [];
+    state.viewerBindingsRevision = result.revision || null;
+  } catch (error) {
+    toast("Live-Bindings konnten nicht geladen werden: " + error.message, true);
+  }
+}
+
+function clearViewerBindings() {
+  state.viewerBindings = [];
+  state.viewerBindingsRevision = null;
+}
+
+async function openLiveViewer() {
+  let snapshot = state.viewerRuntimeSources;
+  if (state.viewerBindings.length) snapshot = await loadViewerRuntimeSources();
+  viewer.open(state.project, {
+    name: state.projectName || $("#project-name").value || "Lokales Projekt",
+    backgroundPreview: state.backgroundPreview,
+    runtimeBindings: state.viewerBindings,
+    runtimeSnapshot: snapshot,
+  });
+  if (state.viewerBindings.length && state.capabilities["device.states"]) connectViewerRuntimeEvents();
+}
+
+function connectViewerRuntimeEvents() {
+  if (state.viewerRuntimeSocket || !state.viewerRuntimeActive && !$("#viewer-dialog").open) return;
+  state.viewerRuntimeActive = true;
+  const appBase = window.location.pathname.endsWith("/") ? window.location.pathname : window.location.pathname + "/";
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(protocol + "//" + window.location.host + appBase + "api/v1/viewer/runtime/events");
+  state.viewerRuntimeSocket = socket;
+  socket.addEventListener("message", async (message) => {
+    let event;
+    try { event = JSON.parse(message.data); } catch { return; }
+    if (event.type === "resync_required") {
+      const snapshot = await loadViewerRuntimeSources();
+      viewer.setRuntimeSnapshot(snapshot);
+      renderProperties();
+      applyDesignerRuntimePreview();
+      return;
+    }
+    updateViewerRuntimeEvent(event);
+    viewer.applyRuntimeEvent(event);
+    renderRuntimeBindingStatus();
+    applyDesignerRuntimePreview();
+  });
+  socket.addEventListener("close", () => {
+    if (state.viewerRuntimeSocket === socket) state.viewerRuntimeSocket = null;
+    if (state.viewerRuntimeActive && $("#viewer-dialog").open) {
+      state.viewerRuntimeReconnect = window.setTimeout(connectViewerRuntimeEvents, 3000);
+    }
+  });
+}
+
+function stopViewerRuntimeEvents() {
+  state.viewerRuntimeActive = false;
+  if (state.viewerRuntimeReconnect !== null) window.clearTimeout(state.viewerRuntimeReconnect);
+  state.viewerRuntimeReconnect = null;
+  const socket = state.viewerRuntimeSocket;
+  state.viewerRuntimeSocket = null;
+  if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+}
+
+function closeViewer() {
+  stopViewerRuntimeEvents();
+  viewer.close();
 }
 
 // Phone layout only: which of the three designer panels is the active full-
@@ -494,11 +631,8 @@ function bindDesigner() {
     pagePrevious: $("#viewer-page-previous"),
     pageNext: $("#viewer-page-next"),
   });
-  $("#open-viewer").addEventListener("click", () => viewer.open(state.project, {
-    name: state.projectName || $("#project-name").value || "Lokales Projekt",
-    backgroundPreview: state.backgroundPreview,
-  }));
-  $("#viewer-close").addEventListener("click", () => viewer.close());
+  $("#open-viewer").addEventListener("click", openLiveViewer);
+  $("#viewer-close").addEventListener("click", closeViewer);
   $("#viewer-reset").addEventListener("click", () => viewer.reset());
   $("#viewer-page-select").addEventListener("change", (event) => {
     viewer.setActivePage(event.target.value);
@@ -510,10 +644,10 @@ function bindDesigner() {
   $("#viewer-zoom-out").addEventListener("click", () => viewer.setZoom(viewer.zoom / 1.25));
   $("#viewer-zoom-in").addEventListener("click", () => viewer.setZoom(viewer.zoom * 1.25));
   $("#viewer-rotation").addEventListener("change", (event) => viewer.setRotation(event.target.value));
-  $("#viewer-dialog").addEventListener("close", () => viewer.close());
+  $("#viewer-dialog").addEventListener("close", closeViewer);
   $("#viewer-dialog").addEventListener("cancel", (event) => {
     event.preventDefault();
-    viewer.close();
+    closeViewer();
   });
   $("#canvas-width").addEventListener("change", updateCanvasSize);
   $("#canvas-height").addEventListener("change", updateCanvasSize);
@@ -540,6 +674,34 @@ function bindDesigner() {
   $("#style-mode").addEventListener("change", changeStyleMode);
   $("#style-ref").addEventListener("change", changeStyleRef);
   $("#save-as-style").addEventListener("click", saveCurrentStyleAsNamed);
+  $("#runtime-binding-target").addEventListener("change", () => renderRuntimeBinding(state.selectedWidget));
+  $("#runtime-binding-device").addEventListener("change", () => {
+    populateRuntimeEntityChoices();
+    renderRuntimeBindingStatus();
+  });
+  $("#runtime-binding-entity").addEventListener("change", () => {
+    renderRuntimeBindingStatus();
+    applyDesignerRuntimePreview();
+  });
+  ["runtime-binding-format", "runtime-binding-fallback", "runtime-binding-stale"].forEach((id) => {
+    $(`#${id}`).addEventListener("input", () => {
+      renderRuntimeBindingStatus();
+      applyDesignerRuntimePreview();
+    });
+  });
+  $("#save-runtime-binding").addEventListener("click", saveRuntimeBinding);
+  $("#remove-runtime-binding").addEventListener("click", removeRuntimeBinding);
+  $("#copy-runtime-binding").addEventListener("click", copyRuntimeBinding);
+  $("#paste-runtime-binding").addEventListener("click", pasteRuntimeBinding);
+  $("#cleanup-runtime-bindings").addEventListener("click", cleanupRuntimeBindings);
+  $("#runtime-live-preview").addEventListener("change", (event) => {
+    state.designerRuntimePreview = event.target.checked;
+    renderCanvas();
+  });
+  state.runtimeStatusTimer ||= window.setInterval(() => {
+    renderRuntimeBindingStatus();
+    applyDesignerRuntimePreview();
+  }, 1000);
   bindGlowTools();
 
   $("#zoom-in").addEventListener("click", () => setZoom(state.zoom * 1.25));
@@ -675,6 +837,7 @@ function newDesignerProject() {
   stopFlowPreview();
   state.project = freshProject();
   state.projectName = null;
+  clearViewerBindings();
   state.projectRevision = null;
   state.projectDirty = false;
   state.selectedWidget = null;
@@ -704,6 +867,7 @@ async function openDesignerProject(event) {
     stopFlowPreview();
     state.project = result.project;
     state.projectName = null;
+    clearViewerBindings();
     state.projectRevision = null;
     state.projectDirty = false;
     state.selectedWidget = null;
@@ -877,6 +1041,7 @@ async function runImport() {
     // An import is not "the saved project under this name" - it is a new,
     // unsaved document derived from a config we must never write back to.
     state.projectName = null;
+    clearViewerBindings();
     state.projectRevision = null;
     state.projectDirty = true;
     state.selectedWidget = null;
@@ -934,6 +1099,7 @@ async function loadSelectedServerProject() {
     state.project = result.project;
     state.projectName = result.name;
     state.projectRevision = result.revision;
+    await loadViewerBindings(result.name);
     state.projectDirty = false;
     state.selectedWidget = null;
     state.selectedStroke = null;
@@ -960,6 +1126,7 @@ async function saveServerProject() {
     state.projectRevision = result.revision;
     state.projectDirty = false;
     renderDesignerStatus();
+    renderProperties();
     await loadServerProjects();
     $("#server-projects").value = name;
     updateServerProjectButtons();
@@ -980,6 +1147,7 @@ async function deleteServerProject() {
     });
     if (state.projectName === name) {
       state.projectName = null;
+      clearViewerBindings();
       state.projectRevision = null;
       state.projectDirty = true;
     }
@@ -1070,7 +1238,7 @@ function renderPalette() {
   palette.replaceChildren();
   const icons = {
     obj: "▣", container: "▤", label: "T", button: "▰",
-    switch: "◉", slider: "━", image: "▧", animimg: "▩",
+    switch: "◉", slider: "━", bar: "▮", arc: "◔", image: "▧", animimg: "▩",
   };
   state.schemas.forEach((schema) => {
     const button = document.createElement("button");
@@ -1229,6 +1397,7 @@ function renderCanvas() {
   applyZoom();
   renderGlowCanvas();
   renderGlowHandles();
+  applyDesignerRuntimePreview();
 }
 
 function renderCanvasBackground() {
@@ -2052,7 +2221,9 @@ function renderWidget(item) {
   const imageSource = widget.widget_type === "image"
     ? displayableImageSource(widget.properties.src)
     : null;
-  if (imageSource) {
+  if (["bar", "arc"].includes(widget.widget_type)) {
+    node.append(renderCanvasValueVisual(widget));
+  } else if (imageSource) {
     const picture = document.createElement("img");
     picture.className = "widget-image";
     picture.src = imageSource;
@@ -2078,6 +2249,57 @@ function renderWidget(item) {
     node.append(handle);
   }
   return node;
+}
+
+function renderCanvasValueVisual(widget) {
+  if (widget.widget_type === "bar") {
+    const { lower, upper, vertical } = viewerBarGeometry(widget);
+    const control = document.createElement("span");
+    control.className = `canvas-value-visual canvas-bar${vertical ? " vertical" : ""}`;
+    const fill = document.createElement("span");
+    fill.className = "canvas-bar-fill";
+    if (vertical) {
+      fill.style.bottom = `${lower * 100}%`;
+      fill.style.height = `${(upper - lower) * 100}%`;
+    } else {
+      fill.style.left = `${lower * 100}%`;
+      fill.style.width = `${(upper - lower) * 100}%`;
+    }
+    const style = effectiveStyleTree(widget);
+    fill.style.backgroundColor = resolveViewerColor(state.project, style.indicator?.bg_color) || "#20c7b7";
+    control.append(fill);
+    return control;
+  }
+
+  const control = document.createElement("span");
+  control.className = "canvas-value-visual canvas-arc";
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  const style = effectiveStyleTree(widget);
+  const minimum = Number(widget.properties?.min_value) || 0;
+  const maximum = Number(widget.properties?.max_value) || 100;
+  const value = clamp(Number(widget.properties?.value) || 0, Math.min(minimum, maximum), Math.max(minimum, maximum));
+  const percentage = maximum === minimum ? 0 : clamp((value - minimum) / (maximum - minimum), 0, 1);
+  const start = Number(widget.properties?.start_angle ?? 135) + Number(widget.properties?.rotation || 0);
+  const end = Number(widget.properties?.end_angle ?? 45) + Number(widget.properties?.rotation || 0);
+  const sweep = ((end - start) % 360 + 360) % 360 || 360;
+  const width = clamp((Number(style.arc_width) || 10) * 100
+    / Math.max(1, Math.min(Number(widget.width) || 120, Number(widget.height) || 120)), 1, 30);
+  const background = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  background.setAttribute("d", describeViewerArc(start, sweep));
+  background.setAttribute("fill", "none");
+  background.setAttribute("stroke", resolveViewerColor(state.project, style.arc_color) || "#657386");
+  background.setAttribute("stroke-width", String(width));
+  background.setAttribute("stroke-linecap", style.arc_rounded === false ? "butt" : "round");
+  const indicator = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  indicator.setAttribute("d", describeViewerArc(start, sweep * percentage));
+  indicator.setAttribute("fill", "none");
+  indicator.setAttribute("stroke", resolveViewerColor(state.project, style.indicator?.arc_color) || "#20c7b7");
+  indicator.setAttribute("stroke-width", String(width));
+  indicator.setAttribute("stroke-linecap", style.indicator?.arc_rounded === false ? "butt" : "round");
+  svg.append(background, indicator);
+  control.append(svg);
+  return control;
 }
 
 function effectiveStyleTree(widget) {
@@ -2169,9 +2391,11 @@ function beginResize(event, widget) {
 }
 
 function renderProperties() {
+  renderRuntimeBindingOrphans();
   const widget = state.canvasMode === "lines" ? null : state.selectedWidget;
   $("#empty-properties").classList.toggle("hidden", state.canvasMode === "lines" || Boolean(widget));
   $("#properties").classList.toggle("hidden", !widget);
+  if (!widget) $("#runtime-binding-section").classList.add("hidden");
   if (!widget) return;
   $("#prop-id").value = widget.id;
   $("#prop-x").value = widget.x;
@@ -2185,7 +2409,350 @@ function renderProperties() {
   renderStateChoices();
   renderStyleControls(widget);
   renderDynamicProperties(widget);
+  renderRuntimeBinding(widget);
   renderExtraKeys(widget);
+}
+
+function runtimeTargets(widget) {
+  if (!widget) return [];
+  if (widget.widget_type === "label") return [{ value: "text", label: "Label-Text" }];
+  if (["slider", "bar", "arc"].includes(widget.widget_type)) {
+    return [{ value: "value", label: `${widget.widget_type === "slider" ? "Slider" : widget.widget_type === "bar" ? "Bar" : "Arc"}-Wert` }];
+  }
+  if (widget.widget_type === "switch") return [{ value: "state_checked", label: "Switch-Zustand" }];
+  return [];
+}
+
+function projectWidgetEntries() {
+  const result = [];
+  const visit = (nodes) => (nodes || []).forEach((widget) => {
+    result.push(widget);
+    visit(widget.children);
+  });
+  visit(state.project.widgets);
+  (state.project.pages || []).forEach((page) => visit(page.widgets));
+  visit(state.project.top_layer?.widgets);
+  visit(state.project.bottom_layer?.widgets);
+  return result;
+}
+
+function bindingIsOrphan(binding) {
+  const widget = projectWidgetEntries().find((item) => item.id === binding.widget_id);
+  return !widget || !runtimeTargets(widget).some((target) => target.value === binding.target);
+}
+
+function renderRuntimeBindingOrphans() {
+  const section = $("#runtime-binding-orphans");
+  const orphans = state.viewerBindings.filter(bindingIsOrphan);
+  section.classList.toggle("hidden", !orphans.length);
+  const list = $("#runtime-binding-orphan-list");
+  list.replaceChildren();
+  orphans.forEach((binding) => {
+    const item = document.createElement("li");
+    item.textContent = `${binding.widget_id} → ${binding.target}`;
+    list.append(item);
+  });
+  $("#cleanup-runtime-bindings").disabled = !state.projectName
+    || state.projectDirty || !state.capabilities["designer.project_write"];
+}
+
+function runtimeCanWrite() {
+  return Boolean(
+    state.projectName && !state.projectDirty && state.capabilities["designer.project_write"],
+  );
+}
+
+function runtimeStateFor(device, entityId) {
+  return (device?.states || []).find((item) => item.entity_id === entityId) || null;
+}
+
+function bindingFromControls(widgetId = state.selectedWidget?.id) {
+  return {
+    widget_id: widgetId,
+    target: $("#runtime-binding-target").value,
+    device_id: $("#runtime-binding-device").value,
+    entity_id: $("#runtime-binding-entity").value,
+    value_format: $("#runtime-binding-format").value || "{state}",
+    fallback: $("#runtime-binding-fallback").value || "",
+    stale_after: clamp(Number($("#runtime-binding-stale").value) || 0, 0, 86400),
+  };
+}
+
+function renderRuntimeBinding(widget) {
+  const section = $("#runtime-binding-section");
+  const targets = runtimeTargets(widget);
+  const visible = Boolean(targets.length && state.capabilities["device.states"]);
+  section.classList.toggle("hidden", !visible);
+  if (!visible) return;
+
+  const targetControl = $("#runtime-binding-target");
+  const previousTarget = targetControl.value;
+  targetControl.replaceChildren();
+  targets.forEach((target) => targetControl.append(new Option(target.label, target.value)));
+  targetControl.value = targets.some((target) => target.value === previousTarget)
+    ? previousTarget : targets[0].value;
+  const target = targetControl.value;
+  const binding = state.viewerBindings.find(
+    (item) => item.widget_id === widget.id && item.target === target,
+  );
+
+  const deviceControl = $("#runtime-binding-device");
+  deviceControl.replaceChildren(new Option("— Gerät wählen —", ""));
+  (state.viewerRuntimeSources.devices || []).forEach((device) => {
+    const suffix = device.status === "ready" ? " · verbunden" : " · " + (DEVICE_STATUS[device.status] || device.status);
+    deviceControl.append(new Option(device.name + suffix, device.id));
+  });
+  if (binding?.device_id && !(state.viewerRuntimeSources.devices || []).some(
+    (device) => device.id === binding.device_id,
+  )) {
+    deviceControl.append(new Option(binding.device_id + " · nicht verfügbar", binding.device_id));
+  }
+  deviceControl.value = binding?.device_id || "";
+  populateRuntimeEntityChoices(binding?.entity_id || "");
+
+  $("#runtime-binding-format").value = binding?.value_format || "{state}";
+  $("#runtime-binding-fallback").value = binding?.fallback || "";
+  $("#runtime-binding-stale").value = binding?.stale_after || 0;
+  const textTarget = target === "text";
+  $("#runtime-binding-format-field").classList.toggle("hidden", !textTarget);
+  $("#runtime-binding-fallback-field").classList.toggle("hidden", !textTarget);
+
+  renderAdditionalRuntimeWidgets(widget, target);
+  $("#runtime-live-preview").checked = state.designerRuntimePreview;
+  const canWrite = runtimeCanWrite();
+  $("#save-runtime-binding").disabled = !canWrite;
+  $("#remove-runtime-binding").disabled = !canWrite || !binding;
+  $("#copy-runtime-binding").disabled = !binding;
+  $("#paste-runtime-binding").disabled = !state.copiedRuntimeBinding;
+  $("#runtime-binding-hint").textContent = !state.projectName
+    ? "Projekt zuerst in der App speichern; lokale Vorschauen bleiben ohne Sidecar."
+    : state.projectDirty
+      ? "Projektänderungen zuerst speichern, damit Widget-ID und Binding zusammenpassen."
+      : "Die Zuordnung wird getrennt vom LVGL-Projekt gespeichert und steuert kein Gerät.";
+  renderRuntimeBindingStatus();
+}
+
+function populateRuntimeEntityChoices(selectedEntity = "") {
+  const deviceId = $("#runtime-binding-device").value;
+  const device = (state.viewerRuntimeSources.devices || []).find((item) => item.id === deviceId);
+  const control = $("#runtime-binding-entity");
+  const target = $("#runtime-binding-target").value;
+  const current = selectedEntity || control.value;
+  control.replaceChildren(new Option("— Entity wählen —", ""));
+  const matching = [...(device?.entities || [])].filter((entity) => (
+    entityMatchesRuntimeTarget(entity, target, runtimeStateFor(device, entity.entity_id))
+  ));
+  matching
+    .sort((left, right) => String(left.name || left.object_id || left.entity_id)
+      .localeCompare(String(right.name || right.object_id || right.entity_id), "de"))
+    .forEach((entity) => {
+      const unit = entity.unit_of_measurement ? " · " + entity.unit_of_measurement : "";
+      control.append(new Option(
+        (entity.name || entity.object_id || entity.entity_id) + unit,
+        entity.entity_id,
+      ));
+    });
+  if (current && !matching.some((entity) => entity.entity_id === current)) {
+    const exists = (device?.entities || []).some((entity) => entity.entity_id === current);
+    control.append(new Option(
+      current + (exists ? " · passt nicht zum Zieltyp" : " · derzeit nicht verfügbar"),
+      current,
+    ));
+  }
+  control.value = current || "";
+}
+
+function renderAdditionalRuntimeWidgets(widget, target) {
+  const control = $("#runtime-binding-additional-widgets");
+  control.replaceChildren();
+  projectWidgetEntries()
+    .filter((item) => item !== widget && runtimeTargets(item).some((entry) => entry.value === target))
+    .sort((left, right) => left.id.localeCompare(right.id, "de"))
+    .forEach((item) => control.append(new Option(`${item.id} (${item.widget_type})`, item.id)));
+  control.disabled = control.options.length === 0;
+}
+
+function renderRuntimeBindingStatus() {
+  const output = $("#runtime-binding-current");
+  if (!output || $("#runtime-binding-section").classList.contains("hidden")) return;
+  const binding = bindingFromControls();
+  const health = runtimeBindingHealth(binding, state.viewerRuntimeSources);
+  const labels = {
+    unconfigured: "Gerät und Entity auswählen.",
+    missing_device: "Gerät nicht mehr vorhanden.",
+    offline: "Gerät offline – letzter Wert wird nicht als live gewertet.",
+    missing_entity: "Entity liefert derzeit keinen Zustand.",
+    unavailable: "Entity ist momentan nicht verfügbar.",
+    stale: "Wert ist veraltet.",
+  };
+  output.className = "runtime-binding-status";
+  if (health.status === "online") {
+    const entity = (health.device.entities || []).find((item) => item.entity_id === binding.entity_id);
+    const unit = entity?.unit_of_measurement ? ` ${entity.unit_of_measurement}` : "";
+    const received = health.state.received_at
+      ? ` · ${new Date(health.state.received_at).toLocaleTimeString("de", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+      : "";
+    output.textContent = `Online · ${String(health.state.state)}${unit}${received}`;
+    output.classList.add("online");
+  } else {
+    output.textContent = labels[health.status] || "Status unbekannt.";
+    output.classList.add(
+      health.status === "stale" ? "stale"
+        : health.status === "unavailable" ? "unavailable"
+          : ["offline", "missing_device", "missing_entity"].includes(health.status) ? "offline" : "neutral",
+    );
+  }
+}
+
+async function persistRuntimeBindings(bindings) {
+  const cleaned = bindings.filter((binding) => !bindingIsOrphan(binding));
+  try {
+    const result = await api("viewer/bindings/" + encodeURIComponent(state.projectName), {
+      method: "PUT",
+      body: JSON.stringify({
+        bindings: cleaned,
+        expected_revision: state.viewerBindingsRevision,
+      }),
+    });
+    state.viewerBindings = result.bindings || [];
+    state.viewerBindingsRevision = result.revision || null;
+    renderRuntimeBindingOrphans();
+    renderRuntimeBinding(state.selectedWidget);
+    renderCanvas();
+    return true;
+  } catch (error) {
+    if (error.code === "revision_conflict") await loadViewerBindings(state.projectName);
+    renderRuntimeBinding(state.selectedWidget);
+    renderRuntimeBindingOrphans();
+    toast("Binding konnte nicht gespeichert werden: " + error.message, true);
+    return false;
+  }
+}
+
+async function saveRuntimeBinding() {
+  const widget = state.selectedWidget;
+  const target = $("#runtime-binding-target").value;
+  const deviceId = $("#runtime-binding-device").value;
+  const entityId = $("#runtime-binding-entity").value;
+  if (!widget || !state.projectName || state.projectDirty) {
+    toast("Projekt zuerst in der App speichern.", true);
+    return;
+  }
+  if (!deviceId || !entityId) {
+    toast("Bitte Gerät und Entity auswählen.", true);
+    return;
+  }
+  const additional = [...$("#runtime-binding-additional-widgets").selectedOptions]
+    .map((option) => option.value);
+  const widgetIds = [widget.id, ...additional];
+  const next = state.viewerBindings.filter(
+    (binding) => !(widgetIds.includes(binding.widget_id) && binding.target === target),
+  );
+  widgetIds.forEach((widgetId) => next.push(bindingFromControls(widgetId)));
+  if (await persistRuntimeBindings(next)) {
+    toast(widgetIds.length > 1
+      ? `Live-Binding auf ${widgetIds.length} Widgets angewendet.`
+      : "Live-Binding gespeichert.");
+  }
+}
+
+async function removeRuntimeBinding() {
+  const widget = state.selectedWidget;
+  const target = $("#runtime-binding-target").value;
+  if (!widget || !state.projectName || state.projectDirty) return;
+  const next = state.viewerBindings.filter(
+    (binding) => !(binding.widget_id === widget.id && binding.target === target),
+  );
+  if (await persistRuntimeBindings(next)) toast("Live-Binding entfernt.");
+}
+
+function copyRuntimeBinding() {
+  const widget = state.selectedWidget;
+  if (!widget) return;
+  const binding = state.viewerBindings.find((item) => (
+    item.widget_id === widget.id && item.target === $("#runtime-binding-target").value
+  ));
+  if (!binding) return;
+  state.copiedRuntimeBinding = { ...binding };
+  $("#paste-runtime-binding").disabled = false;
+  toast("Binding kopiert. Ziel-Widget auswählen und einfügen.");
+}
+
+function pasteRuntimeBinding() {
+  const widget = state.selectedWidget;
+  const copied = state.copiedRuntimeBinding;
+  if (!widget || !copied || !runtimeTargets(widget).some((target) => target.value === copied.target)) {
+    toast("Das kopierte Binding passt nicht zu diesem Widget-Typ.", true);
+    return;
+  }
+  $("#runtime-binding-target").value = copied.target;
+  renderAdditionalRuntimeWidgets(widget, copied.target);
+  if (![...$("#runtime-binding-device").options].some((option) => option.value === copied.device_id)) {
+    $("#runtime-binding-device").append(new Option(
+      copied.device_id + " · nicht verfügbar", copied.device_id,
+    ));
+  }
+  $("#runtime-binding-device").value = copied.device_id;
+  populateRuntimeEntityChoices(copied.entity_id);
+  $("#runtime-binding-format").value = copied.value_format || "{state}";
+  $("#runtime-binding-fallback").value = copied.fallback || "";
+  $("#runtime-binding-stale").value = copied.stale_after || 0;
+  renderRuntimeBindingStatus();
+  toast("Binding eingefügt. Mit „Binding speichern“ übernehmen.");
+}
+
+async function cleanupRuntimeBindings() {
+  if (!runtimeCanWrite()) {
+    toast("Projektänderungen zuerst speichern.", true);
+    return;
+  }
+  const valid = state.viewerBindings.filter((binding) => !bindingIsOrphan(binding));
+  const removed = state.viewerBindings.length - valid.length;
+  if (!removed) return;
+  if (await persistRuntimeBindings(valid)) toast(`${removed} verwaiste Binding(s) bereinigt.`);
+}
+
+function setCanvasRuntimeText(node, text) {
+  let textNode = [...node.childNodes].find((child) => child.nodeType === Node.TEXT_NODE);
+  if (!textNode) {
+    textNode = document.createTextNode("");
+    node.prepend(textNode);
+  }
+  textNode.textContent = text;
+}
+
+function applyDesignerRuntimePreview() {
+  if (!state.designerRuntimePreview) return;
+  const widgets = new Map(projectWidgetEntries().map((widget) => [widget.id, widget]));
+  state.viewerBindings.forEach((binding) => {
+    const widget = widgets.get(binding.widget_id);
+    const node = widget ? canvasNodeByWidget.get(widget) : null;
+    if (!widget || !node) return;
+    const health = runtimeBindingHealth(binding, state.viewerRuntimeSources);
+    node.classList.add("runtime-preview");
+    node.title = `Live-Binding: ${health.status}`;
+    if (binding.target === "text") {
+      const text = health.status === "online"
+        ? formatRuntimeValue(health.state.state, binding.value_format)
+        : binding.fallback || widget.properties.text || widget.id;
+      setCanvasRuntimeText(node, text);
+    } else if (binding.target === "value" && health.status === "online") {
+      const value = Number(health.state.state);
+      if (Number.isFinite(value)) {
+        if (["bar", "arc"].includes(widget.widget_type)) {
+          const previewWidget = {
+            ...widget, properties: { ...(widget.properties || {}), value },
+          };
+          node.querySelector(".canvas-value-visual")?.replaceWith(renderCanvasValueVisual(previewWidget));
+        } else {
+          setCanvasRuntimeText(node, `${widget.id} · ${value}`);
+        }
+      }
+    } else if (binding.target === "state_checked" && health.status === "online") {
+      const checked = runtimeBoolean(health.state.state);
+      if (checked !== null) setCanvasRuntimeText(node, `${widget.id} · ${checked ? "Ein" : "Aus"}`);
+    }
+  });
 }
 
 function toggleWidgetFlag(flag) {
@@ -2582,6 +3149,10 @@ function updateSelectedWidget(event) {
   markProjectDirty();
   renderCanvas();
   renderTree();
+  if (key === "id") {
+    renderRuntimeBindingOrphans();
+    renderRuntimeBinding(widget);
+  }
 }
 
 function deleteSelectedWidget() {

@@ -58,11 +58,16 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     client = TestClient(create_app(settings))
     response = client.get("/")
     assert response.status_code == 200
+    assert "script-src 'self'" in response.headers["Content-Security-Policy"]
+    assert response.headers["Permissions-Policy"] == "camera=(), microphone=(), geolocation=()"
     assert "ESPHome Display Editor" in response.text
     assert 'id="open-viewer"' in response.text
     assert 'id="viewer-dialog"' in response.text
     assert 'id="viewer-event-log"' in response.text
     assert 'id="viewer-page-controls"' in response.text
+    assert 'id="runtime-binding-current"' in response.text
+    assert 'id="runtime-binding-additional-widgets"' in response.text
+    assert 'id="runtime-binding-orphans"' in response.text
     assert client.get("/app.js").status_code == 200
     viewer = client.get("/viewer/viewer.js")
     assert viewer.status_code == 200

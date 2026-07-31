@@ -27,6 +27,7 @@ from .runtime import DeviceManager, DeviceRegistry, SecretStore
 from .security import RateLimiter
 from .settings import CAPABILITY_MINIMUM_ROLE, Settings, capabilities
 from .version import APP_VERSION
+from .viewer_bindings import ViewerBindingStore, validate_bindings
 
 
 class DraftRequest(BaseModel):
@@ -87,6 +88,13 @@ class DeviceSecretRequest(BaseModel):
     encryption_key: SecretStr
 
 
+class ViewerBindingsRequest(BaseModel):
+    bindings: list[dict[str, Any]] = Field(default_factory=list, max_length=256)
+    expected_revision: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+
+
 class InstallRequest(BaseModel):
     # The active YAML resolves the target. Arbitrary hosts, serial devices and
     # generic command arguments are deliberately not exposed by this API.
@@ -106,6 +114,7 @@ def create_app(
     audit = AuditStore(settings.data_root)
     designer = DesignerService(settings.data_root)
     projects = ProjectStore(settings.data_root, designer, settings.max_file_size)
+    viewer_bindings = ViewerBindingStore(settings.data_root)
     rate_limiter = RateLimiter(
         settings.api_rate_limit_per_minute,
         settings.write_rate_limit_per_minute,
@@ -230,6 +239,12 @@ def create_app(
             )
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: http: https:; connect-src 'self' ws: wss:; "
+            "object-src 'none'; base-uri 'none'"
+        )
         if request.url.path.startswith("/api/v1/"):
             response.headers["Cache-Control"] = "no-store"
         return response
@@ -306,6 +321,105 @@ def create_app(
             settings, "administrator", builder_available=builder_manager.available
         ).get(capability, False):
             raise capability_unavailable(capability, settings.profile)
+
+    def viewer_entity_id(item: dict[str, Any]) -> str | None:
+        entity_type = str(item.get("type", "")).strip()
+        key = item.get("key", item.get("object_id"))
+        if not entity_type or key is None:
+            return None
+        return f"{entity_type}:{key}"
+
+    def viewer_entity(item: dict[str, Any]) -> dict[str, Any] | None:
+        entity_id = viewer_entity_id(item)
+        if entity_id is None:
+            return None
+        allowed = (
+            "type", "key", "object_id", "name", "icon", "unit_of_measurement",
+            "device_class", "entity_category", "disabled_by_default",
+        )
+        return {"entity_id": entity_id, **{key: item[key] for key in allowed if key in item}}
+
+    def viewer_state(item: dict[str, Any]) -> dict[str, Any] | None:
+        entity_id = viewer_entity_id(item)
+        if entity_id is None:
+            return None
+        allowed = ("type", "key", "object_id", "state", "available", "received_at")
+        return {"entity_id": entity_id, **{key: item[key] for key in allowed if key in item}}
+
+    def viewer_device(device_id: str) -> dict[str, Any]:
+        public = runtime_manager.get_device(device_id)
+        entities = [
+            filtered
+            for item in runtime_manager.get_entities(device_id)
+            if (filtered := viewer_entity(item)) is not None
+        ]
+        states = [
+            filtered
+            for item in runtime_manager.get_states(device_id)
+            if (filtered := viewer_state(item)) is not None
+        ]
+        return {
+            "id": public["id"],
+            "name": public["name"],
+            "status": public["status"],
+            "last_seen": public["last_seen"],
+            "api_version": public["api_version"],
+            "entities": entities,
+            "states": states,
+        }
+
+    def viewer_runtime_snapshot() -> dict[str, Any]:
+        return {
+            "type": "snapshot",
+            "devices": [viewer_device(item["id"]) for item in runtime_manager.list_devices()],
+        }
+
+    def viewer_runtime_event(event: dict[str, Any]) -> dict[str, Any] | None:
+        event_type = event.get("type")
+        if event_type == "state":
+            filtered = viewer_state(event.get("state", {}))
+            if filtered is None:
+                return None
+            return {"type": "state", "device_id": event.get("device_id"), "state": filtered}
+        if event_type == "connection":
+            return {
+                "type": "connection",
+                "device_id": event.get("device_id"),
+                "status": event.get("status"),
+                "at": event.get("at"),
+            }
+        if event_type == "snapshot":
+            try:
+                return {"type": "device_snapshot", "device": viewer_device(str(event.get("device_id", "")))}
+            except ApiError:
+                return {"type": "resync_required"}
+        if event_type in {"device_removed", "resync_required"}:
+            return {"type": event_type, "device_id": event.get("device_id")}
+        return None
+
+    def project_widget_types(project: dict[str, Any]) -> dict[str, str]:
+        result: dict[str, str] = {}
+
+        def visit(nodes: Any) -> None:
+            if not isinstance(nodes, list):
+                return
+            for widget in nodes:
+                if not isinstance(widget, dict):
+                    continue
+                widget_id = widget.get("id")
+                if isinstance(widget_id, str):
+                    result[widget_id] = str(widget.get("widget_type", ""))
+                visit(widget.get("children"))
+
+        visit(project.get("widgets"))
+        for page in project.get("pages", []) if isinstance(project.get("pages"), list) else []:
+            if isinstance(page, dict):
+                visit(page.get("widgets"))
+        for layer_name in ("top_layer", "bottom_layer"):
+            layer = project.get(layer_name)
+            if isinstance(layer, dict):
+                visit(layer.get("widgets"))
+        return result
 
     @application.get("/api/v1/health")
     async def health() -> dict:
@@ -594,6 +708,13 @@ def create_app(
         require_capability(request, "device.logs")
         return {"device_id": device_id, "logs": runtime_manager.get_logs(device_id, limit)}
 
+    @application.get("/api/v1/viewer/runtime")
+    async def get_viewer_runtime(request: Request) -> dict:
+        """Return only the entity metadata and values needed by read-only bindings."""
+        runtime_manager.ensure_enabled()
+        require_capability(request, "device.states")
+        return viewer_runtime_snapshot()
+
     @application.post("/api/v1/admin/devices", status_code=201)
     async def create_device(body: DeviceRequest, request: Request) -> dict:
         runtime_manager.ensure_enabled()
@@ -754,6 +875,46 @@ def create_app(
         finally:
             runtime_manager.unsubscribe(queue)
 
+    @application.websocket("/api/v1/viewer/runtime/events")
+    async def viewer_runtime_events(websocket: WebSocket) -> None:
+        if not runtime_manager.enabled:
+            await websocket.close(code=4403, reason="capability_unavailable")
+            return
+        client_host = websocket.client.host if websocket.client else "unknown"
+        if not allow_direct_access and client_host not in trusted_ingress_hosts:
+            await websocket.close(code=4403, reason="ingress_required")
+            return
+        user_id = websocket.headers.get("X-Remote-User-Id", "").strip() or None
+        if not user_id and os.getenv("ESPHOME_ALLOW_ANONYMOUS_WRITE") == "1":
+            user_id = "local-development"
+            role = "administrator"
+        else:
+            role = settings.role_for(user_id)
+        if not user_id or not capabilities(settings, role).get("device.states", False):
+            await websocket.close(code=4403, reason="permission_denied")
+            return
+        decision = rate_limiter.check(user_id, write=False)
+        if not decision.allowed:
+            await websocket.close(code=4429, reason="rate_limit_exceeded")
+            return
+        await websocket.accept()
+        queue = runtime_manager.subscribe()
+        try:
+            await websocket.send_json(viewer_runtime_snapshot())
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=20)
+                except TimeoutError:
+                    await websocket.send_json({"type": "heartbeat"})
+                    continue
+                filtered = viewer_runtime_event(event)
+                if filtered is not None:
+                    await websocket.send_json(filtered)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            runtime_manager.unsubscribe(queue)
+
     @application.websocket("/api/v1/jobs/events")
     async def builder_job_events(websocket: WebSocket) -> None:
         client_host = websocket.client.host if websocket.client else "unknown"
@@ -892,6 +1053,57 @@ def create_app(
     async def get_designer_project(name: str) -> dict:
         return projects.read(name)
 
+    @application.get("/api/v1/viewer/bindings/{name}")
+    async def get_viewer_bindings(name: str, request: Request) -> dict:
+        require_capability(request, "designer.project")
+        projects.read(name)
+        return viewer_bindings.read(name)
+
+    @application.put("/api/v1/viewer/bindings/{name}")
+    async def save_viewer_bindings(
+        name: str, body: ViewerBindingsRequest, request: Request
+    ) -> dict:
+        user_id = require_capability(request, "designer.project_write")
+        try:
+            project_payload = projects.read(name)["project"]
+            widget_types = project_widget_types(project_payload)
+            target_types = {
+                "text": {"label"},
+                "value": {"slider", "bar", "arc"},
+                "state_checked": {"switch"},
+            }
+            normalized = validate_bindings(body.bindings)
+            for binding in normalized:
+                actual_type = widget_types.get(binding["widget_id"])
+                if actual_type not in target_types[binding["target"]]:
+                    raise ApiError(
+                        "invalid_binding_target",
+                        "The selected Viewer target does not match the stored widget.",
+                        422,
+                        {"widget_id": binding["widget_id"], "widget_type": actual_type},
+                    )
+                runtime_manager.registry.get(binding["device_id"])
+            result = viewer_bindings.save(name, normalized, body.expected_revision)
+        except ApiError as exc:
+            audit.record(
+                user_id=user_id,
+                action="designer.viewer_bindings.save",
+                configuration=name,
+                old_revision=body.expected_revision,
+                new_revision=None,
+                result=exc.error,
+            )
+            raise
+        audit.record(
+            user_id=user_id,
+            action="designer.viewer_bindings.save",
+            configuration=name,
+            old_revision=result["old_revision"],
+            new_revision=result["revision"],
+            result="success",
+        )
+        return result
+
     @application.put("/api/v1/designer/projects/{name}")
     async def save_designer_project(
         name: str, body: SaveDesignerProjectRequest, request: Request
@@ -938,6 +1150,7 @@ def create_app(
                 result=exc.error,
             )
             raise
+        viewer_bindings.delete(name)
         audit.record(
             user_id=user_id,
             action="designer.project.delete",
