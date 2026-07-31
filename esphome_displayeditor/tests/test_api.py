@@ -23,6 +23,7 @@ def test_health_capabilities_and_write_authorization(tmp_path: Path) -> None:
         protect_sensitive_paths=True,
         config_root=config_root,
         data_root=tmp_path / "data",
+        default_role="administrator",
     )
     client = TestClient(create_app(settings, serve_frontend=False))
 
@@ -65,6 +66,7 @@ def test_designer_project_api_requires_revision_and_ingress_user(tmp_path: Path)
         protect_sensitive_paths=True,
         config_root=tmp_path / "esphome",
         data_root=tmp_path / "data",
+        default_role="administrator",
     )
     client = TestClient(create_app(settings, serve_frontend=False))
     url = "/api/v1/designer/projects/display.lvgldesign"
@@ -79,7 +81,9 @@ def test_designer_project_api_requires_revision_and_ingress_user(tmp_path: Path)
 
     conflict = client.put(url, json=body, headers={"X-Remote-User-Id": "user-1"})
     assert conflict.status_code == 409
-    audit_events = client.get("/api/v1/audit").json()["events"]
+    audit_events = client.get(
+        "/api/v1/audit", headers={"X-Remote-User-Id": "user-1"}
+    ).json()["events"]
     assert audit_events[0]["action"] == "designer.project.save"
     assert audit_events[0]["result"] == "project_exists"
     deleted = client.delete(

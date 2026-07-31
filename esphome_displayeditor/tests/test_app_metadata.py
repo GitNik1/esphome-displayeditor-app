@@ -38,3 +38,14 @@ def test_apparmor_allows_listing_the_app_directory() -> None:
 
     assert "/app/ r," in apparmor
     assert "/app/** r," in apparmor
+
+
+def test_app_remains_ingress_only_and_protected() -> None:
+    config = yaml.safe_load((APP_ROOT / "config.yaml").read_text(encoding="utf-8"))
+
+    assert config["ingress"] is True
+    assert config["ports"] == {}
+    assert config["apparmor"] is True
+    assert config.get("host_network", False) is False
+    assert config.get("full_access", False) is False
+    assert config["options"]["default_role"] == "viewer"

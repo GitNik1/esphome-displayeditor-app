@@ -17,7 +17,8 @@ from .designer import DesignerService
 from .errors import ApiError, capability_unavailable
 from .filesystem import FilesystemBackend
 from .project_store import ProjectStore
-from .settings import Settings, capabilities
+from .security import RateLimiter
+from .settings import CAPABILITY_MINIMUM_ROLE, Settings, capabilities
 
 
 class DraftRequest(BaseModel):
@@ -57,13 +58,73 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
     audit = AuditStore(settings.data_root)
     designer = DesignerService(settings.data_root)
     projects = ProjectStore(settings.data_root, designer, settings.max_file_size)
+    rate_limiter = RateLimiter(
+        settings.api_rate_limit_per_minute,
+        settings.write_rate_limit_per_minute,
+    )
+    allow_direct_access = runtime_settings is not None or os.getenv(
+        "ESPHOME_ALLOW_DIRECT_ACCESS"
+    ) == "1"
+    trusted_ingress_hosts = {
+        host.strip()
+        for host in os.getenv("ESPHOME_TRUSTED_INGRESS_HOSTS", "172.30.32.2").split(",")
+        if host.strip()
+    }
     application = FastAPI(
         title="ESPHome Display Editor API",
-        version=os.getenv("APP_VERSION", "0.2.0"),
+        version=os.getenv("APP_VERSION", "0.7.0"),
         docs_url=None,
         redoc_url=None,
         openapi_url="/api/v1/openapi.json",
     )
+
+    @application.middleware("http")
+    async def security_boundary(request: Request, call_next):
+        client_host = request.client.host if request.client else "unknown"
+        if not allow_direct_access and client_host not in trusted_ingress_hosts:
+            return JSONResponse(
+                status_code=403,
+                headers={
+                    "Cache-Control": "no-store",
+                    "Referrer-Policy": "no-referrer",
+                    "X-Content-Type-Options": "nosniff",
+                },
+                content={
+                    "error": "ingress_required",
+                    "message": "This application is available only through Home Assistant Ingress.",
+                    "details": {},
+                },
+            )
+
+        if request.url.path.startswith("/api/v1/"):
+            user_id = request.headers.get("X-Remote-User-Id", "").strip()
+            identity = user_id or f"client:{client_host}"
+            decision = rate_limiter.check(
+                identity,
+                write=request.method not in {"GET", "HEAD", "OPTIONS"},
+            )
+            if not decision.allowed:
+                return JSONResponse(
+                    status_code=429,
+                    headers={
+                        "Cache-Control": "no-store",
+                        "Referrer-Policy": "no-referrer",
+                        "Retry-After": str(decision.retry_after),
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                    content={
+                        "error": "rate_limit_exceeded",
+                        "message": "Too many API requests. Try again later.",
+                        "details": {"retry_after": decision.retry_after},
+                    },
+                )
+
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if request.url.path.startswith("/api/v1/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     @application.exception_handler(ApiError)
     async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:
@@ -85,18 +146,42 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
             },
         )
 
-    def require_write(request: Request, capability: str) -> str:
-        if not capabilities(settings).get(capability, False):
+    def request_identity(request: Request) -> tuple[str | None, str]:
+        user_id = request.headers.get("X-Remote-User-Id", "").strip() or None
+        if not user_id and os.getenv("ESPHOME_ALLOW_ANONYMOUS_WRITE") == "1":
+            return "local-development", "administrator"
+        return user_id, settings.role_for(user_id)
+
+    def require_capability(request: Request, capability: str) -> str:
+        if not capabilities(settings, "administrator").get(capability, False):
             raise capability_unavailable(capability, settings.profile)
-        user_id = request.headers.get("X-Remote-User-Id", "").strip()
-        allow_local = os.getenv("ESPHOME_ALLOW_ANONYMOUS_WRITE") == "1"
-        if not user_id and not allow_local:
+        user_id, role = request_identity(request)
+        if not user_id:
             raise ApiError(
                 "permission_denied",
                 "A Home Assistant Ingress user is required for write operations.",
                 403,
             )
-        return user_id or "local-development"
+        if not capabilities(settings, role).get(capability, False):
+            audit.record(
+                user_id=user_id,
+                action="authorization.denied",
+                configuration=capability,
+                old_revision=None,
+                new_revision=None,
+                result="permission_denied",
+            )
+            raise ApiError(
+                "permission_denied",
+                "The assigned role does not permit this operation.",
+                403,
+                {
+                    "capability": capability,
+                    "required_role": CAPABILITY_MINIMUM_ROLE[capability],
+                    "actual_role": role,
+                },
+            )
+        return user_id
 
     @application.get("/api/v1/health")
     async def health() -> dict:
@@ -104,13 +189,15 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
 
     @application.get("/api/v1/system")
     async def system(request: Request) -> dict:
+        user_id, role = request_identity(request)
         return {
             "version": application.version,
             "profile": settings.profile,
             "user": {
-                "id": request.headers.get("X-Remote-User-Id"),
+                "id": user_id,
                 "name": request.headers.get("X-Remote-User-Name"),
                 "display_name": request.headers.get("X-Remote-User-Display-Name"),
+                "role": role,
             },
             "backends": {
                 "configuration": "filesystem",
@@ -120,8 +207,13 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
         }
 
     @application.get("/api/v1/capabilities")
-    async def get_capabilities() -> dict:
-        return {"profile": settings.profile, "capabilities": capabilities(settings)}
+    async def get_capabilities(request: Request) -> dict:
+        _user_id, role = request_identity(request)
+        return {
+            "profile": settings.profile,
+            "role": role,
+            "capabilities": capabilities(settings, role),
+        }
 
     @application.get("/api/v1/configurations")
     async def list_configurations() -> dict:
@@ -133,13 +225,60 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
 
     @application.put("/api/v1/configurations/{name:path}/draft")
     async def put_draft(name: str, body: DraftRequest, request: Request) -> dict:
-        require_write(request, "configuration.write_draft")
-        return filesystem.save_draft(name, body.content)
+        user_id = require_capability(request, "configuration.write_draft")
+        old_revision = None
+        try:
+            try:
+                old_revision = filesystem.read_draft(name)["revision"]
+            except ApiError as exc:
+                if exc.error != "draft_not_found":
+                    raise
+            result = filesystem.save_draft(name, body.content)
+        except ApiError as exc:
+            audit.record(
+                user_id=user_id,
+                action="configuration.draft.save",
+                configuration=name,
+                old_revision=old_revision,
+                new_revision=None,
+                result=exc.error,
+            )
+            raise
+        audit.record(
+            user_id=user_id,
+            action="configuration.draft.save",
+            configuration=name,
+            old_revision=old_revision,
+            new_revision=result["revision"],
+            result="success",
+        )
+        return result
 
     @application.delete("/api/v1/configurations/{name:path}/draft", status_code=204)
     async def delete_draft(name: str, request: Request) -> Response:
-        require_write(request, "configuration.write_draft")
-        filesystem.delete_draft(name)
+        user_id = require_capability(request, "configuration.write_draft")
+        old_revision = None
+        try:
+            old_revision = filesystem.read_draft(name)["revision"]
+            filesystem.delete_draft(name)
+        except ApiError as exc:
+            audit.record(
+                user_id=user_id,
+                action="configuration.draft.delete",
+                configuration=name,
+                old_revision=old_revision,
+                new_revision=None,
+                result=exc.error,
+            )
+            raise
+        audit.record(
+            user_id=user_id,
+            action="configuration.draft.delete",
+            configuration=name,
+            old_revision=old_revision,
+            new_revision=None,
+            result="success",
+        )
         return Response(status_code=204)
 
     @application.get("/api/v1/configurations/{name:path}/diff")
@@ -152,7 +291,7 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
 
     @application.post("/api/v1/configurations/{name:path}/publish")
     async def publish(name: str, body: PublishRequest, request: Request) -> dict:
-        user_id = require_write(request, "configuration.publish")
+        user_id = require_capability(request, "configuration.publish")
         try:
             result = filesystem.publish(name, body.expected_revision)
         except ApiError as exc:
@@ -180,7 +319,10 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
         return filesystem.read_config(name)
 
     @application.get("/api/v1/audit")
-    async def get_audit(limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    async def get_audit(
+        request: Request, limit: int = Query(default=100, ge=1, le=500)
+    ) -> dict:
+        require_capability(request, "audit.read")
         return {"events": audit.recent(limit)}
 
     @application.get("/api/v1/designer/schemas")
@@ -242,7 +384,7 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
     async def save_designer_project(
         name: str, body: SaveDesignerProjectRequest, request: Request
     ) -> dict:
-        user_id = require_write(request, "designer.project_write")
+        user_id = require_capability(request, "designer.project_write")
         try:
             result = projects.save(name, body.project, body.expected_revision)
         except ApiError as exc:
@@ -271,7 +413,7 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
         request: Request,
         expected_revision: str = Query(pattern=r"^sha256:[0-9a-f]{64}$"),
     ) -> dict:
-        user_id = require_write(request, "designer.project_write")
+        user_id = require_capability(request, "designer.project_write")
         try:
             result = projects.delete(name, expected_revision)
         except ApiError as exc:

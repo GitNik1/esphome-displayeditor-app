@@ -101,7 +101,7 @@ async function initialize() {
     state.states = schemaData.states || [];
     renderStateChoices();
     $("#health").classList.toggle("ok", health.status === "ok");
-    $("#profile").textContent = `${system.profile} · ${system.user.display_name || system.user.name || "Ingress"}`;
+    $("#profile").textContent = `${system.profile} · ${system.user.role} · ${system.user.display_name || system.user.name || "Ingress"}`;
     $("#system-json").textContent = JSON.stringify({ system, ...capabilityData }, null, 2);
     renderPalette();
     await Promise.all([loadConfigurations(), loadServerProjects()]);

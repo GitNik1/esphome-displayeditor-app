@@ -8,6 +8,39 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+ROLES = ("viewer", "editor", "publisher", "installer", "administrator")
+_ROLE_LEVEL = {role: level for level, role in enumerate(ROLES)}
+
+CAPABILITY_MINIMUM_ROLE = {
+    "configuration.list": "viewer",
+    "configuration.read": "viewer",
+    "configuration.write_draft": "editor",
+    "configuration.publish": "publisher",
+    "configuration.validate_yaml": "viewer",
+    "configuration.validate_esphome": "publisher",
+    "designer.project": "viewer",
+    "designer.export_yaml": "viewer",
+    "designer.import_yaml": "viewer",
+    "designer.project_write": "editor",
+    "firmware.compile": "installer",
+    "firmware.upload": "installer",
+    "device.info": "viewer",
+    "device.entities": "viewer",
+    "device.states": "viewer",
+    "device.logs": "viewer",
+    "device.control": "administrator",
+    "audit.read": "administrator",
+}
+
+
+def _bounded_int(options: dict, key: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(options.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, minimum), maximum)
+
+
 @dataclass(frozen=True)
 class Settings:
     profile: str
@@ -16,6 +49,10 @@ class Settings:
     protect_sensitive_paths: bool
     config_root: Path
     data_root: Path
+    default_role: str = "viewer"
+    user_roles: tuple[tuple[str, str], ...] = ()
+    api_rate_limit_per_minute: int = 240
+    write_rate_limit_per_minute: int = 60
 
     @classmethod
     def load(cls) -> "Settings":
@@ -27,8 +64,23 @@ class Settings:
             pass
 
         profile = str(options.get("profile", "native_filesystem"))
+        if profile not in {"native_filesystem", "read_only"}:
+            profile = "read_only"
         read_only = bool(options.get("read_only", False)) or profile == "read_only"
-        max_kib = min(max(int(options.get("max_file_size_kib", 1024)), 64), 4096)
+        max_kib = _bounded_int(options, "max_file_size_kib", 1024, 64, 4096)
+        default_role = str(options.get("default_role", "viewer")).lower()
+        if default_role not in ROLES:
+            default_role = "viewer"
+        assignments: dict[str, str] = {}
+        raw_assignments = options.get("user_roles", [])
+        if isinstance(raw_assignments, list):
+            for entry in raw_assignments:
+                if not isinstance(entry, dict):
+                    continue
+                user_id = str(entry.get("user_id", "")).strip()
+                role = str(entry.get("role", "")).lower()
+                if user_id and role in ROLES:
+                    assignments[user_id] = role
         return cls(
             profile=profile,
             read_only=read_only,
@@ -36,12 +88,31 @@ class Settings:
             protect_sensitive_paths=bool(options.get("protect_sensitive_paths", True)),
             config_root=Path(os.getenv("ESPHOME_CONFIG_ROOT", "/homeassistant/esphome")),
             data_root=Path(os.getenv("ESPHOME_DATA_ROOT", "/data")),
+            default_role=default_role,
+            user_roles=tuple(assignments.items()),
+            api_rate_limit_per_minute=_bounded_int(
+                options, "api_rate_limit_per_minute", 240, 30, 2000
+            ),
+            write_rate_limit_per_minute=_bounded_int(
+                options, "write_rate_limit_per_minute", 60, 5, 500
+            ),
         )
 
+    def role_for(self, user_id: str | None) -> str:
+        if user_id:
+            for assigned_user, role in self.user_roles:
+                if assigned_user == user_id:
+                    return role
+        return self.default_role
 
-def capabilities(settings: Settings) -> dict[str, bool]:
+
+def role_allows(role: str, required_role: str) -> bool:
+    return _ROLE_LEVEL.get(role, -1) >= _ROLE_LEVEL[required_role]
+
+
+def capabilities(settings: Settings, role: str | None = None) -> dict[str, bool]:
     writable = not settings.read_only
-    return {
+    available = {
         "configuration.list": True,
         "configuration.read": True,
         "configuration.write_draft": writable,
@@ -61,4 +132,11 @@ def capabilities(settings: Settings) -> dict[str, bool]:
         "device.states": False,
         "device.logs": False,
         "device.control": False,
+        "audit.read": True,
+    }
+    effective_role = role or settings.default_role
+    return {
+        capability: enabled
+        and role_allows(effective_role, CAPABILITY_MINIMUM_ROLE[capability])
+        for capability, enabled in available.items()
     }
