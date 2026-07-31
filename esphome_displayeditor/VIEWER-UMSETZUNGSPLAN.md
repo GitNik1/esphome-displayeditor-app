@@ -11,8 +11,12 @@
   Action-Allowlist für Widget show/hide/update, Label-/Slider-/Switch-Updates
   und Animimg start/stop. Unbekannte oder ungültige Aktionen werden nur
   protokolliert und niemals dynamisch ausgeführt.
-- Noch offen aus V3/V4: visuelle Referenztests, optionaler RGB565-Schalter und
-  Seitenaktionen nach Einführung eines modellierten Seitenkonzepts.
+- V5 umgesetzt: `pages`, `page_wrap`, `skip`, `top_layer` und `bottom_layer`
+  werden durch eine Add-on-Erweiterung aus dem unveränderten Core-Passthrough
+  materialisiert, bleiben beim YAML-Roundtrip erhalten und können im Viewer
+  per Toolbar oder erlaubter Seitenaktion gewechselt werden. Die
+  schreibgeschützte Desktop-Grundlage und Projektformat 3 bleiben unverändert.
+- Noch offen aus V3: visuelle Referenztests und ein optionaler RGB565-Schalter.
 
 ## 1. Ziel
 
@@ -246,7 +250,7 @@ Viewer werden zusätzlich benötigt:
 - `page_wrap` und `skip`
 - Seitenlayouts und Seitenstile
 
-Geplante Modelländerung:
+Umgesetzte Add-on-Darstellung:
 
 ```json
 {
@@ -264,17 +268,20 @@ Geplante Modelländerung:
 }
 ```
 
-Die Projektformatversion wird nur erhöht, wenn die Erweiterung nicht vollständig
-abwärtskompatibel eingebaut werden kann. Alte Projekte erhalten automatisch eine
-synthetische Standardseite.
+Die Seiten werden aus `extra_lvgl` in diese schreibgeschützte Viewer-Struktur
+materialisiert. Die unveränderten Rohdaten bleiben parallel erhalten und sind
+weiterhin die Quelle für Speichern und Export. Dadurch bleiben die gemeinsamen
+Core-Dateien bytegleich mit der schreibgeschützten Desktop-Anwendung; eine
+Formatänderung oder Migration ist nicht erforderlich. Root-Widget-Projekte
+werden im Viewer wie eine synthetische Standardseite behandelt.
 
-Betroffene Backenddateien:
+Betroffene Add-on-Dateien:
 
-- `backend/designer_core/model.py`
-- `backend/designer_core/projectformat.py`
-- `backend/designer_core/yamlimport.py`
-- `backend/designer_core/yamlexport.py`
-- `backend/designer_core/widgetschema.py`
+- `backend/page_support.py`
+- `backend/designer.py`
+- `backend/project_store.py`
+- `frontend/viewer/viewer.js`
+- `frontend/app.js`
 
 Abnahmekriterien:
 

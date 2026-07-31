@@ -148,6 +148,46 @@ function allWidgetItems(project) {
   return result;
 }
 
+function viewerWidgetRoots(project) {
+  const roots = [...(project.widgets || [])];
+  (project.pages || []).forEach((page) => roots.push(...(page.widgets || [])));
+  roots.push(...(project.bottom_layer?.widgets || []));
+  roots.push(...(project.top_layer?.widgets || []));
+  return roots;
+}
+
+function surfaceProject(project, surface) {
+  return {
+    ...project,
+    widgets: surface.widgets || [],
+    extra_lvgl: { ...(surface.style_tree || {}), layout: surface.layout || {} },
+  };
+}
+
+function viewerSurfaces(project, activePageId) {
+  const surfaces = [];
+  if (project.bottom_layer) {
+    surfaces.push({ kind: "bottom", surface: project.bottom_layer });
+  }
+  if ((project.pages || []).length) {
+    const active = project.pages.find((page) => page.id === activePageId) || project.pages[0];
+    if (active) surfaces.push({ kind: "page", surface: active });
+  } else {
+    surfaces.push({
+      kind: "root",
+      surface: {
+        widgets: project.widgets || [],
+        layout: project.extra_lvgl?.layout || {},
+        style_tree: project.extra_lvgl || {},
+      },
+    });
+  }
+  if (project.top_layer) {
+    surfaces.push({ kind: "top", surface: project.top_layer });
+  }
+  return surfaces;
+}
+
 function applyStyleObject(node, project, style) {
   const background = resolveViewerColor(project, style.bg_color);
   const gradient = resolveViewerColor(project, style.bg_grad_color);
@@ -215,8 +255,28 @@ function findWidget(project, id) {
       if (found) return;
     }
   };
-  visit(project.widgets);
+  visit(viewerWidgetRoots(project));
   return found;
+}
+
+function pageActionId(payload) {
+  return actionIds(payload)[0] || "";
+}
+
+function navigatePage(project, runtime, direction) {
+  const pages = project.pages || [];
+  if (!pages.length) return null;
+  const current = Math.max(0, pages.findIndex((page) => page.id === runtime.activePageId));
+  for (let distance = 1; distance <= pages.length; distance += 1) {
+    let candidate = current + (distance * direction);
+    if (project.page_wrap !== false) {
+      candidate = ((candidate % pages.length) + pages.length) % pages.length;
+    } else if (candidate < 0 || candidate >= pages.length) {
+      return null;
+    }
+    if (!pages[candidate].skip) return pages[candidate];
+  }
+  return null;
 }
 
 function actionIds(payload) {
@@ -237,7 +297,7 @@ function safeLiteral(value) {
   return value === null || ["string", "number", "boolean"].includes(typeof value);
 }
 
-export function applyViewerAction(project, action) {
+export function applyViewerAction(project, action, runtime = {}) {
   if (!action || typeof action !== "object" || Array.isArray(action)) {
     return { handled: false, changed: false, message: "Ungültiger Aktionseintrag übersprungen." };
   }
@@ -246,6 +306,30 @@ export function applyViewerAction(project, action) {
     return { handled: false, changed: false, message: "Mehrdeutiger Aktionseintrag übersprungen." };
   }
   const [name, payload] = entries[0];
+
+  if (name === "lvgl.page.show") {
+    const id = pageActionId(payload);
+    const page = (project.pages || []).find((entry) => entry.id === id);
+    if (!page) return {
+      handled: true, changed: false, warning: true,
+      message: `lvgl.page.show: Seite ${id || "ohne ID"} nicht gefunden.`,
+    };
+    const changed = runtime.activePageId !== page.id;
+    runtime.activePageId = page.id;
+    return { handled: true, changed, message: `lvgl.page.show: ${page.id}` };
+  }
+
+  if (["lvgl.page.next", "lvgl.page.previous"].includes(name)) {
+    const direction = name.endsWith(".next") ? 1 : -1;
+    const page = navigatePage(project, runtime, direction);
+    if (!page) return {
+      handled: true, changed: false, warning: true,
+      message: `${name}: keine erreichbare Seite.`,
+    };
+    const changed = runtime.activePageId !== page.id;
+    runtime.activePageId = page.id;
+    return { handled: true, changed, message: `${name}: ${page.id}` };
+  }
 
   if (["lvgl.widget.show", "lvgl.widget.hide"].includes(name)) {
     const hidden = name.endsWith(".hide");
@@ -488,7 +572,7 @@ function prepareCanvas(canvas, width, height) {
 export class ViewerController {
   constructor({
     dialog, stage, frame, display, title, status, zoomLabel, rotationControl,
-    eventLog, eventCount,
+    eventLog, eventCount, pageControls, pageSelect, pagePrevious, pageNext,
   }) {
     this.dialog = dialog;
     this.stage = stage;
@@ -500,6 +584,10 @@ export class ViewerController {
     this.rotationControl = rotationControl;
     this.eventLog = eventLog;
     this.eventCount = eventCount;
+    this.pageControls = pageControls;
+    this.pageSelect = pageSelect;
+    this.pagePrevious = pagePrevious;
+    this.pageNext = pageNext;
     this.sourceProject = null;
     this.project = null;
     this.name = "";
@@ -510,6 +598,7 @@ export class ViewerController {
     this.timers = [];
     this.logEntries = [];
     this.renderWarnings = new Set();
+    this.runtime = { activePageId: "" };
     this.animationFrame = null;
     this.resizeObserver = new ResizeObserver(() => {
       if (this.dialog.open && this.fitMode) this.fit();
@@ -528,6 +617,7 @@ export class ViewerController {
     this.rotationControl.value = "0";
     this.fitMode = true;
     this.logEntries = [];
+    this.runtime = { activePageId: this.project.pages?.[0]?.id || "" };
     this.renderEventLog();
     this.title.textContent = name;
     this.render();
@@ -547,6 +637,7 @@ export class ViewerController {
     if (!this.sourceProject) return;
     this.stopAnimations();
     this.project = cloneViewerProject(this.sourceProject);
+    this.runtime = { activePageId: this.project.pages?.[0]?.id || "" };
     this.logEntries = [];
     this.renderEventLog();
     this.render();
@@ -605,7 +696,7 @@ export class ViewerController {
     this.recordEvent("trigger", `${widget.id || widget.widget_type}: ${eventName}`);
     let changed = false;
     actions.forEach((action) => {
-      const result = applyViewerAction(this.project, action);
+      const result = applyViewerAction(this.project, action, this.runtime);
       changed ||= result.changed;
       this.recordEvent(result.handled && !result.warning ? "action" : "warning", result.message);
     });
@@ -724,6 +815,39 @@ export class ViewerController {
     }
   }
 
+  setActivePage(id, { record = true } = {}) {
+    const page = (this.project?.pages || []).find((entry) => entry.id === id);
+    if (!page || page.id === this.runtime.activePageId) return false;
+    this.runtime.activePageId = page.id;
+    if (record) this.recordEvent("state", `Seite: ${page.id}`);
+    this.render();
+    return true;
+  }
+
+  changePage(direction) {
+    if (!this.project) return false;
+    const page = navigatePage(this.project, this.runtime, direction);
+    if (!page || page.id === this.runtime.activePageId) return false;
+    this.runtime.activePageId = page.id;
+    this.recordEvent("state", `Seite: ${page.id}`);
+    this.render();
+    return true;
+  }
+
+  updatePageControls() {
+    if (!this.pageControls || !this.pageSelect) return;
+    const pages = this.project?.pages || [];
+    this.pageControls.hidden = pages.length === 0;
+    this.pageSelect.replaceChildren();
+    pages.forEach((page) => {
+      const option = new Option(`${page.id}${page.skip ? " (überspringen)" : ""}`, page.id);
+      this.pageSelect.append(option);
+    });
+    if (pages.length) this.pageSelect.value = this.runtime.activePageId || pages[0].id;
+    if (this.pagePrevious) this.pagePrevious.disabled = pages.length < 2;
+    if (this.pageNext) this.pageNext.disabled = pages.length < 2;
+  }
+
   stopAnimations() {
     this.timers.forEach((timer) => window.clearInterval(timer));
     this.timers = [];
@@ -802,8 +926,21 @@ export class ViewerController {
     glowFront.className = "viewer-glow viewer-glow-front";
     this.display.append(background, glowBack);
 
-    allWidgetItems(this.project).forEach((item) => {
-      this.display.append(renderWidget(this.project, item, this.timers, warnings, this));
+    viewerSurfaces(this.project, this.runtime.activePageId).forEach(({ kind, surface }) => {
+      const layer = document.createElement("div");
+      layer.className = `viewer-surface viewer-surface-${kind}`;
+      layer.dataset.surfaceId = surface.id || kind;
+      applyStyleObject(layer, this.project, surface.style_tree || {});
+      // Layout padding is already consumed by computeLayout. Keeping it on
+      // the absolutely-positioned surface would offset children a second time.
+      layer.style.padding = "0";
+      layer.style.rowGap = "0";
+      layer.style.columnGap = "0";
+      const scopedProject = surfaceProject(this.project, surface);
+      allWidgetItems(scopedProject).forEach((item) => {
+        layer.append(renderWidget(scopedProject, item, this.timers, warnings, this));
+      });
+      this.display.append(layer);
     });
     this.display.append(glowFront);
 
@@ -826,6 +963,7 @@ export class ViewerController {
     draw(startedAt);
 
     this.renderWarnings = warnings;
+    this.updatePageControls();
     this.refreshStatus();
     this.applyTransform();
   }

@@ -14,6 +14,11 @@
 - Viewer styling now applies named plus inline overrides in ESPHome priority,
   including switch/slider parts, state styles, font sizing, padding, gaps,
   background/shadow opacity and gradients.
+- Added an add-on-only structured view of ESPHome LVGL pages and top/bottom
+  layers while keeping the shared desktop core unchanged. Import/export
+  preserves page layout, styles, skip/page-wrap settings and layer widgets;
+  the Viewer adds page selection and previous/next controls plus safe
+  `lvgl.page.show/next/previous` action handling.
 
 ## 0.10.0
 

@@ -62,6 +62,7 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     assert 'id="open-viewer"' in response.text
     assert 'id="viewer-dialog"' in response.text
     assert 'id="viewer-event-log"' in response.text
+    assert 'id="viewer-page-controls"' in response.text
     assert client.get("/app.js").status_code == 200
     viewer = client.get("/viewer/viewer.js")
     assert viewer.status_code == 200

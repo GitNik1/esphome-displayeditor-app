@@ -7,3 +7,5 @@ fail-closed Device Builder integration for Home Assistant.
 The Viewer simulates button, switch and slider interaction on a cloned
 runtime project. Only a fixed set of literal LVGL show/hide/update actions is
 accepted; every unsupported automation is skipped and shown in its event log.
+ESPHome `pages`, `page_wrap`, `skip`, `top_layer` and `bottom_layer` are
+preserved structurally and can be navigated without leaving the Viewer.

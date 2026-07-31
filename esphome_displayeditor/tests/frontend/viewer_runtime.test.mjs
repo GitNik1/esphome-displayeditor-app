@@ -78,3 +78,22 @@ const invalidBoolean = applyViewerAction(project, {
 });
 assert.equal(invalidBoolean.changed, false);
 assert.equal(toggle.properties.state_checked, true);
+
+const pageProject = {
+  pages: [
+    { id: "main", skip: false, widgets: [] },
+    { id: "service", skip: true, widgets: [] },
+    { id: "settings", skip: false, widgets: [] },
+  ],
+  page_wrap: false,
+  widgets: [],
+};
+const runtime = { activePageId: "main" };
+assert.equal(applyViewerAction(pageProject, { "lvgl.page.next": {} }, runtime).changed, true);
+assert.equal(runtime.activePageId, "settings", "next must skip pages marked with skip");
+assert.equal(applyViewerAction(pageProject, { "lvgl.page.next": {} }, runtime).warning, true);
+assert.equal(runtime.activePageId, "settings", "page_wrap=false must stop at the final page");
+assert.equal(applyViewerAction(pageProject, { "lvgl.page.previous": {} }, runtime).changed, true);
+assert.equal(runtime.activePageId, "main");
+assert.equal(applyViewerAction(pageProject, { "lvgl.page.show": "service" }, runtime).changed, true);
+assert.equal(runtime.activePageId, "service", "page.show may open a skipped page directly");

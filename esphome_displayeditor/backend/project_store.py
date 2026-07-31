@@ -71,7 +71,7 @@ class ProjectStore:
         project, issues = self.designer.validate(payload)
         return {
             "name": name,
-            "project": project.to_dict(),
+            "project": self.designer.project_payload(project),
             "revision": revision_for(raw),
             "issues": issues,
         }
