@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -48,6 +49,10 @@ def test_hierarchical_role_capabilities(tmp_path: Path) -> None:
     assert capabilities(settings, "publisher")["configuration.publish"]
     assert not capabilities(settings, "publisher")["audit.read"]
     assert capabilities(settings, "administrator")["audit.read"]
+    assert capabilities(settings, "viewer")["device.states"]
+    assert not capabilities(settings, "viewer")["device.manage"]
+    assert capabilities(settings, "administrator")["device.manage"]
+    assert not capabilities(settings, "administrator")["device.control"]
 
 
 def test_read_only_profile_overrides_administrator_role(tmp_path: Path) -> None:
@@ -57,6 +62,24 @@ def test_read_only_profile_overrides_administrator_role(tmp_path: Path) -> None:
     assert granted["configuration.read"]
     assert not granted["configuration.write_draft"]
     assert not granted["configuration.publish"]
+
+
+def test_native_only_profile_disables_filesystem_but_keeps_runtime(tmp_path: Path) -> None:
+    settings = replace(
+        make_settings(tmp_path, default_role="administrator"),
+        profile="native_only",
+    )
+    granted = capabilities(settings, "administrator")
+    assert not granted["configuration.list"]
+    assert not granted["configuration.read"]
+    assert granted["device.info"]
+
+    client = TestClient(create_app(settings, serve_frontend=False))
+    denied = client.get(
+        "/api/v1/configurations", headers={"X-Remote-User-Id": "admin"}
+    )
+    assert denied.status_code == 403
+    assert denied.json()["error"] == "capability_unavailable"
 
 
 def test_user_assignment_overrides_default_role(tmp_path: Path) -> None:
@@ -106,6 +129,7 @@ def test_invalid_options_fail_closed(tmp_path: Path, monkeypatch) -> None:
                 "default_role": "root",
                 "api_rate_limit_per_minute": "broken",
                 "write_rate_limit_per_minute": None,
+                "runtime_provider": "unexpected",
             }
         ),
         encoding="utf-8",
@@ -119,6 +143,7 @@ def test_invalid_options_fail_closed(tmp_path: Path, monkeypatch) -> None:
     assert settings.default_role == "viewer"
     assert settings.api_rate_limit_per_minute == 240
     assert settings.write_rate_limit_per_minute == 60
+    assert settings.runtime_provider == "disabled"
 
 
 def test_rate_limiter_has_separate_write_budget() -> None:

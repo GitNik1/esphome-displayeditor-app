@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.0
+
+Phase 3 ESPHome Native API runtime:
+
+- Add encrypted, read-only Native API connections through `aioesphomeapi`.
+- Add a persistent server-side device allow-list and separate write-only
+  storage for 32-byte Noise encryption keys.
+- Add connection monitoring with bounded exponential reconnect, stable error
+  codes and unavailable marking for cached states after disconnects.
+- Add device information, entity, latest-state and bounded live-log APIs plus
+  an Ingress-compatible WebSocket event stream with backpressure.
+- Add administrator-only device, key and reconnect operations with audit
+  events; entity commands remain unavailable.
+- Add a Geräte view for connection status, configuration, metadata, entities,
+  states and sanitized logs.
+- Allow the UDP traffic required for `.local` mDNS name resolution while
+  retaining the Ingress-only HTTP boundary.
+- Build-test both advertised app architectures (`amd64` and `aarch64`) in CI.
+
 ## 0.7.0
 
 Phase 4 security and roles:

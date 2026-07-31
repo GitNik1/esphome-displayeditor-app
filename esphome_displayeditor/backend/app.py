@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import os
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Query, Request, Response
+from fastapi import FastAPI, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from .audit import AuditStore
 from .designer import DesignerService
 from .errors import ApiError, capability_unavailable
 from .filesystem import FilesystemBackend
 from .project_store import ProjectStore
+from .runtime import DeviceManager, DeviceRegistry, SecretStore
 from .security import RateLimiter
 from .settings import CAPABILITY_MINIMUM_ROLE, Settings, capabilities
 
@@ -52,7 +55,24 @@ class SaveDesignerProjectRequest(DesignerProjectRequest):
     )
 
 
-def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool = True) -> FastAPI:
+class DeviceRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=63)
+    name: str = Field(min_length=1, max_length=80)
+    host: str = Field(min_length=1, max_length=253)
+    port: int = Field(default=6053, ge=1, le=65535)
+    encryption_key_ref: str = Field(min_length=1, max_length=63)
+
+
+class DeviceSecretRequest(BaseModel):
+    encryption_key: SecretStr
+
+
+def create_app(
+    runtime_settings: Settings | None = None,
+    *,
+    serve_frontend: bool = True,
+    runtime_manager: DeviceManager | None = None,
+) -> FastAPI:
     settings = runtime_settings or Settings.load()
     filesystem = FilesystemBackend(settings)
     audit = AuditStore(settings.data_root)
@@ -70,13 +90,33 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
         for host in os.getenv("ESPHOME_TRUSTED_INGRESS_HOSTS", "172.30.32.2").split(",")
         if host.strip()
     }
+
+    if runtime_manager is None:
+        registry = DeviceRegistry(settings.data_root)
+        secret_store = SecretStore(settings.data_root)
+        runtime_manager = DeviceManager(
+            registry,
+            secret_store,
+            enabled=settings.runtime_provider == "native",
+        )
+
+    @asynccontextmanager
+    async def lifespan(_application: FastAPI):
+        await runtime_manager.start()
+        try:
+            yield
+        finally:
+            await runtime_manager.stop()
+
     application = FastAPI(
         title="ESPHome Display Editor API",
-        version=os.getenv("APP_VERSION", "0.7.0"),
+        version=os.getenv("APP_VERSION", "0.8.0"),
         docs_url=None,
         redoc_url=None,
         openapi_url="/api/v1/openapi.json",
+        lifespan=lifespan,
     )
+    application.state.device_manager = runtime_manager
 
     @application.middleware("http")
     async def security_boundary(request: Request, call_next):
@@ -153,8 +193,7 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
         return user_id, settings.role_for(user_id)
 
     def require_capability(request: Request, capability: str) -> str:
-        if not capabilities(settings, "administrator").get(capability, False):
-            raise capability_unavailable(capability, settings.profile)
+        ensure_capability_available(capability)
         user_id, role = request_identity(request)
         if not user_id:
             raise ApiError(
@@ -183,6 +222,10 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
             )
         return user_id
 
+    def ensure_capability_available(capability: str) -> None:
+        if not capabilities(settings, "administrator").get(capability, False):
+            raise capability_unavailable(capability, settings.profile)
+
     @application.get("/api/v1/health")
     async def health() -> dict:
         return {"status": "ok", "version": application.version}
@@ -201,7 +244,7 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
             },
             "backends": {
                 "configuration": "filesystem",
-                "runtime": "disabled",
+                "runtime": settings.runtime_provider,
                 "builder": "disabled",
             },
         }
@@ -217,10 +260,12 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
 
     @application.get("/api/v1/configurations")
     async def list_configurations() -> dict:
+        ensure_capability_available("configuration.list")
         return {"configurations": filesystem.list_configs()}
 
     @application.get("/api/v1/configurations/{name:path}/draft")
     async def get_draft(name: str) -> dict:
+        ensure_capability_available("configuration.read")
         return filesystem.read_draft(name)
 
     @application.put("/api/v1/configurations/{name:path}/draft")
@@ -283,10 +328,12 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
 
     @application.get("/api/v1/configurations/{name:path}/diff")
     async def get_diff(name: str) -> dict:
+        ensure_capability_available("configuration.read")
         return filesystem.diff(name)
 
     @application.post("/api/v1/configurations/{name:path}/check-yaml")
     async def check_yaml(name: str, source: str = Query(default="draft", pattern="^(draft|active)$")) -> dict:
+        ensure_capability_available("configuration.validate_yaml")
         return filesystem.check_yaml(name, source=source)
 
     @application.post("/api/v1/configurations/{name:path}/publish")
@@ -316,6 +363,7 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
 
     @application.get("/api/v1/configurations/{name:path}")
     async def get_configuration(name: str) -> dict:
+        ensure_capability_available("configuration.read")
         return filesystem.read_config(name)
 
     @application.get("/api/v1/audit")
@@ -324,6 +372,202 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
     ) -> dict:
         require_capability(request, "audit.read")
         return {"events": audit.recent(limit)}
+
+    @application.get("/api/v1/devices")
+    async def list_devices(request: Request) -> dict:
+        runtime_manager.ensure_enabled()
+        require_capability(request, "device.info")
+        return {"devices": runtime_manager.list_devices()}
+
+    @application.get("/api/v1/devices/{device_id}")
+    async def get_device(device_id: str, request: Request) -> dict:
+        runtime_manager.ensure_enabled()
+        require_capability(request, "device.info")
+        return runtime_manager.get_device(device_id)
+
+    @application.get("/api/v1/devices/{device_id}/info")
+    async def get_device_info(device_id: str, request: Request) -> dict:
+        runtime_manager.ensure_enabled()
+        require_capability(request, "device.info")
+        return {"device_id": device_id, "info": runtime_manager.get_info(device_id)}
+
+    @application.get("/api/v1/devices/{device_id}/entities")
+    async def get_device_entities(device_id: str, request: Request) -> dict:
+        runtime_manager.ensure_enabled()
+        require_capability(request, "device.entities")
+        return {"device_id": device_id, "entities": runtime_manager.get_entities(device_id)}
+
+    @application.get("/api/v1/devices/{device_id}/states")
+    async def get_device_states(device_id: str, request: Request) -> dict:
+        runtime_manager.ensure_enabled()
+        require_capability(request, "device.states")
+        return {"device_id": device_id, "states": runtime_manager.get_states(device_id)}
+
+    @application.get("/api/v1/devices/{device_id}/logs")
+    async def get_device_logs(
+        device_id: str,
+        request: Request,
+        limit: int = Query(default=200, ge=1, le=1000),
+    ) -> dict:
+        runtime_manager.ensure_enabled()
+        require_capability(request, "device.logs")
+        return {"device_id": device_id, "logs": runtime_manager.get_logs(device_id, limit)}
+
+    @application.post("/api/v1/admin/devices", status_code=201)
+    async def create_device(body: DeviceRequest, request: Request) -> dict:
+        runtime_manager.ensure_enabled()
+        user_id = require_capability(request, "device.manage")
+        try:
+            runtime_manager.registry.get(body.id)
+        except ApiError as exc:
+            if exc.error != "device_not_found":
+                raise
+        else:
+            raise ApiError("device_exists", "A device with this id already exists.", 409)
+        device = runtime_manager.registry.upsert(body.model_dump())
+        await runtime_manager.restart(device.id)
+        audit.record(
+            user_id=user_id,
+            action="device.create",
+            configuration=device.id,
+            old_revision=None,
+            new_revision=None,
+            result="success",
+        )
+        return runtime_manager.get_device(device.id)
+
+    @application.put("/api/v1/admin/devices/{device_id}")
+    async def update_device(device_id: str, body: DeviceRequest, request: Request) -> dict:
+        runtime_manager.ensure_enabled()
+        user_id = require_capability(request, "device.manage")
+        runtime_manager.registry.get(device_id)
+        device = runtime_manager.registry.upsert(body.model_dump(), expected_id=device_id)
+        await runtime_manager.restart(device.id)
+        audit.record(
+            user_id=user_id,
+            action="device.update",
+            configuration=device.id,
+            old_revision=None,
+            new_revision=None,
+            result="success",
+        )
+        return runtime_manager.get_device(device.id)
+
+    @application.delete("/api/v1/admin/devices/{device_id}", status_code=204)
+    async def delete_device(device_id: str, request: Request) -> Response:
+        runtime_manager.ensure_enabled()
+        user_id = require_capability(request, "device.manage")
+        runtime_manager.registry.delete(device_id)
+        await runtime_manager.remove(device_id)
+        audit.record(
+            user_id=user_id,
+            action="device.delete",
+            configuration=device_id,
+            old_revision=None,
+            new_revision=None,
+            result="success",
+        )
+        return Response(status_code=204)
+
+    @application.put("/api/v1/admin/device-secrets/{key_ref}", status_code=204)
+    async def set_device_secret(
+        key_ref: str, body: DeviceSecretRequest, request: Request
+    ) -> Response:
+        runtime_manager.ensure_enabled()
+        user_id = require_capability(request, "device.manage")
+        runtime_manager.secrets.set(key_ref, body.encryption_key.get_secret_value())
+        await runtime_manager.refresh_key_reference(key_ref)
+        audit.record(
+            user_id=user_id,
+            action="device.secret.update",
+            configuration=key_ref,
+            old_revision=None,
+            new_revision=None,
+            result="success",
+        )
+        return Response(status_code=204)
+
+    @application.delete("/api/v1/admin/device-secrets/{key_ref}", status_code=204)
+    async def delete_device_secret(key_ref: str, request: Request) -> Response:
+        runtime_manager.ensure_enabled()
+        user_id = require_capability(request, "device.manage")
+        runtime_manager.secrets.delete(key_ref)
+        await runtime_manager.refresh_key_reference(key_ref)
+        audit.record(
+            user_id=user_id,
+            action="device.secret.delete",
+            configuration=key_ref,
+            old_revision=None,
+            new_revision=None,
+            result="success",
+        )
+        return Response(status_code=204)
+
+    @application.post("/api/v1/admin/devices/{device_id}/reconnect", status_code=204)
+    async def reconnect_device(device_id: str, request: Request) -> Response:
+        runtime_manager.ensure_enabled()
+        user_id = require_capability(request, "device.manage")
+        runtime_manager.registry.get(device_id)
+        await runtime_manager.restart(device_id)
+        audit.record(
+            user_id=user_id,
+            action="device.reconnect",
+            configuration=device_id,
+            old_revision=None,
+            new_revision=None,
+            result="success",
+        )
+        return Response(status_code=204)
+
+    @application.websocket("/api/v1/devices/events")
+    async def device_events(websocket: WebSocket) -> None:
+        if not runtime_manager.enabled:
+            await websocket.close(code=4403, reason="capability_unavailable")
+            return
+        client_host = websocket.client.host if websocket.client else "unknown"
+        if not allow_direct_access and client_host not in trusted_ingress_hosts:
+            await websocket.close(code=4403, reason="ingress_required")
+            return
+        user_id = websocket.headers.get("X-Remote-User-Id", "").strip() or None
+        role = settings.role_for(user_id)
+        if not user_id or not capabilities(settings, role).get("device.states", False):
+            await websocket.close(code=4403, reason="permission_denied")
+            return
+        device_filter = websocket.query_params.get("device_id")
+        if device_filter:
+            try:
+                runtime_manager.registry.get(device_filter)
+            except ApiError:
+                await websocket.close(code=4404, reason="device_not_found")
+                return
+        decision = rate_limiter.check(user_id, write=False)
+        if not decision.allowed:
+            await websocket.close(code=4429, reason="rate_limit_exceeded")
+            return
+        await websocket.accept()
+        queue = runtime_manager.subscribe()
+        try:
+            await websocket.send_json(
+                {
+                    "type": "devices",
+                    "devices": [
+                        device
+                        for device in runtime_manager.list_devices()
+                        if not device_filter or device["id"] == device_filter
+                    ],
+                }
+            )
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=20)
+                except TimeoutError:
+                    event = {"type": "heartbeat"}
+                if not device_filter or event.get("device_id") in {None, device_filter}:
+                    await websocket.send_json(event)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            runtime_manager.unsubscribe(queue)
 
     @application.get("/api/v1/designer/schemas")
     async def designer_schemas(language: str = Query(default="de", pattern="^(de|en)$")) -> dict:
@@ -351,6 +595,7 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
         save_draft or publish at all, so it cannot write back to the source.
         """
         if body.configuration:
+            ensure_capability_available("configuration.read")
             source = filesystem.read_config(body.configuration)
             return source["content"], source["name"]
         if body.content is None:

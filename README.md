@@ -20,8 +20,10 @@ refreshed.
 The current milestone provides the Home Assistant app container, stable health
 and capability endpoints, safe ESPHome YAML draft handling, persistent visual
 designer projects, per-user roles, Ingress-only request enforcement, API rate
-limits, and a web-native port of the model and YAML export engine from
-`esphome-lvgl-designer`.
+limits, encrypted read-only ESPHome Native API device monitoring, and a
+web-native port of the model and YAML export engine from
+`esphome-lvgl-designer`. Device information, entities, current states and logs
+are available in the Geräte view; device commands remain disabled.
 
 See [app documentation](esphome_displayeditor/DOCS.md) for configuration and
 security details.

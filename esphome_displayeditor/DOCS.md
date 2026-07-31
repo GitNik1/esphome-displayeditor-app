@@ -9,6 +9,8 @@ does not publish a LAN port.
 - Active ESPHome files: `/homeassistant/esphome`
 - Drafts and app state: `/data`
 - Persistent designer projects: `/data/projects`
+- Native API device registry: `/data/runtime/devices.json`
+- Native API keys: `/data/runtime/native_api_keys.json` (mode `0600`)
 
 The `/data` directory is persistent and included in Home Assistant app
 backups. Active files are changed only by the explicit publish operation.
@@ -16,10 +18,37 @@ backups. Active files are changed only by the explicit publish operation.
 ## Profiles
 
 `native_filesystem` enables configuration reading, drafts, YAML syntax checks,
-diffs and publishing. `read_only` disables all write operations.
+diffs, publishing and the Native API. `native_only` disables every YAML
+filesystem endpoint while retaining the Native API. `read_only` keeps YAML and
+Native API reads but disables all write operations.
 
-Native ESPHome device connections and Device Builder jobs are planned for a
-later milestone and are reported as unavailable by the capability endpoint.
+`runtime_provider: native` enables read-only, encrypted ESPHome Native API
+connections. Set it to `disabled` to switch off all device connections and
+device API capabilities. Device Builder jobs remain unavailable.
+
+## ESPHome devices
+
+Open the **Geräte** tab as an administrator to add a device. Required values
+are a local host name or IP address, the Native API port (normally `6053`) and
+the ESPHome API encryption key. The corresponding device configuration needs:
+
+```yaml
+api:
+  encryption:
+    key: !secret api_encryption_key
+```
+
+The application requires encrypted connections and never falls back to
+plaintext or legacy password authentication. It keeps one connection per
+configured device, reconnects with exponential backoff, and exposes device
+information, entity metadata, latest states and a bounded live-log buffer.
+Phase 3 deliberately does not expose entity commands.
+
+Device records form a server-side allow-list. Browser requests contain only a
+device ID; they cannot supply an arbitrary network target. API keys are stored
+separately from device records, are accepted only by a write-only endpoint and
+are never returned to the browser or audit log. `/data` is included in Home
+Assistant backups, so those backups must be protected accordingly.
 
 ## Roles
 
@@ -40,6 +69,11 @@ The user UUID and effective role are visible on the System page.
 - `publisher`: additionally publish drafts into active ESPHome files
 - `installer`: reserved for future validation, build and upload operations
 - `administrator`: all available capabilities and audit-log access
+
+Administrators can additionally create, update and remove Native API device
+records, replace their encryption keys and request a reconnect. All roles can
+read device data when the Native API runtime is enabled; device control stays
+disabled for every role.
 
 Roles are hierarchical. A profile such as `read_only` still disables writes
 even for administrators.

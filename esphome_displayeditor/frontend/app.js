@@ -24,6 +24,11 @@ const state = {
   states: [],
   // Which LVGL state the style controls currently edit. "" is the base style.
   activeState: "",
+  devices: [],
+  selectedDevice: null,
+  editingDevice: null,
+  deviceSocket: null,
+  deviceStates: [],
 };
 
 const MIN_ZOOM = 0.1;
@@ -90,6 +95,7 @@ async function initialize() {
   bindTabs();
   bindDesigner();
   bindConfigurations();
+  bindDevices();
   try {
     const [health, system, capabilityData, schemaData] = await Promise.all([
       api("health"), api("system"), api("capabilities"), api("designer/schemas?language=de"),
@@ -104,7 +110,14 @@ async function initialize() {
     $("#profile").textContent = `${system.profile} · ${system.user.role} · ${system.user.display_name || system.user.name || "Ingress"}`;
     $("#system-json").textContent = JSON.stringify({ system, ...capabilityData }, null, 2);
     renderPalette();
-    await Promise.all([loadConfigurations(), loadServerProjects()]);
+    const initialLoads = [loadServerProjects(), loadDevices()];
+    if (state.capabilities["configuration.list"]) initialLoads.push(loadConfigurations());
+    else {
+      $("#config-list").textContent = "Dateisystemzugriff ist in diesem Profil deaktiviert.";
+      $("#refresh-configs").disabled = true;
+    }
+    await Promise.all(initialLoads);
+    connectDeviceEvents();
   } catch (error) {
     $("#profile").textContent = "Backend nicht erreichbar";
     toast(error.message, true);
@@ -117,6 +130,264 @@ function bindTabs() {
     $$(".tab").forEach((item) => item.classList.toggle("active", item === tab));
     $$(".view").forEach((view) => view.classList.toggle("active", view.id === tab.dataset.tab));
   }));
+}
+
+function bindDevices() {
+  $("#refresh-devices").addEventListener("click", loadDevices);
+  $("#add-device").addEventListener("click", () => openDeviceDialog());
+  $("#edit-device").addEventListener("click", () => {
+    const device = state.devices.find((item) => item.id === state.selectedDevice);
+    if (device) openDeviceDialog(device);
+  });
+  $("#remove-device").addEventListener("click", removeSelectedDevice);
+  $("#reconnect-device").addEventListener("click", reconnectSelectedDevice);
+  $("#close-device-dialog").addEventListener("click", () => $("#device-dialog").close());
+  $("#device-form").addEventListener("submit", saveDevice);
+  $$(".device-subtab").forEach((tab) => tab.addEventListener("click", () => {
+    $$(".device-subtab").forEach((item) => item.classList.toggle("active", item === tab));
+    $$(".device-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `device-${tab.dataset.devicePanel}`));
+  }));
+}
+
+const DEVICE_STATUS = {
+  configured: "Konfiguriert",
+  connecting: "Verbindung wird aufgebaut …",
+  ready: "Verbunden",
+  disconnected: "Getrennt",
+  auth_failed: "Authentifizierung fehlgeschlagen",
+  missing_key: "Verschlüsselungsschlüssel fehlt",
+  disabled: "Native API deaktiviert",
+};
+
+async function loadDevices() {
+  const list = $("#device-list");
+  const canRead = Boolean(state.capabilities["device.info"]);
+  const canManage = Boolean(state.capabilities["device.manage"]);
+  $("#add-device").classList.toggle("hidden", !canManage);
+  if (!canRead) {
+    list.className = "device-list empty";
+    list.textContent = "Native API ist in diesem Profil nicht verfügbar.";
+    return;
+  }
+  try {
+    const result = await api("devices");
+    state.devices = result.devices || [];
+    if (state.selectedDevice && !state.devices.some((item) => item.id === state.selectedDevice)) {
+      state.selectedDevice = null;
+    }
+    renderDeviceList();
+    if (state.selectedDevice) await loadDeviceDetails(state.selectedDevice);
+  } catch (error) {
+    list.className = "device-list empty";
+    list.textContent = error.message;
+  }
+}
+
+function renderDeviceList() {
+  const list = $("#device-list");
+  list.replaceChildren();
+  list.className = "device-list";
+  if (!state.devices.length) {
+    list.classList.add("empty");
+    list.textContent = "Keine Geräte konfiguriert.";
+    resetDeviceDetails();
+    return;
+  }
+  state.devices.forEach((device) => {
+    const button = document.createElement("button");
+    button.className = "device-item";
+    button.classList.toggle("active", device.id === state.selectedDevice);
+    const dot = document.createElement("span");
+    dot.className = `device-status-dot ${device.status || "configured"}`;
+    const content = document.createElement("span");
+    const name = document.createElement("strong");
+    name.textContent = device.name;
+    const details = document.createElement("small");
+    details.textContent = `${DEVICE_STATUS[device.status] || device.status} · ${device.host}:${device.port}`;
+    content.append(name, details);
+    button.append(dot, content);
+    button.addEventListener("click", async () => {
+      state.selectedDevice = device.id;
+      renderDeviceList();
+      await loadDeviceDetails(device.id);
+    });
+    list.append(button);
+  });
+}
+
+function resetDeviceDetails() {
+  $("#device-title").textContent = "Kein Gerät gewählt";
+  $("#device-connection").textContent = "–";
+  ["edit-device", "remove-device", "reconnect-device"].forEach((id) => { $(`#${id}`).disabled = true; });
+  $("#device-info pre").textContent = "Keine Daten.";
+  $("#device-entities").replaceChildren(Object.assign(document.createElement("div"), { className: "empty", textContent: "Keine Entitäten." }));
+  $("#device-states").replaceChildren(Object.assign(document.createElement("div"), { className: "empty", textContent: "Keine Zustände." }));
+  $("#device-logs pre").textContent = "Keine Logs.";
+  state.deviceStates = [];
+}
+
+async function loadDeviceDetails(deviceId) {
+  const device = state.devices.find((item) => item.id === deviceId);
+  if (!device) return;
+  const canManage = Boolean(state.capabilities["device.manage"]);
+  $("#device-title").textContent = device.name;
+  $("#device-connection").textContent = `${DEVICE_STATUS[device.status] || device.status} · ${device.host}:${device.port}${device.last_error ? ` · ${device.last_error}` : ""}`;
+  $("#edit-device").disabled = !canManage;
+  $("#remove-device").disabled = !canManage;
+  $("#reconnect-device").disabled = !canManage;
+  try {
+    const [info, entities, states, logs] = await Promise.all([
+      api(`devices/${encodeURIComponent(deviceId)}/info`),
+      api(`devices/${encodeURIComponent(deviceId)}/entities`),
+      api(`devices/${encodeURIComponent(deviceId)}/states`),
+      api(`devices/${encodeURIComponent(deviceId)}/logs?limit=500`),
+    ]);
+    if (state.selectedDevice !== deviceId) return;
+    $("#device-info pre").textContent = Object.keys(info.info || {}).length
+      ? JSON.stringify(info.info, null, 2)
+      : "Noch keine Geräteinformationen verfügbar.";
+    renderDeviceTable($("#device-entities"), entities.entities || [], ["type", "name", "object_id", "key"]);
+    state.deviceStates = states.states || [];
+    renderDeviceTable($("#device-states"), state.deviceStates, ["type", "key", "available", "state"]);
+    $("#device-logs pre").textContent = formatDeviceLogs(logs.logs || []);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function renderDeviceTable(container, rows, preferredColumns) {
+  container.replaceChildren();
+  if (!rows.length) {
+    container.append(Object.assign(document.createElement("div"), { className: "empty", textContent: "Noch keine Daten verfügbar." }));
+    return;
+  }
+  const columns = preferredColumns.filter((column) => rows.some((row) => row[column] !== undefined));
+  const table = document.createElement("table");
+  table.className = "device-data-table";
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  columns.forEach((column) => {
+    const cell = document.createElement("th");
+    cell.textContent = column;
+    headRow.append(cell);
+  });
+  head.append(headRow);
+  const body = document.createElement("tbody");
+  rows.forEach((row) => {
+    const line = document.createElement("tr");
+    columns.forEach((column) => {
+      const cell = document.createElement("td");
+      const value = row[column];
+      cell.textContent = typeof value === "object" ? JSON.stringify(value) : String(value ?? "");
+      line.append(cell);
+    });
+    body.append(line);
+  });
+  table.append(head, body);
+  container.append(table);
+}
+
+function formatDeviceLogs(logs) {
+  if (!logs.length) return "Noch keine Logs verfügbar.";
+  return logs.map((item) => `[${item.received_at || ""}] [${item.level || "INFO"}] ${item.message || ""}`).join("\n");
+}
+
+function openDeviceDialog(device = null) {
+  state.editingDevice = device?.id || null;
+  $("#device-dialog-title").textContent = device ? "ESPHome-Gerät bearbeiten" : "ESPHome-Gerät hinzufügen";
+  $("#device-id").value = device?.id || "";
+  $("#device-id").disabled = Boolean(device);
+  $("#device-name").value = device?.name || "";
+  $("#device-host").value = device?.host || "";
+  $("#device-port").value = device?.port || 6053;
+  $("#device-key-ref").value = device?.encryption_key_ref || "";
+  $("#device-key").value = "";
+  $("#device-key").required = !device || !device.has_encryption_key;
+  $("#device-dialog").showModal();
+}
+
+async function saveDevice(event) {
+  event.preventDefault();
+  const editing = state.editingDevice;
+  const body = {
+    id: editing || $("#device-id").value.trim(),
+    name: $("#device-name").value.trim(),
+    host: $("#device-host").value.trim(),
+    port: Number($("#device-port").value),
+    encryption_key_ref: $("#device-key-ref").value.trim(),
+  };
+  const encryptionKey = $("#device-key").value.trim();
+  try {
+    await api(editing ? `admin/devices/${encodeURIComponent(editing)}` : "admin/devices", {
+      method: editing ? "PUT" : "POST",
+      body: JSON.stringify(body),
+    });
+    if (encryptionKey) {
+      await api(`admin/device-secrets/${encodeURIComponent(body.encryption_key_ref)}`, {
+        method: "PUT",
+        body: JSON.stringify({ encryption_key: encryptionKey }),
+      });
+    }
+    state.selectedDevice = body.id;
+    $("#device-dialog").close();
+    await loadDevices();
+    toast(editing ? "Gerät aktualisiert." : "Gerät hinzugefügt.");
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function reconnectSelectedDevice() {
+  if (!state.selectedDevice) return;
+  try {
+    await api(`admin/devices/${encodeURIComponent(state.selectedDevice)}/reconnect`, { method: "POST" });
+    toast("Neuverbinden wurde gestartet.");
+    await loadDevices();
+  } catch (error) { toast(error.message, true); }
+}
+
+async function removeSelectedDevice() {
+  const device = state.devices.find((item) => item.id === state.selectedDevice);
+  if (!device || !confirm(`Gerät „${device.name}“ entfernen? Der separat gespeicherte Schlüssel bleibt erhalten.`)) return;
+  try {
+    await api(`admin/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
+    state.selectedDevice = null;
+    await loadDevices();
+    toast("Gerät entfernt.");
+  } catch (error) { toast(error.message, true); }
+}
+
+function connectDeviceEvents() {
+  if (!state.capabilities["device.states"] || state.deviceSocket) return;
+  const appBase = window.location.pathname.endsWith("/") ? window.location.pathname : `${window.location.pathname}/`;
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(`${protocol}//${window.location.host}${appBase}api/v1/devices/events`);
+  state.deviceSocket = socket;
+  socket.addEventListener("message", async (message) => {
+    let event;
+    try { event = JSON.parse(message.data); } catch { return; }
+    if (event.type === "heartbeat") return;
+    if (event.type === "log" && event.device_id === state.selectedDevice) {
+      const output = $("#device-logs pre");
+      const line = formatDeviceLogs([event.log]);
+      output.textContent = output.textContent === "Noch keine Logs verfügbar." ? line : `${output.textContent}\n${line}`;
+      output.textContent = output.textContent.split("\n").slice(-1000).join("\n");
+      return;
+    }
+    if (["devices", "connection", "snapshot", "device_removed", "resync_required"].includes(event.type)) {
+      await loadDevices();
+    } else if (event.type === "state" && event.device_id === state.selectedDevice) {
+      const key = `${event.state.type}:${event.state.key ?? event.state.object_id ?? "unknown"}`;
+      const index = state.deviceStates.findIndex((item) => `${item.type}:${item.key ?? item.object_id ?? "unknown"}` === key);
+      if (index >= 0) state.deviceStates[index] = event.state;
+      else state.deviceStates.push(event.state);
+      renderDeviceTable($("#device-states"), state.deviceStates, ["type", "key", "available", "state"]);
+    }
+  });
+  socket.addEventListener("close", () => {
+    if (state.deviceSocket === socket) state.deviceSocket = null;
+    window.setTimeout(connectDeviceEvents, 3000);
+  });
 }
 
 function bindDesigner() {
