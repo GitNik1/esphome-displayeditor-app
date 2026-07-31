@@ -62,6 +62,7 @@
             <div class="toolbar-group">
               <button id="undo" class="button subtle" title="Rückgängig (Strg+Z)" disabled>↶</button>
               <button id="redo" class="button subtle" title="Wiederholen (Strg+Y)" disabled>↷</button>
+            <button id="open-viewer" class="button subtle" title="Schreibgeschützte Browser-Vorschau öffnen">Viewer</button>
             <button id="new-project" class="button subtle">Neu</button>
             <button id="open-project" class="button subtle">Öffnen</button>
             <button id="import-yaml" class="button subtle" title="Bestehende ESPHome-Konfiguration einlesen">YAML importieren</button>
@@ -358,6 +359,56 @@
       <div id="yaml-issues" class="issues hidden"></div>
       <pre id="yaml-output"></pre>
       <div class="dialog-actions"><button id="copy-yaml" class="button primary">In Zwischenablage kopieren</button></div>
+    </dialog>
+
+    <dialog id="viewer-dialog" class="viewer-dialog" aria-labelledby="viewer-title">
+      <div class="viewer-shell">
+        <header class="viewer-toolbar">
+          <div class="viewer-heading">
+            <small>SCHREIBGESCHÜTZTE VORSCHAU</small>
+            <strong id="viewer-title">Lokales Projekt</strong>
+          </div>
+          <div class="viewer-controls">
+            <button id="viewer-zoom-out" class="button subtle compact" title="Verkleinern">−</button>
+            <span id="viewer-zoom-label" class="zoom-label">100 %</span>
+            <button id="viewer-zoom-in" class="button subtle compact" title="Vergrößern">+</button>
+            <button id="viewer-fit" class="button subtle compact">Einpassen</button>
+            <button id="viewer-zoom-100" class="button subtle compact">1:1</button>
+            <label class="viewer-rotation">Rotation
+              <select id="viewer-rotation">
+                <option value="0">0°</option>
+                <option value="90">90°</option>
+                <option value="180">180°</option>
+                <option value="270">270°</option>
+              </select>
+            </label>
+            <div id="viewer-page-controls" class="viewer-page-controls" hidden>
+              <button id="viewer-page-previous" class="button subtle compact" title="Vorherige Seite">‹</button>
+              <label>Seite
+                <select id="viewer-page-select" aria-label="Viewer-Seite"></select>
+              </label>
+              <button id="viewer-page-next" class="button subtle compact" title="Nächste Seite">›</button>
+            </div>
+            <button id="viewer-reset" class="button subtle compact">Zurücksetzen</button>
+            <button id="viewer-close" class="button primary compact">Schließen</button>
+          </div>
+        </header>
+        <div id="viewer-stage" class="viewer-stage">
+          <div id="viewer-frame" class="viewer-frame">
+            <div id="viewer-display" class="viewer-display" aria-label="Schreibgeschützte LVGL-Vorschau"></div>
+          </div>
+        </div>
+        <footer class="viewer-statusline">
+          <span id="viewer-status">Browser-Simulation · nicht pixelgenau</span>
+          <details class="viewer-events">
+            <summary>Ereignisse (<span id="viewer-event-count">0</span>)</summary>
+            <div id="viewer-event-log" class="viewer-event-log" aria-live="polite">
+              <p class="viewer-event-empty">Noch keine Viewer-Ereignisse.</p>
+            </div>
+          </details>
+          <span>Änderungen im Viewer werden nicht gespeichert.</span>
+        </footer>
+      </div>
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>

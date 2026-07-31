@@ -15,9 +15,9 @@ from .designer_core.yamlexport import ExportError, export_project
 from .designer_core.yamlimport import (
     LvglImportError,
     import_esphome_yaml,
-    probe_esphome_yaml,
 )
 from .errors import ApiError
+from .page_support import materialize_surfaces, strip_empty_root_widgets
 
 _ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -97,6 +97,53 @@ class DesignerService:
                 visit(node.children, depth + 1, f"{node_path}.children")
 
         visit(project.widgets)
+        surface_payload, _surface_stats = materialize_surfaces(project)
+
+        def visit_surface_widgets(nodes, depth: int = 0, parent_path: str = "pages") -> None:
+            nonlocal count
+            if depth > 32:
+                raise ApiError("invalid_project", "Widget nesting exceeds 32 levels.")
+            for index, node in enumerate(nodes or []):
+                count += 1
+                node_path = f"{parent_path}[{index}]"
+                if count > 1000:
+                    raise ApiError("invalid_project", "A project may contain at most 1000 widgets.")
+                widget_id = str(node.get("id", ""))
+                widget_type = str(node.get("widget_type", ""))
+                if widget_type not in WIDGET_SCHEMAS:
+                    issues.append({
+                        "severity": "error", "widget": widget_id,
+                        "message": "Unknown widget type.",
+                    })
+                if not _ID_PATTERN.fullmatch(widget_id):
+                    issues.append({
+                        "severity": "error", "widget": widget_id,
+                        "message": "Invalid ESPHome id.",
+                    })
+                registry.claim(widget_id, f"widget at {node_path}")
+                visit_surface_widgets(
+                    node.get("children", []), depth + 1, f"{node_path}.children")
+
+        for page_index, page in enumerate(surface_payload.get("pages", [])):
+            page_id = str(page.get("id", ""))
+            if not _ID_PATTERN.fullmatch(page_id):
+                issues.append({
+                    "severity": "error", "page": page_id,
+                    "message": "Invalid ESPHome page id.",
+                })
+            registry.claim(page_id, f"pages[{page_index}]")
+            visit_surface_widgets(
+                page.get("widgets", []), parent_path=f"pages[{page_index}].widgets")
+        for layer_name in ("bottom_layer", "top_layer"):
+            layer = surface_payload.get(layer_name)
+            if layer:
+                visit_surface_widgets(
+                    layer.get("widgets", []), parent_path=f"{layer_name}.widgets")
+        if project.widgets and surface_payload.get("pages"):
+            issues.append({
+                "severity": "error",
+                "message": "ESPHome does not allow root widgets and pages together.",
+            })
         for kind, entries in (
             ("style", project.styles),
             ("font", project.fonts),
@@ -170,7 +217,7 @@ class DesignerService:
         except LvglImportError as exc:
             raise ApiError("import_failed", str(exc), 422) from exc
 
-        payload = result.project.to_dict()
+        payload, surface_stats = materialize_surfaces(result.project, result.issues)
         # Run the normal validation too, so the caller gets one issue list and
         # the same failure modes as any other project.
         _project, validation_issues = self.validate(payload)
@@ -181,18 +228,40 @@ class DesignerService:
             for i in validation_issues
         )
         blocking = [i for i in issues if i["severity"] in ("A", "error")]
+        stats = dict(result.stats)
+        stats["widget_count"] = stats.get("widget_count", 0) + surface_stats["surface_widget_count"]
+        merged_types = dict(stats.get("widget_types", {}))
+        for widget_type, count in surface_stats["surface_widget_types"].items():
+            merged_types[widget_type] = merged_types.get(widget_type, 0) + count
+        stats["widget_types"] = dict(sorted(merged_types.items()))
+        stats.update({
+            key: value for key, value in surface_stats.items()
+            if key != "surface_widget_types"
+        })
         return {
             "project": payload,
             "issues": issues,
-            "stats": result.stats,
+            "stats": stats,
             "valid": not blocking,
         }
 
     def probe_yaml(self, text: str) -> dict:
         try:
-            return probe_esphome_yaml(text)
+            result = import_esphome_yaml(text)
         except LvglImportError as exc:
             raise ApiError("import_failed", str(exc), 422) from exc
+        _payload, surface_stats = materialize_surfaces(result.project, result.issues)
+        stats = dict(result.stats)
+        stats["widget_count"] = stats.get("widget_count", 0) + surface_stats["surface_widget_count"]
+        merged_types = dict(stats.get("widget_types", {}))
+        for widget_type, count in surface_stats["surface_widget_types"].items():
+            merged_types[widget_type] = merged_types.get(widget_type, 0) + count
+        stats["widget_types"] = dict(sorted(merged_types.items()))
+        stats.update({
+            key: value for key, value in surface_stats.items()
+            if key not in {"surface_widget_count", "surface_widget_types"}
+        })
+        return stats
 
     def export_yaml(self, payload: dict[str, Any]) -> dict:
         project, issues = self.validate(payload)
@@ -204,6 +273,10 @@ class DesignerService:
         except ExportError as exc:
             raise ApiError("export_failed", str(exc), 422) from exc
         return {
-            "yaml": result.yaml_text,
+            "yaml": strip_empty_root_widgets(result.yaml_text, project),
             "issues": [asdict(issue) for issue in result.issues],
         }
+
+    def project_payload(self, project: Project) -> dict[str, Any]:
+        """Decorate a stored core project with read-only Viewer surfaces."""
+        return materialize_surfaces(project)[0]

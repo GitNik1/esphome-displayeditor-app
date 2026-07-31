@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Added the first read-only browser Viewer: projects open in a full-screen,
+  isolated preview using the same layout engine as the designer, with fit,
+  zoom, rotation and reset controls. The viewer renders the eight currently
+  supported widget types plus GlowLine layers and cannot mutate the editor
+  project or invoke a write API.
+- Added safe Viewer interactions: buttons render pressed/checked/focused
+  states, switches and sliders keep isolated runtime values, and a strict
+  allowlist simulates show/hide and literal widget updates. Unsupported
+  automations are skipped and recorded in the Viewer event log.
+- Viewer styling now applies named plus inline overrides in ESPHome priority,
+  including switch/slider parts, state styles, font sizing, padding, gaps,
+  background/shadow opacity and gradients.
+- Added an add-on-only structured view of ESPHome LVGL pages and top/bottom
+  layers while keeping the shared desktop core unchanged. Import/export
+  preserves page layout, styles, skip/page-wrap settings and layer widgets;
+  the Viewer adds page selection and previous/next controls plus safe
+  `lvgl.page.show/next/previous` action handling.
+
 ## 0.10.0
 
 - Added the optional, fail-closed ESPHome Device Builder backend for ESPHome

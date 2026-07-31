@@ -2,6 +2,7 @@ import { computeLayout, contentOrigin } from "./layout.js";
 import { boundingBox, nearestSegment } from "./glowline/geometry.js";
 import { drawDocument, flowBoundsDocument, hasFlow, strokePath } from "./glowline/renderer.js";
 import { format565, hsvToRgb, quantizeImageData, rgb565to888, rgb888to565 } from "./glowline/rgb565.js";
+import { ViewerController } from "./viewer/viewer.js";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -69,6 +70,8 @@ const state = {
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
 
+let viewer = null;
+
 function freshProject() {
   return {
     format: "esphome-lvgl-designer-project",
@@ -78,6 +81,10 @@ function freshProject() {
     display_id_placeholder: "my_display",
     default_font: "",
     widgets: [],
+    pages: [],
+    top_layer: null,
+    bottom_layer: null,
+    page_wrap: true,
     styles: [],
     fonts: [],
     images: [],
@@ -471,6 +478,43 @@ function bindDesignerPaneSwitch() {
 
 function bindDesigner() {
   bindDesignerPaneSwitch();
+  viewer = new ViewerController({
+    dialog: $("#viewer-dialog"),
+    stage: $("#viewer-stage"),
+    frame: $("#viewer-frame"),
+    display: $("#viewer-display"),
+    title: $("#viewer-title"),
+    status: $("#viewer-status"),
+    zoomLabel: $("#viewer-zoom-label"),
+    rotationControl: $("#viewer-rotation"),
+    eventLog: $("#viewer-event-log"),
+    eventCount: $("#viewer-event-count"),
+    pageControls: $("#viewer-page-controls"),
+    pageSelect: $("#viewer-page-select"),
+    pagePrevious: $("#viewer-page-previous"),
+    pageNext: $("#viewer-page-next"),
+  });
+  $("#open-viewer").addEventListener("click", () => viewer.open(state.project, {
+    name: state.projectName || $("#project-name").value || "Lokales Projekt",
+    backgroundPreview: state.backgroundPreview,
+  }));
+  $("#viewer-close").addEventListener("click", () => viewer.close());
+  $("#viewer-reset").addEventListener("click", () => viewer.reset());
+  $("#viewer-page-select").addEventListener("change", (event) => {
+    viewer.setActivePage(event.target.value);
+  });
+  $("#viewer-page-previous").addEventListener("click", () => viewer.changePage(-1));
+  $("#viewer-page-next").addEventListener("click", () => viewer.changePage(1));
+  $("#viewer-fit").addEventListener("click", () => viewer.fit());
+  $("#viewer-zoom-100").addEventListener("click", () => viewer.setZoom(1));
+  $("#viewer-zoom-out").addEventListener("click", () => viewer.setZoom(viewer.zoom / 1.25));
+  $("#viewer-zoom-in").addEventListener("click", () => viewer.setZoom(viewer.zoom * 1.25));
+  $("#viewer-rotation").addEventListener("change", (event) => viewer.setRotation(event.target.value));
+  $("#viewer-dialog").addEventListener("close", () => viewer.close());
+  $("#viewer-dialog").addEventListener("cancel", (event) => {
+    event.preventDefault();
+    viewer.close();
+  });
   $("#canvas-width").addEventListener("change", updateCanvasSize);
   $("#canvas-height").addEventListener("change", updateCanvasSize);
   $("#new-project").addEventListener("click", newDesignerProject);
@@ -1174,7 +1218,14 @@ function renderCanvas() {
   });
   canvas.append(glowCanvasFront, handles);
 
-  $("#widget-count").textContent = `${allWidgets().length} Widgets`;
+  const pageWidgetCount = (state.project.pages || [])
+    .reduce((count, page) => count + allWidgets(page.widgets || []).length, 0);
+  const layerWidgetCount = allWidgets(state.project.top_layer?.widgets || []).length
+    + allWidgets(state.project.bottom_layer?.widgets || []).length;
+  const totalWidgetCount = allWidgets().length + pageWidgetCount + layerWidgetCount;
+  $("#widget-count").textContent = (state.project.pages || []).length
+    ? `${state.project.pages.length} Seiten · ${totalWidgetCount} Widgets`
+    : `${totalWidgetCount} Widgets`;
   applyZoom();
   renderGlowCanvas();
   renderGlowHandles();
@@ -2754,7 +2805,10 @@ function renderTree() {
   tree.replaceChildren();
   const widgets = allWidgets();
   const strokes = state.project.glow_strokes || [];
-  tree.classList.toggle("empty", widgets.length === 0 && strokes.length === 0);
+  const hasSurfaces = Boolean(
+    state.project.pages?.length || state.project.top_layer || state.project.bottom_layer,
+  );
+  tree.classList.toggle("empty", widgets.length === 0 && strokes.length === 0 && !hasSurfaces);
 
   if (!tree.dataset.dropBound) {
     tree.dataset.dropBound = "1";
@@ -2771,7 +2825,7 @@ function renderTree() {
     });
   }
 
-  if (!widgets.length && !strokes.length) {
+  if (!widgets.length && !strokes.length && !hasSurfaces) {
     tree.textContent = "Noch keine Widgets";
     return;
   }
@@ -2834,6 +2888,35 @@ function renderTree() {
     strokes.filter((stroke) => stroke.parent_id === widget.id).forEach((stroke) => appendStroke(stroke, depth + 1));
   });
   appendNodes(state.project.widgets);
+
+  const appendReadOnlyNodes = (nodes, depth = 1) => (nodes || []).forEach((widget) => {
+    const item = document.createElement("div");
+    item.className = "tree-item tree-readonly";
+    item.style.paddingLeft = `${9 + depth * 16}px`;
+    const label = document.createElement("span");
+    label.className = "tree-label";
+    label.textContent = `${widget.id} · ${widget.widget_type}`;
+    label.title = "Seiten- und Layer-Widgets werden derzeit im Viewer dargestellt.";
+    item.append(label);
+    tree.append(item);
+    appendReadOnlyNodes(widget.children, depth + 1);
+  });
+  const appendSurface = (title, surface, { skipped = false } = {}) => {
+    const header = document.createElement("div");
+    header.className = "tree-item tree-surface";
+    const label = document.createElement("span");
+    label.className = "tree-label";
+    label.textContent = `${title}${skipped ? " · überspringen" : ""}`;
+    label.title = "Diese Struktur ist im Viewer verfügbar.";
+    header.append(label);
+    tree.append(header);
+    appendReadOnlyNodes(surface?.widgets || []);
+  };
+  if (state.project.bottom_layer) appendSurface("Bottom-Layer", state.project.bottom_layer);
+  (state.project.pages || []).forEach((page) => {
+    appendSurface(`Seite: ${page.id}`, page, { skipped: page.skip });
+  });
+  if (state.project.top_layer) appendSurface("Top-Layer", state.project.top_layer);
 
   strokes.filter((stroke) => !stroke.parent_id).forEach((stroke) => appendStroke(stroke, 0));
 }
