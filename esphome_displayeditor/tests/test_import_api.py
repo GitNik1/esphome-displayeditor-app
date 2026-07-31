@@ -56,7 +56,8 @@ def test_import_returns_a_saveable_project(client: TestClient) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["valid"] is True
-    assert body["project"]["format_version"] == 2
+    from backend.designer_core.model import PROJECT_FORMAT_VERSION
+    assert body["project"]["format_version"] == PROJECT_FORMAT_VERSION
     assert body["project"]["import_source"]["name"] == "p4-86-panel.yaml"
     # Assets belong to the source config; redefining them would collide.
     assert body["project"]["export_sections"] == ["lvgl"]

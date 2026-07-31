@@ -12,13 +12,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 PROJECT_FORMAT = "esphome-lvgl-designer-project"
-#: Version 2 adds the fields needed to hold an imported ESPHome config:
-#: WidgetNode.layout/grid_cell/extra/source, Project.theme/extra_lvgl, the
-#: "states" key inside style trees, and `external` assets. Older builds read
-#: every field with d.get(key, default), so they would load a v2 file, drop
-#: all of that silently, and write the truncated version back. The bump turns
-#: that data loss into an explicit refusal (projectformat.py, designer.py).
-PROJECT_FORMAT_VERSION = 2
+#: Version 3 adds Project.glow_strokes - glow/flow lines drawn in the browser
+#: (a port of glowline-editor's model), baked into an image sequence and an
+#: animimg widget on export. Same forward-compat rationale as version 2: an
+#: older build must refuse the file, not load it and silently drop the lines.
+PROJECT_FORMAT_VERSION = 3
 
 DEFAULT_W, DEFAULT_H = 480, 480
 
@@ -328,6 +326,129 @@ class ColorLibraryEntry:
 
 
 @dataclass
+class GlowParams:
+    """Glow parameters of a single glow line. Ported from glowline-editor's
+    ``GlowParams``; field names match exactly, since ``frontend/glowline/
+    renderer.js`` reads a stroke's ``glow`` as a plain object with these keys."""
+
+    enabled: bool = True
+    radius: float = 14.0
+    intensity: float = 0.85
+    use_line_color: bool = True
+    color565: int = 0x07FF
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled, "radius": self.radius,
+            "intensity": self.intensity, "use_line_color": self.use_line_color,
+            "color565": int(self.color565) & 0xFFFF,
+        }
+
+    @staticmethod
+    def from_dict(d: dict[str, Any]) -> GlowParams:
+        g = GlowParams()
+        g.enabled = bool(d.get("enabled", True))
+        g.radius = float(d.get("radius", 14.0))
+        g.intensity = float(d.get("intensity", 0.85))
+        g.use_line_color = bool(d.get("use_line_color", True))
+        g.color565 = int(d.get("color565", 0x07FF)) & 0xFFFF
+        return g
+
+
+@dataclass
+class FlowParams:
+    """Flow markers travelling along a line. Ported from glowline-editor's
+    ``FlowParams``; field names match exactly for the same reason as
+    ``GlowParams`` above."""
+
+    enabled: bool = False
+    mode: str = "arrows"  # "arrows" | "dashes"
+    reversed: bool = False
+    spacing: float = 40.0
+    size: float = 14.0
+    width: float = 0.0  # 0 = adopt the line width
+    use_line_color: bool = False
+    color565: int = 0xFFFF
+    glow_radius: float = 0.0
+    glow_intensity: float = 0.9
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled, "mode": self.mode, "reversed": self.reversed,
+            "spacing": self.spacing, "size": self.size, "width": self.width,
+            "use_line_color": self.use_line_color,
+            "color565": int(self.color565) & 0xFFFF,
+            "glow_radius": self.glow_radius, "glow_intensity": self.glow_intensity,
+        }
+
+    @staticmethod
+    def from_dict(d: dict[str, Any]) -> FlowParams:
+        f = FlowParams()
+        f.enabled = bool(d.get("enabled", False))
+        f.mode = d.get("mode", "arrows")
+        f.reversed = bool(d.get("reversed", False))
+        f.spacing = float(d.get("spacing", 40.0))
+        f.size = float(d.get("size", 14.0))
+        f.width = float(d.get("width", 0.0))
+        f.use_line_color = bool(d.get("use_line_color", False))
+        f.color565 = int(d.get("color565", 0xFFFF)) & 0xFFFF
+        f.glow_radius = float(d.get("glow_radius", 0.0))
+        f.glow_intensity = float(d.get("glow_intensity", 0.9))
+        return f
+
+
+@dataclass
+class GlowStroke:
+    """One editable glow line (rounded polyline or spline), drawn directly on
+    the canvas at the project's own coordinates - not a separate document, so
+    a line can be placed relative to the widgets it animates alongside.
+
+    Ported from glowline-editor's ``Stroke``. ``id`` is new here: the desktop
+    editor selects a stroke by list position, but this UI needs a stable
+    handle for the hierarchy/selection the rest of the designer already uses.
+    """
+
+    id: str
+    points: list[list[float]] = field(default_factory=list)
+    name: str = ""
+    color565: int = 0x07FF
+    width: float = 5.0
+    corner_radius: float = 12.0
+    mode: str = "polyline"  # "polyline" | "smooth"
+    closed: bool = False
+    glow: GlowParams = field(default_factory=GlowParams)
+    flow: FlowParams = field(default_factory=FlowParams)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "points": [[float(p[0]), float(p[1])] for p in self.points],
+            "name": self.name,
+            "color565": int(self.color565) & 0xFFFF,
+            "width": float(self.width),
+            "corner_radius": float(self.corner_radius),
+            "mode": self.mode,
+            "closed": bool(self.closed),
+            "glow": self.glow.to_dict(),
+            "flow": self.flow.to_dict(),
+        }
+
+    @staticmethod
+    def from_dict(d: dict[str, Any]) -> GlowStroke:
+        s = GlowStroke(id=str(d.get("id", "")))
+        s.points = [[float(p[0]), float(p[1])] for p in d.get("points", [])]
+        s.name = str(d.get("name", ""))
+        s.color565 = int(d.get("color565", 0x07FF)) & 0xFFFF
+        s.width = float(d.get("width", 5.0))
+        s.corner_radius = float(d.get("corner_radius", 12.0))
+        s.mode = d.get("mode", "polyline")
+        s.closed = bool(d.get("closed", False))
+        s.glow = GlowParams.from_dict(d.get("glow", {}))
+        s.flow = FlowParams.from_dict(d.get("flow", {}))
+        return s
+
+
+@dataclass
 class Project:
     canvas_width: int = DEFAULT_W
     canvas_height: int = DEFAULT_H
@@ -359,6 +480,10 @@ class Project:
     #: Provenance of an import - ``{"name": ..., "revision": ...}``. Recorded
     #: for display only; nothing ever writes back to the source.
     import_source: dict[str, Any] = field(default_factory=dict)
+    #: Glow/flow lines drawn on the canvas (ported GlowLine editor). Rendered
+    #: live for preview; "bake into image sequence" turns them into
+    #: ImageLibraryEntry rows plus an image/animimg widget pair.
+    glow_strokes: list[GlowStroke] = field(default_factory=list)
 
     def all_widgets(self):
         """Yield every WidgetNode in the tree, depth-first."""
@@ -389,6 +514,7 @@ class Project:
             "canvas_source": self.canvas_source,
             "export_sections": list(self.export_sections),
             "import_source": _copy(self.import_source),
+            "glow_strokes": [s.to_dict() for s in self.glow_strokes],
         }
 
     @staticmethod
@@ -411,4 +537,5 @@ class Project:
         p.export_sections = list(
             d.get("export_sections", ["color", "font", "image", "lvgl"]))
         p.import_source = _copy(d.get("import_source", {}))
+        p.glow_strokes = [GlowStroke.from_dict(s) for s in d.get("glow_strokes", [])]
         return p

@@ -47,6 +47,17 @@
               <button id="zoom-fit" class="button subtle compact" title="Einpassen (Strg+0)">Einpassen</button>
               <button id="zoom-100" class="button subtle compact" title="Originalgröße (Strg+1)">1:1</button>
             </div>
+            <div class="toolbar-group canvas-mode-group">
+              <button id="mode-widgets" class="button subtle compact active" title="Widgets bearbeiten">Widgets</button>
+              <button id="mode-lines" class="button subtle compact" title="Glow-Linien bearbeiten">Glow-Linien</button>
+            </div>
+            <div id="line-tool-group" class="toolbar-group hidden">
+              <button id="tool-select" class="button subtle compact active" title="Auswahl (V)">Auswahl</button>
+              <button id="tool-draw" class="button subtle compact" title="Linie zeichnen (P)">Linie zeichnen</button>
+              <button id="line-add" class="button subtle compact" title="Neue Linie beginnen">＋ Linie</button>
+              <button id="line-preview" class="button subtle compact" title="Fluss-Vorschau (F5)">▶ Vorschau</button>
+              <button id="line-delete" class="button danger compact" title="Ausgewählte Linie löschen" disabled>Löschen</button>
+            </div>
             <div class="toolbar-group">
               <button id="undo" class="button subtle" title="Rückgängig (Strg+Z)" disabled>↶</button>
               <button id="redo" class="button subtle" title="Wiederholen (Strg+Y)" disabled>↷</button>
@@ -91,6 +102,8 @@
             <div id="canvas-scaler" class="canvas-scaler">
               <div id="canvas" class="canvas" aria-label="LVGL-Zeichenfläche">
                 <div id="canvas-background" class="canvas-background"></div>
+                <canvas id="glow-canvas" class="glow-canvas"></canvas>
+                <div id="glow-handles" class="glow-handles"></div>
               </div>
             </div>
           </div>
@@ -151,6 +164,70 @@
             </div>
 
             <div class="actions"><button id="delete-widget" type="button" class="button danger">Widget löschen</button></div>
+          </form>
+
+          <div id="empty-line-properties" class="empty hidden">Zeichne eine Linie oder wähle eine bestehende aus.</div>
+          <form id="line-properties" class="properties hidden">
+            <label>Name <input id="line-name" placeholder="z. B. Kühlerfluss"></label>
+
+            <div class="property-section">Farbrad (RGB565)</div>
+            <div class="colorwheel-target">
+              <button type="button" class="button subtle compact active" data-wheel-target="line">→ Linie</button>
+              <button type="button" class="button subtle compact" data-wheel-target="glow">→ Glühen</button>
+              <button type="button" class="button subtle compact" data-wheel-target="flow">→ Fluss</button>
+            </div>
+            <canvas id="color-wheel" width="160" height="160" class="color-wheel"></canvas>
+            <input id="color-wheel-value" type="range" min="0" max="1" step="0.001" value="1" class="color-wheel-value">
+            <div id="color-wheel-readout" class="color-wheel-readout">0x07FF   #00FFFF   (0,255,255)</div>
+
+            <div class="property-section">Linie</div>
+            <div class="field-row">
+              <label>Breite <input id="line-width" type="number" min="0.5" step="0.5"></label>
+              <label>Eckenradius <input id="line-corner-radius" type="number" min="0" step="1"></label>
+            </div>
+            <label>Form
+              <select id="line-mode">
+                <option value="polyline">Polylinie (rund)</option>
+                <option value="smooth">Spline (glatt)</option>
+              </select>
+            </label>
+            <label class="checkbox-field">Geschlossen <input id="line-closed" type="checkbox"></label>
+
+            <div class="property-section">Glühen</div>
+            <label class="checkbox-field">Aktiv <input id="glow-enabled" type="checkbox"></label>
+            <div class="field-row">
+              <label>Radius <input id="glow-radius" type="number" min="0" step="0.5"></label>
+              <label>Intensität <input id="glow-intensity" type="number" min="0" max="1" step="0.05"></label>
+            </div>
+            <label class="checkbox-field">Farbe der Linie übernehmen <input id="glow-use-line-color" type="checkbox"></label>
+
+            <div class="property-section">Fluss</div>
+            <label class="checkbox-field">Aktiv <input id="flow-enabled" type="checkbox"></label>
+            <label>Marker
+              <select id="flow-mode">
+                <option value="arrows">Pfeile</option>
+                <option value="dashes">Bewegte Striche</option>
+              </select>
+            </label>
+            <label class="checkbox-field">Richtung umkehren <input id="flow-reversed" type="checkbox"></label>
+            <div class="field-row">
+              <label>Abstand <input id="flow-spacing" type="number" min="1" step="1"></label>
+              <label>Größe <input id="flow-size" type="number" min="1" step="1"></label>
+            </div>
+            <div class="field-row">
+              <label>Dicke (0=Linienbreite) <input id="flow-width" type="number" min="0" step="0.5"></label>
+              <label>Glüh-Radius <input id="flow-glow-radius" type="number" min="0" step="0.5"></label>
+            </div>
+            <label class="checkbox-field">Farbe der Linie übernehmen <input id="flow-use-line-color" type="checkbox"></label>
+
+            <div class="property-section">Bildsequenz</div>
+            <label>Anzahl Bilder <input id="bake-frame-count" type="number" min="1" max="60" value="6"></label>
+            <label class="checkbox-field">Zuschneiden <input id="bake-crop" type="checkbox" checked></label>
+            <div class="actions">
+              <button id="bake-line" type="button" class="button primary">Als Bilder + Widgets anlegen</button>
+            </div>
+
+            <div class="actions"><button id="delete-line" type="button" class="button danger">Linie löschen</button></div>
           </form>
         </aside>
       </section>

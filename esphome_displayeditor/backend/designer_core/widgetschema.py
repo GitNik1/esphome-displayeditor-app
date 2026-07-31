@@ -369,8 +369,12 @@ _register(WidgetSchema(
                     label_de="Einzelbilder", label_en="Frames"),
         PropertyDef("duration", "int", CONTENT, default=1000,
                     label_de="Dauer (ms)", label_en="Duration (ms)"),
-        PropertyDef("repeat_count", "int", CONTENT,
-                    label_de="Wiederholungen", label_en="Repeat count"),
+        # ESPHome accepts either an integer or the literal word "forever" -
+        # a bare text field lets the user write either, and content
+        # properties pass through to YAML unvalidated either way.
+        PropertyDef("repeat_count", "text", CONTENT,
+                    label_de="Wiederholungen (Zahl oder \"forever\")",
+                    label_en="Repeat count (number or \"forever\")"),
         PropertyDef("auto_start", "bool", CONTENT, default=False,
                     label_de="Autostart", label_en="Auto start"),
         *_paint_style_props(),

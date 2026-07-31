@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import asyncio
+import base64
+import binascii
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,21 @@ class ImportRequest(BaseModel):
     configuration: str | None = None
     content: str | None = Field(default=None, max_length=4 * 1024 * 1024)
     canvas: CanvasSize | None = None
+
+
+class AssetImageRequest(BaseModel):
+    """A baked animation frame (or any other PNG) to place in images/.
+
+    Base64 rather than a multipart upload: every other write endpoint here is
+    plain JSON, and a baked frame is small enough (a cropped animation frame,
+    not a full-resolution photo) that the ~33% encoding overhead is a
+    non-issue.
+    """
+
+    name: str = Field(min_length=1, max_length=128)
+    # A hard ceiling independent of the configured max_file_size_kib, so an
+    # oversized request is rejected before it is even fully base64-decoded.
+    content_base64: str = Field(min_length=1, max_length=8 * 1024 * 1024)
 
 
 class SaveDesignerProjectRequest(DesignerProjectRequest):
@@ -110,7 +127,7 @@ def create_app(
 
     application = FastAPI(
         title="ESPHome Display Editor API",
-        version=os.getenv("APP_VERSION", "0.8.0"),
+        version=os.getenv("APP_VERSION", "0.9.1"),
         docs_url=None,
         redoc_url=None,
         openapi_url="/api/v1/openapi.json",
@@ -620,6 +637,35 @@ def create_app(
         text, name = _import_source(body)
         canvas = (body.canvas.width, body.canvas.height) if body.canvas else None
         return designer.import_yaml(text, canvas=canvas, source_name=name)
+
+    @application.post("/api/v1/designer/assets/images")
+    async def upload_image_asset(body: AssetImageRequest, request: Request) -> dict:
+        user_id = require_capability(request, "designer.asset_write")
+        try:
+            content = base64.b64decode(body.content_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ApiError("invalid_request", "content_base64 is not valid base64.", 422) from exc
+        try:
+            result = filesystem.write_image_asset(body.name, content)
+        except ApiError as exc:
+            audit.record(
+                user_id=user_id,
+                action="designer.asset.write",
+                configuration=body.name,
+                old_revision=None,
+                new_revision=None,
+                result=exc.error,
+            )
+            raise
+        audit.record(
+            user_id=user_id,
+            action="designer.asset.write",
+            configuration=body.name,
+            old_revision=None,
+            new_revision=result["path"],
+            result="success",
+        )
+        return result
 
     @application.get("/api/v1/designer/projects")
     async def list_designer_projects() -> dict:

@@ -1,4 +1,7 @@
 import { computeLayout } from "./layout.js";
+import { boundingBox, nearestSegment } from "./glowline/geometry.js";
+import { drawDocument, flowBoundsDocument, hasFlow, strokePath } from "./glowline/renderer.js";
+import { format565, hsvToRgb, quantizeImageData, rgb565to888, rgb888to565 } from "./glowline/rgb565.js";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -29,6 +32,18 @@ const state = {
   editingDevice: null,
   deviceSocket: null,
   deviceStates: [],
+
+  // Glow lines (ported GlowLine editor). Editing widgets and editing lines are
+  // mutually exclusive modes, matching the desktop app being a separate tool -
+  // mixing hit-testing for both under one cursor model would be a lot of
+  // complexity for a case that rarely overlaps in practice.
+  canvasMode: "widgets", // "widgets" | "lines"
+  lineTool: "select", // "select" | "draw"
+  selectedStroke: null,
+  drawingPoints: null, // points of a line being placed, while lineTool === "draw"
+  colorWheelTarget: "line", // "line" | "glow" | "flow"
+  flowPreviewTimer: null,
+  flowPreviewStart: 0,
 };
 
 const MIN_ZOOM = 0.1;
@@ -37,7 +52,7 @@ const MAX_ZOOM = 8;
 function freshProject() {
   return {
     format: "esphome-lvgl-designer-project",
-    format_version: 2,
+    format_version: 3,
     canvas: { width: 480, height: 480 },
     background: { path: "", export_as_lvgl_image: false, image_id: "bg_image", opacity_in_editor: 40 },
     display_id_placeholder: "my_display",
@@ -52,6 +67,19 @@ function freshProject() {
     canvas_source: "default",
     export_sections: ["color", "font", "image", "lvgl"],
     import_source: {},
+    glow_strokes: [],
+  };
+}
+
+function freshGlowStroke(id) {
+  return {
+    id, points: [], name: "", color565: 0x07ff, width: 5, corner_radius: 12,
+    mode: "polyline", closed: false,
+    glow: { enabled: true, radius: 14, intensity: 0.85, use_line_color: true, color565: 0x07ff },
+    flow: {
+      enabled: false, mode: "arrows", reversed: false, spacing: 40, size: 14,
+      width: 0, use_line_color: false, color565: 0xffff, glow_radius: 0, glow_intensity: 0.9,
+    },
   };
 }
 
@@ -129,6 +157,7 @@ function bindTabs() {
   $$(".tab").forEach((tab) => tab.addEventListener("click", () => {
     $$(".tab").forEach((item) => item.classList.toggle("active", item === tab));
     $$(".view").forEach((view) => view.classList.toggle("active", view.id === tab.dataset.tab));
+    if (tab.dataset.tab !== "designer") stopFlowPreview();
   }));
 }
 
@@ -416,6 +445,7 @@ function bindDesigner() {
   $("#style-mode").addEventListener("change", changeStyleMode);
   $("#style-ref").addEventListener("change", changeStyleRef);
   $("#save-as-style").addEventListener("click", saveCurrentStyleAsNamed);
+  bindGlowTools();
 
   $("#zoom-in").addEventListener("click", () => setZoom(state.zoom * 1.25));
   $("#zoom-out").addEventListener("click", () => setZoom(state.zoom / 1.25));
@@ -446,6 +476,48 @@ function bindDesigner() {
   document.addEventListener("keydown", (event) => {
     if (!$("#designer").classList.contains("active")) return;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName);
+
+    if (state.canvasMode === "lines" && !typing && !event.ctrlKey) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (state.drawingStroke) {
+          removeStroke(state.drawingStroke);
+          state.drawingStroke = null;
+          state.selectedStroke = null;
+          setLineTool("select");
+          renderDesigner();
+        }
+        return;
+      }
+      if (event.key === "Backspace" && state.drawingStroke) {
+        event.preventDefault();
+        state.drawingStroke.points.pop();
+        markProjectDirty();
+        renderGlowCanvas();
+        renderGlowHandles();
+        return;
+      }
+      if (event.key === "Enter" && state.drawingStroke) {
+        event.preventDefault();
+        finishDrawing();
+        return;
+      }
+      if (event.key === "Delete" && state.selectedStroke && !state.drawingStroke) {
+        event.preventDefault();
+        deleteSelectedStroke();
+        return;
+      }
+      if (event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        setLineTool("draw");
+        return;
+      }
+      if (event.key.toLowerCase() === "v") {
+        event.preventDefault();
+        setLineTool("select");
+        return;
+      }
+    }
 
     if (event.key === "Delete" && !typing) {
       event.preventDefault();
@@ -505,11 +577,14 @@ function fitCanvasToView() {
 
 function newDesignerProject() {
   if (state.projectDirty && !confirm("Ungespeicherte Änderungen verwerfen?")) return;
+  stopFlowPreview();
   state.project = freshProject();
   state.projectName = null;
   state.projectRevision = null;
   state.projectDirty = false;
   state.selectedWidget = null;
+  state.selectedStroke = null;
+  state.drawingStroke = null;
   state.backgroundPreview = null;
   resetHistory();
   $("#project-name").value = "display.lvgldesign";
@@ -531,11 +606,14 @@ async function openDesignerProject(event) {
       method: "POST", body: JSON.stringify({ project }),
     });
     if (!result.valid) throw new Error(result.issues.map((issue) => issue.message).join("\n"));
+    stopFlowPreview();
     state.project = result.project;
     state.projectName = null;
     state.projectRevision = null;
     state.projectDirty = false;
     state.selectedWidget = null;
+    state.selectedStroke = null;
+    state.drawingStroke = null;
     $("#project-name").value = normalizeProjectName(file.name);
     resetHistory();
     renderDesigner();
@@ -699,6 +777,7 @@ async function runImport() {
       renderIssues($("#import-summary"), result.issues, "beim Import");
       return;
     }
+    stopFlowPreview();
     state.project = result.project;
     // An import is not "the saved project under this name" - it is a new,
     // unsaved document derived from a config we must never write back to.
@@ -706,6 +785,8 @@ async function runImport() {
     state.projectRevision = null;
     state.projectDirty = true;
     state.selectedWidget = null;
+    state.selectedStroke = null;
+    state.drawingStroke = null;
     state.backgroundPreview = null;
     $("#project-name").value = normalizeProjectName(
       importState.configuration || importState.fileName || "import");
@@ -754,11 +835,14 @@ async function loadSelectedServerProject() {
   if (state.projectDirty && !confirm("Ungespeicherte Änderungen verwerfen?")) return;
   try {
     const result = await api(`designer/projects/${encodeURIComponent(name)}`);
+    stopFlowPreview();
     state.project = result.project;
     state.projectName = result.name;
     state.projectRevision = result.revision;
     state.projectDirty = false;
     state.selectedWidget = null;
+    state.selectedStroke = null;
+    state.drawingStroke = null;
     $("#project-name").value = result.name;
     resetHistory();
     renderDesigner();
@@ -831,26 +915,33 @@ function pushUndo() {
   updateUndoButtons();
 }
 
+function reselectAfterHistoryChange(widgetId, strokeId) {
+  state.selectedWidget = widgetId
+    ? allWidgets().find((widget) => widget.id === widgetId) || null
+    : null;
+  state.selectedStroke = strokeId
+    ? (state.project.glow_strokes || []).find((stroke) => stroke.id === strokeId) || null
+    : null;
+}
+
 function undoDesignerChange() {
   if (!state.undo.length) return;
-  const selectedId = state.selectedWidget?.id;
+  const widgetId = state.selectedWidget?.id;
+  const strokeId = state.selectedStroke?.id;
   state.redo.push(JSON.stringify(state.project));
   state.project = JSON.parse(state.undo.pop());
-  state.selectedWidget = selectedId
-    ? allWidgets().find((widget) => widget.id === selectedId) || null
-    : null;
+  reselectAfterHistoryChange(widgetId, strokeId);
   markProjectDirty();
   renderDesigner();
 }
 
 function redoDesignerChange() {
   if (!state.redo.length) return;
-  const selectedId = state.selectedWidget?.id;
+  const widgetId = state.selectedWidget?.id;
+  const strokeId = state.selectedStroke?.id;
   state.undo.push(JSON.stringify(state.project));
   state.project = JSON.parse(state.redo.pop());
-  state.selectedWidget = selectedId
-    ? allWidgets().find((widget) => widget.id === selectedId) || null
-    : null;
+  reselectAfterHistoryChange(widgetId, strokeId);
   markProjectDirty();
   renderDesigner();
 }
@@ -982,6 +1073,7 @@ function renderDesigner() {
   renderCanvas();
   renderBackgroundFields();
   renderProperties();
+  renderLineProperties();
   renderTree();
   renderDesignerStatus();
   updateUndoButtons();
@@ -991,12 +1083,28 @@ function renderCanvas() {
   const canvas = $("#canvas");
   canvas.style.width = `${state.project.canvas.width}px`;
   canvas.style.height = `${state.project.canvas.height}px`;
+  canvas.classList.toggle("lines-mode", state.canvasMode === "lines");
+  canvas.classList.toggle("tool-select", state.lineTool === "select");
   $("#canvas-width").value = state.project.canvas.width;
   $("#canvas-height").value = state.project.canvas.height;
-  canvas.replaceChildren(renderCanvasBackground());
+
+  // Order matters: background, then the glow-line overlay, then widgets on
+  // top (so buttons/labels stay legible over a decorative flow animation),
+  // then the edit handles on top of everything so they stay grabbable.
+  const glowCanvas = document.createElement("canvas");
+  glowCanvas.id = "glow-canvas";
+  glowCanvas.className = "glow-canvas";
+  const handles = document.createElement("div");
+  handles.id = "glow-handles";
+  handles.className = "glow-handles";
+  canvas.replaceChildren(renderCanvasBackground(), glowCanvas);
   visualWidgets().forEach((item) => canvas.append(renderWidget(item)));
+  canvas.append(handles);
+
   $("#widget-count").textContent = `${allWidgets().length} Widgets`;
   applyZoom();
+  renderGlowCanvas();
+  renderGlowHandles();
 }
 
 function renderCanvasBackground() {
@@ -1066,6 +1174,689 @@ function clearBackgroundPreview() {
 function renderDesignerStatus() {
   const name = state.projectName || "Lokales Projekt";
   $("#designer-status").textContent = `${state.projectDirty ? "● Ungespeichert · " : ""}${name}`;
+}
+
+// --- Glow lines (ported GlowLine editor) ------------------------------------
+//
+// Editing widgets and editing lines are mutually exclusive modes (state.
+// canvasMode), matching the desktop app being a separate tool from the LVGL
+// designer: mixing hit-testing for both under one cursor model would be a lot
+// of complexity for a case that rarely overlaps in practice.
+
+function bindGlowTools() {
+  $("#mode-widgets").addEventListener("click", () => setCanvasMode("widgets"));
+  $("#mode-lines").addEventListener("click", () => setCanvasMode("lines"));
+  $("#tool-select").addEventListener("click", () => setLineTool("select"));
+  $("#tool-draw").addEventListener("click", () => setLineTool("draw"));
+  $("#line-add").addEventListener("click", startNewLine);
+  $("#line-delete").addEventListener("click", deleteSelectedStroke);
+  $("#delete-line").addEventListener("click", deleteSelectedStroke);
+  $("#line-preview").addEventListener("click", toggleFlowPreview);
+  $("#bake-line").addEventListener("click", bakeSelectedStroke);
+
+  const canvas = $("#canvas");
+  canvas.addEventListener("pointerdown", onGlowPointerDown);
+  canvas.addEventListener("dblclick", onGlowDoubleClick);
+  canvas.addEventListener("contextmenu", onGlowContextMenu);
+
+  $$(".colorwheel-target .button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.colorWheelTarget = btn.dataset.wheelTarget;
+      $$(".colorwheel-target .button").forEach((b) => b.classList.toggle("active", b === btn));
+      renderColorWheelReadout();
+    });
+  });
+  $("#color-wheel").addEventListener("pointerdown", (event) => {
+    onColorWheelPick(event);
+    const move = (moveEvent) => onColorWheelPick(moveEvent);
+    const up = () => window.removeEventListener("pointermove", move);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up, { once: true });
+  });
+  $("#color-wheel-value").addEventListener("input", drawColorWheel);
+
+  bindLinePropertyInputs();
+}
+
+function setCanvasMode(mode) {
+  if (mode !== "widgets") stopFlowPreview();
+  state.canvasMode = mode;
+  if (mode === "widgets") {
+    state.selectedStroke = null;
+    state.drawingStroke = null;
+    state.lineTool = "select";
+  } else {
+    state.selectedWidget = null;
+  }
+  $("#mode-widgets").classList.toggle("active", mode === "widgets");
+  $("#mode-lines").classList.toggle("active", mode === "lines");
+  $("#line-tool-group").classList.toggle("hidden", mode !== "lines");
+  $("#tool-select").classList.toggle("active", state.lineTool === "select");
+  $("#tool-draw").classList.toggle("active", state.lineTool === "draw");
+  renderDesigner();
+}
+
+function setLineTool(tool) {
+  state.lineTool = tool;
+  if (tool === "select") state.drawingStroke = null;
+  $("#tool-select").classList.toggle("active", tool === "select");
+  $("#tool-draw").classList.toggle("active", tool === "draw");
+  $("#canvas").classList.toggle("tool-select", tool === "select");
+  renderGlowHandles();
+}
+
+function uniqueStrokeId() {
+  const ids = new Set((state.project.glow_strokes || []).map((s) => s.id));
+  let n = 1;
+  while (ids.has(`line_${n}`)) n += 1;
+  return `line_${n}`;
+}
+
+function startNewLine() {
+  if (state.canvasMode !== "lines") setCanvasMode("lines");
+  pushUndo();
+  if (!Array.isArray(state.project.glow_strokes)) state.project.glow_strokes = [];
+  const stroke = freshGlowStroke(uniqueStrokeId());
+  state.project.glow_strokes.push(stroke);
+  state.selectedStroke = stroke;
+  state.drawingStroke = stroke;
+  markProjectDirty();
+  setLineTool("draw");
+  renderDesigner();
+}
+
+function removeStroke(stroke) {
+  const list = state.project.glow_strokes || [];
+  const index = list.indexOf(stroke);
+  if (index >= 0) list.splice(index, 1);
+}
+
+function deleteSelectedStroke() {
+  if (!state.selectedStroke) return;
+  pushUndo();
+  removeStroke(state.selectedStroke);
+  state.selectedStroke = null;
+  markProjectDirty();
+  renderDesigner();
+}
+
+function finishDrawing() {
+  const stroke = state.drawingStroke;
+  state.drawingStroke = null;
+  if (stroke && stroke.points.length < 2) {
+    // A line needs at least two points; a stray click produced nothing usable.
+    removeStroke(stroke);
+    state.selectedStroke = null;
+  }
+  setLineTool("select");
+  renderDesigner();
+}
+
+/** Pointer position in canvas image coordinates (undoes the zoom transform). */
+function canvasPointFromEvent(event) {
+  const rect = $("#canvas").getBoundingClientRect();
+  return [(event.clientX - rect.left) / state.zoom, (event.clientY - rect.top) / state.zoom];
+}
+
+/** Snap `point` to the nearest `step` angle around `origin`, same distance. */
+function snapAngle(origin, point, step) {
+  const dx = point[0] - origin[0];
+  const dy = point[1] - origin[1];
+  const distance = Math.hypot(dx, dy);
+  if (distance < 1e-6) return point;
+  const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+  return [origin[0] + Math.cos(angle) * distance, origin[1] + Math.sin(angle) * distance];
+}
+
+function onGlowPointerDown(event) {
+  if (state.canvasMode !== "lines" || event.target.closest(".glow-handle")) return;
+  const point = canvasPointFromEvent(event);
+
+  if (state.lineTool === "draw") {
+    placeDrawPoint(point, event);
+    return;
+  }
+  const hit = findStrokeAt(point);
+  state.selectedStroke = hit;
+  if (hit) beginLineBodyDrag(event, hit, point);
+  renderDesigner();
+}
+
+function placeDrawPoint(rawPoint, event) {
+  const stroke = state.drawingStroke;
+  if (!stroke) return;
+  let point = rawPoint;
+  if (stroke.points.length) {
+    const prev = stroke.points[stroke.points.length - 1];
+    if (event.shiftKey) point = snapAngle(prev, point, Math.PI / 4);
+    else if (event.ctrlKey) point = snapAngle(prev, point, Math.PI / 2);
+  }
+  // Clicking back on the first point closes the line into a ring.
+  if (stroke.points.length >= 2) {
+    const first = stroke.points[0];
+    if (Math.hypot(point[0] - first[0], point[1] - first[1]) < 8 / state.zoom) {
+      stroke.closed = true;
+      finishDrawing();
+      return;
+    }
+  }
+  stroke.points.push(point);
+  markProjectDirty();
+  renderGlowCanvas();
+  renderGlowHandles();
+}
+
+function onGlowDoubleClick(event) {
+  if (state.canvasMode !== "lines") return;
+  event.preventDefault();
+  if (state.lineTool === "draw" && state.drawingStroke) {
+    finishDrawing();
+    return;
+  }
+  if (state.lineTool === "select" && state.selectedStroke) {
+    const point = canvasPointFromEvent(event);
+    const stroke = state.selectedStroke;
+    const hit = nearestSegment(stroke.points, point, stroke.closed);
+    if (hit.index !== null) {
+      pushUndo();
+      stroke.points.splice(hit.index, 0, hit.point);
+      markProjectDirty();
+      renderDesigner();
+    }
+  }
+}
+
+function onGlowContextMenu(event) {
+  if (state.canvasMode !== "lines") return;
+  event.preventDefault();
+  if (state.lineTool === "draw" && state.drawingStroke) finishDrawing();
+}
+
+/**
+ * Line under `point`, tested against the control polygon (straight segments
+ * between the stored points) rather than the rendered curve. A reasonable
+ * approximation for picking - it can be slightly generous near a large
+ * corner radius or a spline bulge, which only ever widens the click target.
+ */
+function findStrokeAt(point) {
+  let best = null;
+  let bestDistance = Infinity;
+  for (const stroke of state.project.glow_strokes || []) {
+    if ((stroke.points || []).length < 2) continue;
+    const hit = nearestSegment(stroke.points, point, stroke.closed);
+    if (hit.index === null) continue;
+    const tolerance = Math.max(6, stroke.width / 2 + 4) / state.zoom;
+    if (hit.distance <= tolerance && hit.distance < bestDistance) {
+      bestDistance = hit.distance;
+      best = stroke;
+    }
+  }
+  return best;
+}
+
+function beginLineBodyDrag(event, stroke, startPoint) {
+  pushUndo();
+  const target = event.target;
+  const originPoints = stroke.points.map((p) => [...p]);
+  const handles = $("#glow-handles");
+  handles.style.visibility = "hidden";
+  target.setPointerCapture(event.pointerId);
+  target.addEventListener("pointermove", move);
+  target.addEventListener("pointerup", end, { once: true });
+  function move(moveEvent) {
+    const [x, y] = canvasPointFromEvent(moveEvent);
+    const dx = x - startPoint[0];
+    const dy = y - startPoint[1];
+    stroke.points = originPoints.map(([px, py]) => [px + dx, py + dy]);
+    markProjectDirty();
+    renderGlowCanvas();
+  }
+  function end() {
+    target.removeEventListener("pointermove", move);
+    handles.style.visibility = "visible";
+    renderGlowHandles();
+    renderDesignerStatus();
+  }
+}
+
+function beginPointDrag(event, stroke, index) {
+  pushUndo();
+  const handle = event.target;
+  handle.setPointerCapture(event.pointerId);
+  handle.addEventListener("pointermove", move);
+  handle.addEventListener("pointerup", end, { once: true });
+  function move(moveEvent) {
+    let point = canvasPointFromEvent(moveEvent);
+    if (moveEvent.ctrlKey || moveEvent.shiftKey) {
+      const neighbourIndex = index === 0 ? 1 : index - 1;
+      const neighbour = stroke.points[neighbourIndex];
+      if (neighbour) point = snapAngle(neighbour, point, moveEvent.shiftKey ? Math.PI / 4 : Math.PI / 2);
+    }
+    stroke.points[index] = point;
+    handle.style.left = `${point[0]}px`;
+    handle.style.top = `${point[1]}px`;
+    markProjectDirty();
+    renderGlowCanvas();
+  }
+  function end() {
+    handle.removeEventListener("pointermove", move);
+    renderDesignerStatus();
+  }
+}
+
+function renderGlowCanvas() {
+  const canvas = $("#glow-canvas");
+  if (!canvas) return;
+  canvas.width = state.project.canvas.width;
+  canvas.height = state.project.canvas.height;
+  drawGlowFrame(0);
+}
+
+function drawGlowFrame(phase) {
+  const canvas = $("#glow-canvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawDocument(ctx, { strokes: state.project.glow_strokes || [] },
+              { quality: "final", phase, withFlow: true });
+}
+
+function renderGlowHandles() {
+  const layer = $("#glow-handles");
+  if (!layer) return;
+  layer.replaceChildren();
+  if (state.canvasMode !== "lines" || !state.selectedStroke) return;
+  const stroke = state.selectedStroke;
+  stroke.points.forEach((point, index) => {
+    const handle = document.createElement("div");
+    handle.className = `glow-handle${index === 0 ? " first" : ""}`;
+    handle.style.left = `${point[0]}px`;
+    handle.style.top = `${point[1]}px`;
+    handle.title = index === 0 ? "Erster Punkt (schließt die Linie beim Zeichnen)" : `Punkt ${index + 1}`;
+    handle.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+      if (state.lineTool === "draw") return; // the canvas handler places points instead
+      beginPointDrag(event, stroke, index);
+    });
+    handle.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (stroke.points.length <= 2) {
+        toast("Eine Linie braucht mindestens zwei Punkte.", true);
+        return;
+      }
+      pushUndo();
+      stroke.points.splice(index, 1);
+      markProjectDirty();
+      renderDesigner();
+    });
+    layer.append(handle);
+  });
+}
+
+function stopFlowPreview() {
+  if (state.flowPreviewTimer) {
+    cancelAnimationFrame(state.flowPreviewTimer);
+    state.flowPreviewTimer = null;
+    $("#line-preview")?.classList.remove("active");
+  }
+}
+
+function toggleFlowPreview() {
+  if (state.flowPreviewTimer) {
+    stopFlowPreview();
+    renderGlowCanvas();
+    return;
+  }
+  if (!hasFlow({ strokes: state.project.glow_strokes || [] })) {
+    toast("Keine Linie hat einen aktiven Fluss.", true);
+    return;
+  }
+  $("#line-preview").classList.add("active");
+  const start = performance.now();
+  const loopMs = 1500; // arbitrary preview speed - export timing is independent
+  const tick = (now) => {
+    drawGlowFrame(((now - start) / loopMs) % 1);
+    state.flowPreviewTimer = requestAnimationFrame(tick);
+  };
+  state.flowPreviewTimer = requestAnimationFrame(tick);
+}
+
+// --- Line properties + RGB565 colour wheel ----------------------------------
+
+function renderLineProperties() {
+  const stroke = state.canvasMode === "lines" ? state.selectedStroke : null;
+  $("#empty-line-properties").classList.toggle("hidden", state.canvasMode !== "lines" || Boolean(stroke));
+  $("#line-properties").classList.toggle("hidden", !stroke);
+  $("#line-delete").disabled = !stroke;
+  if (!stroke) return;
+
+  $("#line-name").value = stroke.name;
+  $("#line-width").value = stroke.width;
+  $("#line-corner-radius").value = stroke.corner_radius;
+  $("#line-mode").value = stroke.mode;
+  $("#line-closed").checked = stroke.closed;
+
+  $("#glow-enabled").checked = stroke.glow.enabled;
+  $("#glow-radius").value = stroke.glow.radius;
+  $("#glow-intensity").value = stroke.glow.intensity;
+  $("#glow-use-line-color").checked = stroke.glow.use_line_color;
+
+  $("#flow-enabled").checked = stroke.flow.enabled;
+  $("#flow-mode").value = stroke.flow.mode;
+  $("#flow-reversed").checked = stroke.flow.reversed;
+  $("#flow-spacing").value = stroke.flow.spacing;
+  $("#flow-size").value = stroke.flow.size;
+  $("#flow-width").value = stroke.flow.width;
+  $("#flow-glow-radius").value = stroke.flow.glow_radius;
+  $("#flow-use-line-color").checked = stroke.flow.use_line_color;
+
+  drawColorWheel();
+  renderColorWheelReadout();
+}
+
+function bindLinePropertyInputs() {
+  const num = (raw, fallback = 0) => (raw === "" ? fallback : Number(raw));
+  const onText = (id, apply) => {
+    const el = $(id);
+    el.addEventListener("focus", pushUndo);
+    el.addEventListener("input", () => {
+      if (!state.selectedStroke) return;
+      apply(state.selectedStroke, el);
+      markProjectDirty();
+      renderGlowCanvas();
+    });
+  };
+  const onCheck = (id, apply) => {
+    $(id).addEventListener("change", (event) => {
+      if (!state.selectedStroke) return;
+      pushUndo();
+      apply(state.selectedStroke, event.target);
+      markProjectDirty();
+      renderGlowCanvas();
+    });
+  };
+  const onSelect = (id, apply) => {
+    $(id).addEventListener("change", (event) => {
+      if (!state.selectedStroke) return;
+      pushUndo();
+      apply(state.selectedStroke, event.target.value);
+      markProjectDirty();
+      renderGlowCanvas();
+    });
+  };
+
+  onText("#line-name", (s, el) => { s.name = el.value; });
+  onText("#line-width", (s, el) => { s.width = Math.max(0.5, num(el.value, 1)); });
+  onText("#line-corner-radius", (s, el) => { s.corner_radius = Math.max(0, num(el.value, 0)); });
+  onSelect("#line-mode", (s, value) => { s.mode = value; });
+  onCheck("#line-closed", (s, el) => { s.closed = el.checked; });
+
+  onCheck("#glow-enabled", (s, el) => { s.glow.enabled = el.checked; });
+  onText("#glow-radius", (s, el) => { s.glow.radius = Math.max(0, num(el.value)); });
+  onText("#glow-intensity", (s, el) => { s.glow.intensity = clamp(num(el.value), 0, 1); });
+  onCheck("#glow-use-line-color", (s, el) => { s.glow.use_line_color = el.checked; });
+
+  onCheck("#flow-enabled", (s, el) => { s.flow.enabled = el.checked; });
+  onSelect("#flow-mode", (s, value) => { s.flow.mode = value; });
+  onCheck("#flow-reversed", (s, el) => { s.flow.reversed = el.checked; });
+  onText("#flow-spacing", (s, el) => { s.flow.spacing = Math.max(1, num(el.value, 40)); });
+  onText("#flow-size", (s, el) => { s.flow.size = Math.max(1, num(el.value, 14)); });
+  onText("#flow-width", (s, el) => { s.flow.width = Math.max(0, num(el.value)); });
+  onText("#flow-glow-radius", (s, el) => { s.flow.glow_radius = Math.max(0, num(el.value)); });
+  onCheck("#flow-use-line-color", (s, el) => { s.flow.use_line_color = el.checked; });
+}
+
+function colorWheelTargetObject(stroke) {
+  if (state.colorWheelTarget === "glow") return stroke.glow;
+  if (state.colorWheelTarget === "flow") return stroke.flow;
+  return stroke;
+}
+
+/**
+ * Every pixel of the wheel is run through RGB565, so the quantisation steps
+ * are visible - the preview then shows what an RGB565 display actually shows,
+ * not the continuous colour a desktop screen would render.
+ */
+function drawColorWheel() {
+  const canvas = $("#color-wheel");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  const cx = w / 2;
+  const cy = h / 2;
+  const radius = Math.min(cx, cy) - 2;
+  const value = Number($("#color-wheel-value").value || 1);
+  const image = ctx.createImageData(w, h);
+
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const dx = x - cx;
+      const dy = y - cy;
+      const r = Math.hypot(dx, dy);
+      const i = (y * w + x) * 4;
+      if (r > radius) continue; // left transparent (alpha already 0)
+      const hue = (Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI);
+      const sat = Math.min(1, r / radius);
+      const [rr, gg, bb] = hsvToRgb(hue, sat, value);
+      const [qr, qg, qb] = rgb565to888(rgb888to565(rr, gg, bb));
+      image.data[i] = qr;
+      image.data[i + 1] = qg;
+      image.data[i + 2] = qb;
+      image.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
+function onColorWheelPick(event) {
+  const stroke = state.selectedStroke;
+  if (!stroke) return;
+  const canvas = $("#color-wheel");
+  const rect = canvas.getBoundingClientRect();
+  const x = (event.clientX - rect.left) * (canvas.width / rect.width);
+  const y = (event.clientY - rect.top) * (canvas.height / rect.height);
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  const radius = Math.min(cx, cy) - 2;
+  const dx = x - cx;
+  const dy = y - cy;
+  const r = Math.min(radius, Math.hypot(dx, dy));
+  const hue = (Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI);
+  const sat = r / radius;
+  const value = Number($("#color-wheel-value").value || 1);
+  const [rr, gg, bb] = hsvToRgb(hue, sat, value);
+
+  pushUndo();
+  colorWheelTargetObject(stroke).color565 = rgb888to565(rr, gg, bb);
+  markProjectDirty();
+  renderGlowCanvas();
+  renderColorWheelReadout();
+}
+
+function renderColorWheelReadout() {
+  const readout = $("#color-wheel-readout");
+  if (!readout) return;
+  const stroke = state.selectedStroke;
+  readout.textContent = stroke ? format565(colorWheelTargetObject(stroke).color565) : "";
+}
+
+// --- Baking: line -> image sequence -> widgets ------------------------------
+//
+// The browser equivalent of glowline-editor's "Export for a display" dialog:
+// render the static line once, the flow markers as a cropped, looping
+// sequence, quantise every pixel to RGB565 (so the preview matches what the
+// device will actually show), upload each PNG through the asset-store
+// endpoint, and wire up an image + animimg widget pair referencing them.
+
+function slugifyStrokeName(text, fallback) {
+  let slug = String(text || "").trim().toLowerCase()
+    .replace(/[äöüß]/g, (c) => ({ ä: "ae", ö: "oe", ü: "ue", ß: "ss" }[c]))
+    .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (!slug) slug = fallback;
+  return slug;
+}
+
+/** The area a line's own stroke (core + glow, no markers) occupies. */
+function strokeRenderBounds(stroke) {
+  const { measure } = strokePath(stroke);
+  const box = boundingBox(measure);
+  const canvas = state.project.canvas;
+  if (!box) return { left: 0, top: 0, right: canvas.width, bottom: canvas.height };
+  const margin = stroke.width / 2 + (stroke.glow.enabled ? stroke.glow.radius : 0) + 2;
+  return {
+    left: Math.max(0, box.left - margin),
+    top: Math.max(0, box.top - margin),
+    right: Math.min(canvas.width, box.right + margin),
+    bottom: Math.min(canvas.height, box.bottom + margin),
+  };
+}
+
+function renderStrokeFrame(doc, rect, { withLines, withFlow, phase }) {
+  return new Promise((resolve, reject) => {
+    const width = Math.max(1, Math.ceil(rect.right - rect.left));
+    const height = Math.max(1, Math.ceil(rect.bottom - rect.top));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.translate(-rect.left, -rect.top);
+    drawDocument(ctx, doc, { quality: "export", phase, withLines, withFlow });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // Every pixel run through RGB565 before it leaves the browser - otherwise
+    // the exported PNG shows colours the target display cannot reproduce.
+    const image = ctx.getImageData(0, 0, width, height);
+    quantizeImageData(image);
+    ctx.putImageData(image, 0, 0);
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("PNG-Erzeugung ist fehlgeschlagen."));
+    }, "image/png");
+  });
+}
+
+async function blobToBase64(blob) {
+  const buffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  // Chunked to stay well under any engine's argument-count limit for
+  // String.fromCharCode - fine for the small, cropped frames baked here.
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function uploadBakedFrame(name, blob) {
+  const content_base64 = await blobToBase64(blob);
+  const result = await api("designer/assets/images", {
+    method: "POST", body: JSON.stringify({ name, content_base64 }),
+  });
+  return result.path;
+}
+
+function ensureImageEntry(id, filePath) {
+  if (!Array.isArray(state.project.images)) state.project.images = [];
+  let entry = state.project.images.find((img) => img.id === id);
+  if (!entry) {
+    entry = { id, file_path: filePath, resize: "", dither: "", transparency: "opaque",
+             external: true, extra: {} };
+    state.project.images.push(entry);
+  } else {
+    entry.file_path = filePath;
+    entry.external = true;
+  }
+  return entry;
+}
+
+function uniqueWidgetId(base) {
+  const ids = new Set(allWidgets().map((widget) => widget.id));
+  let n = 1;
+  let candidate = `${base}_${n}`;
+  while (ids.has(candidate)) { n += 1; candidate = `${base}_${n}`; }
+  return candidate;
+}
+
+function newImageWidget(id, rect, src) {
+  return {
+    id, widget_type: "image", name: "", x: Math.round(rect.left), y: Math.round(rect.top),
+    width: Math.round(rect.right - rect.left), height: Math.round(rect.bottom - rect.top),
+    align: "TOP_LEFT", align_to: "", hidden: false, locked: false,
+    properties: { src, angle: 0, zoom: 1 },
+    style_mode: "inline", style_refs: [], style_tree: {}, events: {}, children: [],
+    tab_title: "", tile_row: 0, tile_col: 0, tile_dir: "ALL",
+    layout: {}, grid_cell: {}, extra: {}, source: "editor", synthetic_id: false,
+  };
+}
+
+function newAnimimgWidget(id, rect, frameIds, durationMs) {
+  const widget = newImageWidget(id, rect, "");
+  widget.widget_type = "animimg";
+  widget.properties = {
+    src: frameIds, duration: durationMs, repeat_count: "forever", auto_start: true,
+  };
+  return widget;
+}
+
+async function bakeSelectedStroke() {
+  const stroke = state.selectedStroke;
+  if (!stroke) return;
+  if ((stroke.points || []).length < 2) {
+    toast("Diese Linie hat noch keine Geometrie.", true);
+    return;
+  }
+  if (!state.capabilities["designer.asset_write"]) {
+    toast("Fehlende Berechtigung: Bilder können nicht in die Konfiguration geschrieben werden.", true);
+    return;
+  }
+
+  const frameCount = clamp(Number($("#bake-frame-count").value) || 6, 1, 60);
+  const crop = $("#bake-crop").checked;
+  const doc = { strokes: [stroke] };
+  const staticRect = crop ? strokeRenderBounds(stroke)
+    : { left: 0, top: 0, right: state.project.canvas.width, bottom: state.project.canvas.height };
+  const baseName = slugifyStrokeName(stroke.name, stroke.id);
+  const button = $("#bake-line");
+  button.disabled = true;
+
+  try {
+    toast("Bilder werden erzeugt …");
+    const staticBlob = await renderStrokeFrame(doc, staticRect,
+      { withLines: true, withFlow: false, phase: 0 });
+    const staticPath = await uploadBakedFrame(`${baseName}_static.png`, staticBlob);
+    const staticImageId = `img_${baseName}_static`;
+    ensureImageEntry(staticImageId, staticPath);
+
+    let animimgWidget = null;
+    if (stroke.flow.enabled) {
+      const animRect = crop ? (flowBoundsDocument(doc) || staticRect) : staticRect;
+      const frameIds = [];
+      for (let i = 0; i < frameCount; i += 1) {
+        const blob = await renderStrokeFrame(doc, animRect,
+          { withLines: false, withFlow: true, phase: i / frameCount });
+        const suffix = String(i).padStart(2, "0");
+        const path = await uploadBakedFrame(`${baseName}_flow_${suffix}.png`, blob);
+        const frameId = `img_${baseName}_flow_${suffix}`;
+        ensureImageEntry(frameId, path);
+        frameIds.push(frameId);
+      }
+      animimgWidget = newAnimimgWidget(
+        uniqueWidgetId(`${baseName}_anim`), animRect, frameIds, frameCount * 300);
+    }
+
+    pushUndo();
+    state.project.widgets.push(newImageWidget(uniqueWidgetId(baseName), staticRect, staticImageId));
+    if (animimgWidget) state.project.widgets.push(animimgWidget);
+    markProjectDirty();
+    renderDesigner();
+    toast(`${1 + (animimgWidget ? 1 : 0)} Widget(s) mit ${1 + frameCount} Bild(ern) angelegt.`);
+  } catch (error) {
+    toast(`Bildsequenz konnte nicht erzeugt werden: ${error.message}`, true);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function renderWidget(item) {
@@ -1191,8 +1982,8 @@ function beginResize(event, widget, node) {
 }
 
 function renderProperties() {
-  const widget = state.selectedWidget;
-  $("#empty-properties").classList.toggle("hidden", Boolean(widget));
+  const widget = state.canvasMode === "lines" ? null : state.selectedWidget;
+  $("#empty-properties").classList.toggle("hidden", state.canvasMode === "lines" || Boolean(widget));
   $("#properties").classList.toggle("hidden", !widget);
   if (!widget) return;
   $("#prop-id").value = widget.id;
@@ -1610,20 +2401,26 @@ function renderTree() {
   const tree = $("#widget-tree");
   tree.replaceChildren();
   const widgets = allWidgets();
-  tree.classList.toggle("empty", widgets.length === 0);
-  if (!widgets.length) {
+  const strokes = state.project.glow_strokes || [];
+  tree.classList.toggle("empty", widgets.length === 0 && strokes.length === 0);
+  if (!widgets.length && !strokes.length) {
     tree.textContent = "Noch keine Widgets";
     return;
   }
+
   const appendNodes = (nodes, depth = 0) => nodes.forEach((widget) => {
     const item = document.createElement("div");
-    item.className = `tree-item${state.selectedWidget === widget ? " selected" : ""}`;
+    item.className = `tree-item${state.canvasMode === "widgets" && state.selectedWidget === widget ? " selected" : ""}`;
     item.style.paddingLeft = `${9 + depth * 16}px`;
 
     const label = document.createElement("span");
     label.className = "tree-label";
     label.textContent = `${widget.id} · ${widget.widget_type}`;
-    label.addEventListener("click", () => { state.selectedWidget = widget; renderDesigner(); });
+    label.addEventListener("click", () => {
+      if (state.canvasMode !== "widgets") setCanvasMode("widgets");
+      state.selectedWidget = widget;
+      renderDesigner();
+    });
 
     const glyphs = document.createElement("span");
     glyphs.className = "tree-glyphs";
@@ -1637,6 +2434,33 @@ function renderTree() {
     appendNodes(widget.children || [], depth + 1);
   });
   appendNodes(state.project.widgets);
+
+  if (strokes.length) {
+    const heading = document.createElement("div");
+    heading.className = "tree-subheading";
+    heading.textContent = "Glow-Linien";
+    tree.append(heading);
+
+    strokes.forEach((stroke) => {
+      const item = document.createElement("div");
+      item.className = `tree-item${state.canvasMode === "lines" && state.selectedStroke === stroke ? " selected" : ""}`;
+      item.style.paddingLeft = "9px";
+
+      const label = document.createElement("span");
+      label.className = "tree-label";
+      label.textContent = `∿ ${stroke.name || stroke.id}`;
+      label.title = "Zur Bearbeitung in den Glow-Linien-Modus wechseln";
+      label.addEventListener("click", () => {
+        setCanvasMode("lines");
+        setLineTool("select");
+        state.selectedStroke = stroke;
+        renderDesigner();
+      });
+
+      item.append(label);
+      tree.append(item);
+    });
+  }
 }
 
 function treeGlyph(widget, flag, symbol, title) {
@@ -1831,5 +2655,9 @@ async function publishDraft() {
 function clamp(value, minimum, maximum) {
   return Math.min(Math.max(Number.isFinite(value) ? value : minimum, minimum), maximum);
 }
+
+// Read-only debug handle - not part of the app's own logic, only for
+// inspecting state from the browser console or an automated check.
+window.__appState = state;
 
 initialize();

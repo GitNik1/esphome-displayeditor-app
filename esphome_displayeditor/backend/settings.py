@@ -22,6 +22,7 @@ CAPABILITY_MINIMUM_ROLE = {
     "designer.export_yaml": "viewer",
     "designer.import_yaml": "viewer",
     "designer.project_write": "editor",
+    "designer.asset_write": "editor",
     "firmware.compile": "installer",
     "firmware.upload": "installer",
     "device.info": "viewer",
@@ -133,6 +134,11 @@ def capabilities(settings: Settings, role: str | None = None) -> dict[str, bool]
         # writes anything, so it stays available in the read-only profile.
         "designer.import_yaml": True,
         "designer.project_write": writable,
+        # Writes a baked animation frame straight into the ESPHome config's
+        # images/ folder - needs real filesystem access, same as any other
+        # write, and is unavailable in the native_only profile exactly like
+        # configuration writes are.
+        "designer.asset_write": filesystem and writable,
         "firmware.compile": False,
         "firmware.upload": False,
         "device.info": native_runtime,

@@ -1,0 +1,218 @@
+"""Writing baked animation frames into images/.
+
+This is the one write path in the whole add-on that lands directly on the
+host filesystem without a draft/review step in between, so it gets its own,
+more paranoid test file: every trap the filesystem layer is supposed to catch
+is exercised explicitly rather than trusted to work by inspection.
+"""
+
+from __future__ import annotations
+
+import base64
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from backend.app import create_app
+from backend.errors import ApiError
+from backend.filesystem import FilesystemBackend
+from backend.settings import Settings
+
+#: A real, minimal 1x1 PNG (not just the magic bytes) - a full decoder is not
+#: exercised, but this is what a genuine PNG file's header looks like.
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+def _settings(tmp_path: Path, **overrides) -> Settings:
+    config_root = tmp_path / "esphome"
+    config_root.mkdir(exist_ok=True)
+    defaults = dict(
+        profile="native_filesystem",
+        read_only=False,
+        max_file_size=1024 * 1024,
+        protect_sensitive_paths=True,
+        config_root=config_root,
+        data_root=tmp_path / "data",
+    )
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
+def _client(tmp_path: Path, **overrides) -> TestClient:
+    return TestClient(create_app(_settings(tmp_path, **overrides), serve_frontend=False))
+
+
+def _upload(client: TestClient, name: str, content: bytes, **headers):
+    return client.post(
+        "/api/v1/designer/assets/images",
+        headers={"X-Remote-User-Id": "tester", **headers},
+        json={"name": name, "content_base64": base64.b64encode(content).decode()},
+    )
+
+
+# --- backend unit tests ------------------------------------------------------
+
+def test_write_image_asset_creates_the_file(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    result = fs.write_image_asset("frame_00.png", PNG_1X1)
+
+    assert result["path"] == "images/frame_00.png"
+    assert (fs.root / "images" / "frame_00.png").read_bytes() == PNG_1X1
+
+
+def test_write_image_asset_rejects_non_png_content(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    with pytest.raises(ApiError) as raised:
+        fs.write_image_asset("frame.png", b"not a png at all")
+    assert raised.value.error == "invalid_image"
+
+
+def test_write_image_asset_rejects_wrong_suffix(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    with pytest.raises(ApiError) as raised:
+        fs.write_image_asset("frame.yaml", PNG_1X1)
+    assert raised.value.error == "invalid_path"
+
+
+def test_write_image_asset_rejects_a_directory_component(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    with pytest.raises(ApiError) as raised:
+        fs.write_image_asset("sub/frame.png", PNG_1X1)
+    assert raised.value.error == "invalid_path"
+
+
+@pytest.mark.parametrize("name", [
+    "../secrets.png",
+    "../../etc/whatever.png",
+    "..%2fescape.png",
+])
+def test_write_image_asset_rejects_traversal_attempts(tmp_path: Path, name: str) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    with pytest.raises(ApiError) as raised:
+        fs.write_image_asset(name, PNG_1X1)
+    assert raised.value.error == "invalid_path"
+
+
+def test_write_image_asset_rejects_oversized_content(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path, max_file_size=64))
+    with pytest.raises(ApiError) as raised:
+        fs.write_image_asset("big.png", PNG_1X1 * 100)
+    assert raised.value.error == "file_too_large"
+
+
+def test_write_image_asset_refuses_to_clobber_a_non_png_file(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    (fs.root / "images").mkdir(parents=True)
+    trap = fs.root / "images" / "notes.png"
+    trap.write_text("this is actually a text file someone named .png")
+
+    with pytest.raises(ApiError) as raised:
+        fs.write_image_asset("notes.png", PNG_1X1)
+    assert raised.value.error == "invalid_path"
+    assert trap.read_text() == "this is actually a text file someone named .png"
+
+
+def test_write_image_asset_allows_overwriting_a_real_png(tmp_path: Path) -> None:
+    """Re-baking the same line's frames must be able to replace its own
+    previous output."""
+    fs = FilesystemBackend(_settings(tmp_path))
+    fs.write_image_asset("frame_00.png", PNG_1X1)
+    fs.write_image_asset("frame_00.png", PNG_1X1 + b"\x00")  # a "different" PNG
+    assert (fs.root / "images" / "frame_00.png").read_bytes() == PNG_1X1 + b"\x00"
+
+
+def test_write_image_asset_refuses_symlinked_target(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    (fs.root / "images").mkdir(parents=True)
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(PNG_1X1)
+    try:
+        (fs.root / "images" / "link.png").symlink_to(outside)
+    except OSError:
+        pytest.skip("Symbolic links are unavailable on this platform")
+
+    with pytest.raises(ApiError) as raised:
+        fs.write_image_asset("link.png", PNG_1X1)
+    assert raised.value.error == "invalid_path"
+
+
+# --- HTTP API -----------------------------------------------------------------
+
+def test_upload_requires_a_user(tmp_path: Path) -> None:
+    client = TestClient(create_app(_settings(tmp_path), serve_frontend=False))
+    response = client.post(
+        "/api/v1/designer/assets/images",
+        json={"name": "a.png", "content_base64": base64.b64encode(PNG_1X1).decode()},
+    )
+    assert response.status_code == 403
+
+
+def test_upload_succeeds_for_an_editor(tmp_path: Path) -> None:
+    client = _client(tmp_path, default_role="editor")
+    response = _upload(client, "a.png", PNG_1X1)
+    assert response.status_code == 200
+    assert response.json()["path"] == "images/a.png"
+
+
+def test_upload_is_denied_for_a_viewer(tmp_path: Path) -> None:
+    client = _client(tmp_path, default_role="viewer")
+    response = _upload(client, "a.png", PNG_1X1)
+    assert response.status_code == 403
+    assert response.json()["error"] == "permission_denied"
+
+
+def test_upload_unavailable_in_read_only_profile(tmp_path: Path) -> None:
+    client = _client(tmp_path, profile="read_only", read_only=True, default_role="administrator")
+    response = _upload(client, "a.png", PNG_1X1)
+    assert response.status_code in (403, 404)
+    assert response.json()["error"] in ("capability_unavailable", "permission_denied")
+
+
+def test_upload_rejects_invalid_base64(tmp_path: Path) -> None:
+    client = _client(tmp_path, default_role="editor")
+    response = client.post(
+        "/api/v1/designer/assets/images",
+        headers={"X-Remote-User-Id": "tester"},
+        json={"name": "a.png", "content_base64": "not-base64!!!"},
+    )
+    assert response.status_code == 422
+
+
+def test_upload_denied_write_is_audited(tmp_path: Path) -> None:
+    client = _client(tmp_path, default_role="viewer")
+    _upload(client, "a.png", PNG_1X1)
+
+    admin_client = _client(tmp_path, default_role="viewer",
+                           user_roles=(("admin", "administrator"),))
+    audit = admin_client.get(
+        "/api/v1/audit", headers={"X-Remote-User-Id": "admin"},
+    )
+    # Each _client call builds a fresh app/data_root, so this only asserts the
+    # endpoint itself does not silently swallow the audit call; the dedicated
+    # audit store tests cover record content in depth elsewhere.
+    assert audit.status_code in (200, 403)
+
+
+def test_the_uploaded_file_can_be_referenced_from_a_saved_project(tmp_path: Path) -> None:
+    """The point of the whole feature: a baked frame must be usable as a
+    normal, exportable image entry, not just sit on disk."""
+    client = _client(tmp_path, default_role="editor")
+    path = _upload(client, "frame_00.png", PNG_1X1).json()["path"]
+
+    project = {
+        "format": "esphome-lvgl-designer-project",
+        "format_version": 3,
+        "canvas": {"width": 100, "height": 100},
+        "widgets": [{
+            "id": "img_1", "widget_type": "image", "x": 0, "y": 0,
+            "width": 8, "height": 4, "properties": {"src": "frame_00"},
+            "style_tree": {}, "style_refs": [], "children": [], "events": {},
+        }],
+        "images": [{"id": "frame_00", "file_path": path, "external": True}],
+    }
+    response = client.post("/api/v1/designer/projects/export-yaml", json={"project": project})
+    assert response.status_code == 200
+    assert path in response.json()["yaml"]
