@@ -1,10 +1,28 @@
-import { computeLayout } from "./layout.js";
+import { computeLayout, contentOrigin } from "./layout.js";
 import { boundingBox, nearestSegment } from "./glowline/geometry.js";
 import { drawDocument, flowBoundsDocument, hasFlow, strokePath } from "./glowline/renderer.js";
 import { format565, hsvToRgb, quantizeImageData, rgb565to888, rgb888to565 } from "./glowline/rgb565.js";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+// Maps each widget to its live canvas DOM node, so a drag/resize can update
+// descendant boxes (children, layout-dependent siblings) without recreating
+// any node - recreating the dragged/resized node mid-gesture would drop its
+// pointer capture.
+const canvasNodeByWidget = new Map();
+
+function syncCanvasLayout() {
+  const boxes = computeLayout(state.project);
+  boxes.forEach((box, widget) => {
+    const node = canvasNodeByWidget.get(widget);
+    if (!node) return;
+    node.style.left = `${box.left}px`;
+    node.style.top = `${box.top}px`;
+    node.style.width = `${Math.max(1, box.width)}px`;
+    node.style.height = `${Math.max(1, box.height)}px`;
+  });
+}
 
 const state = {
   system: null,
@@ -80,6 +98,9 @@ function freshGlowStroke(id) {
       enabled: false, mode: "arrows", reversed: false, spacing: 40, size: 14,
       width: 0, use_line_color: false, color565: 0xffff, glow_radius: 0, glow_intensity: 0.9,
     },
+    parent_id: "",
+    hidden: false,
+    locked: false,
   };
 }
 
@@ -1010,6 +1031,15 @@ function renderPalette() {
     button.addEventListener("click", () => addWidget(schema));
     palette.append(button);
   });
+
+  const glowButton = document.createElement("button");
+  const glowIcon = document.createElement("span");
+  glowIcon.className = "widget-icon";
+  glowIcon.textContent = "∿";
+  glowButton.append(glowIcon, document.createTextNode("Glow-Linie"));
+  glowButton.title = "Neue Glow-Linie zeichnen";
+  glowButton.addEventListener("click", startNewLine);
+  palette.append(glowButton);
 }
 
 function allWidgets(nodes = state.project.widgets) {
@@ -1023,6 +1053,7 @@ function allWidgets(nodes = state.project.widgets) {
 }
 
 function addWidget(schema) {
+  if (state.canvasMode !== "widgets") setCanvasMode("widgets");
   pushUndo();
   const idBase = schema.type_key === "container" ? "container" : schema.type_key;
   let number = 1;
@@ -1112,18 +1143,30 @@ function renderCanvas() {
   $("#canvas-width").value = state.project.canvas.width;
   $("#canvas-height").value = state.project.canvas.height;
 
-  // Order matters: background, then the glow-line overlay, then widgets on
-  // top (so buttons/labels stay legible over a decorative flow animation),
-  // then the edit handles on top of everything so they stay grabbable.
-  const glowCanvas = document.createElement("canvas");
-  glowCanvas.id = "glow-canvas";
-  glowCanvas.className = "glow-canvas";
+  // Order matters: background, then the glow-line overlay for lines with no
+  // parent (a decorative layer that stays behind everything), then widgets,
+  // then a second glow-line overlay for lines nested under a container (so
+  // that container's own background can't paint over its own child line -
+  // widgets are flat DOM siblings here, not actually nested, so a container's
+  // "children" only render on top of it if something puts them there), then
+  // the edit handles on top of everything so they stay grabbable.
+  const glowCanvasBack = document.createElement("canvas");
+  glowCanvasBack.id = "glow-canvas-back";
+  glowCanvasBack.className = "glow-canvas";
+  const glowCanvasFront = document.createElement("canvas");
+  glowCanvasFront.id = "glow-canvas-front";
+  glowCanvasFront.className = "glow-canvas";
   const handles = document.createElement("div");
   handles.id = "glow-handles";
   handles.className = "glow-handles";
-  canvas.replaceChildren(renderCanvasBackground(), glowCanvas);
-  visualWidgets().forEach((item) => canvas.append(renderWidget(item)));
-  canvas.append(handles);
+  canvas.replaceChildren(renderCanvasBackground(), glowCanvasBack);
+  canvasNodeByWidget.clear();
+  visualWidgets().forEach((item) => {
+    const node = renderWidget(item);
+    canvasNodeByWidget.set(item.widget, node);
+    canvas.append(node);
+  });
+  canvas.append(glowCanvasFront, handles);
 
   $("#widget-count").textContent = `${allWidgets().length} Widgets`;
   applyZoom();
@@ -1208,11 +1251,15 @@ function renderDesignerStatus() {
 // of complexity for a case that rarely overlaps in practice.
 
 function bindGlowTools() {
-  $("#mode-widgets").addEventListener("click", () => setCanvasMode("widgets"));
-  $("#mode-lines").addEventListener("click", () => setCanvasMode("lines"));
   $("#tool-select").addEventListener("click", () => setLineTool("select"));
-  $("#tool-draw").addEventListener("click", () => setLineTool("draw"));
-  $("#line-add").addEventListener("click", startNewLine);
+  $("#tool-draw").addEventListener("click", () => {
+    // No dedicated "start a blank line" action anymore (a new line already
+    // comes with a default segment) - picking this tool with a line selected
+    // resumes appending points to that line's shape instead.
+    if (state.selectedStroke && !state.drawingStroke) state.drawingStroke = state.selectedStroke;
+    setLineTool("draw");
+  });
+  $("#line-done").addEventListener("click", () => setCanvasMode("widgets"));
   $("#line-delete").addEventListener("click", deleteSelectedStroke);
   $("#delete-line").addEventListener("click", deleteSelectedStroke);
   $("#line-preview").addEventListener("click", toggleFlowPreview);
@@ -1252,8 +1299,6 @@ function setCanvasMode(mode) {
   } else {
     state.selectedWidget = null;
   }
-  $("#mode-widgets").classList.toggle("active", mode === "widgets");
-  $("#mode-lines").classList.toggle("active", mode === "lines");
   $("#line-tool-group").classList.toggle("hidden", mode !== "lines");
   $("#tool-select").classList.toggle("active", state.lineTool === "select");
   $("#tool-draw").classList.toggle("active", state.lineTool === "draw");
@@ -1277,15 +1322,32 @@ function uniqueStrokeId() {
 }
 
 function startNewLine() {
+  // Capture the intended parent before switching modes - entering lines mode
+  // clears state.selectedWidget, the same way addWidget() reads it before
+  // any mode change to decide which container a new widget nests under.
+  const parentSchema = state.selectedWidget
+    ? state.schemas.find((item) => item.type_key === state.selectedWidget.widget_type)
+    : null;
+  const parent = parentSchema?.allows_children ? state.selectedWidget : null;
+
   if (state.canvasMode !== "lines") setCanvasMode("lines");
   pushUndo();
   if (!Array.isArray(state.project.glow_strokes)) state.project.glow_strokes = [];
   const stroke = freshGlowStroke(uniqueStrokeId());
+  stroke.parent_id = parent ? parent.id : "";
+  // Like addWidget(), this places a ready-made shape (a short default
+  // segment) rather than an empty placeholder - a line is immediately
+  // visible, selected and draggable, the same as any other widget added
+  // from the palette. The old behaviour (start blank, click out each point,
+  // Enter/double-click to finish) is still available via the "Linie
+  // zeichnen" tool once a line is selected - it now appends to whichever
+  // line is selected instead of only ever starting a fresh one.
+  const offset = (state.project.glow_strokes.length * 12) % 100;
+  stroke.points = [[40 + offset, 40 + offset], [120 + offset, 40 + offset]];
   state.project.glow_strokes.push(stroke);
   state.selectedStroke = stroke;
-  state.drawingStroke = stroke;
   markProjectDirty();
-  setLineTool("draw");
+  setLineTool("select");
   renderDesigner();
 }
 
@@ -1342,7 +1404,7 @@ function onGlowPointerDown(event) {
   }
   const hit = findStrokeAt(point);
   state.selectedStroke = hit;
-  if (hit) beginLineBodyDrag(event, hit, point);
+  if (hit && !hit.locked) beginLineBodyDrag(event, hit, point);
   renderDesigner();
 }
 
@@ -1469,20 +1531,29 @@ function beginPointDrag(event, stroke, index) {
 }
 
 function renderGlowCanvas() {
-  const canvas = $("#glow-canvas");
-  if (!canvas) return;
-  canvas.width = state.project.canvas.width;
-  canvas.height = state.project.canvas.height;
+  const back = $("#glow-canvas-back");
+  const front = $("#glow-canvas-front");
+  if (!back || !front) return;
+  [back, front].forEach((canvas) => {
+    canvas.width = state.project.canvas.width;
+    canvas.height = state.project.canvas.height;
+  });
   drawGlowFrame(0);
 }
 
 function drawGlowFrame(phase) {
-  const canvas = $("#glow-canvas");
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawDocument(ctx, { strokes: state.project.glow_strokes || [] },
-              { quality: "final", phase, withFlow: true });
+  const back = $("#glow-canvas-back");
+  const front = $("#glow-canvas-front");
+  if (!back || !front) return;
+  const strokes = (state.project.glow_strokes || []).filter((stroke) => !stroke.hidden);
+  const backStrokes = strokes.filter((stroke) => !stroke.parent_id);
+  const frontStrokes = strokes.filter((stroke) => stroke.parent_id);
+  const backCtx = back.getContext("2d");
+  backCtx.clearRect(0, 0, back.width, back.height);
+  drawDocument(backCtx, { strokes: backStrokes }, { quality: "final", phase, withFlow: true });
+  const frontCtx = front.getContext("2d");
+  frontCtx.clearRect(0, 0, front.width, front.height);
+  drawDocument(frontCtx, { strokes: frontStrokes }, { quality: "final", phase, withFlow: true });
 }
 
 function renderGlowHandles() {
@@ -1491,6 +1562,7 @@ function renderGlowHandles() {
   layer.replaceChildren();
   if (state.canvasMode !== "lines" || !state.selectedStroke) return;
   const stroke = state.selectedStroke;
+  if (stroke.locked) return; // locked: selectable, but points aren't draggable or deletable
   stroke.points.forEach((point, index) => {
     const handle = document.createElement("div");
     handle.className = `glow-handle${index === 0 ? " first" : ""}`;
@@ -1803,6 +1875,11 @@ function uniqueWidgetId(base) {
   return candidate;
 }
 
+function strokeParentContainer(stroke) {
+  if (!stroke.parent_id) return null;
+  return allWidgets().find((widget) => widget.id === stroke.parent_id) || null;
+}
+
 function newImageWidget(id, rect, src) {
   return {
     id, widget_type: "image", name: "", x: Math.round(rect.left), y: Math.round(rect.top),
@@ -1871,8 +1948,23 @@ async function bakeSelectedStroke() {
     }
 
     pushUndo();
-    state.project.widgets.push(newImageWidget(uniqueWidgetId(baseName), staticRect, staticImageId));
-    if (animimgWidget) state.project.widgets.push(animimgWidget);
+    const imageWidget = newImageWidget(uniqueWidgetId(baseName), staticRect, staticImageId);
+    const target = strokeParentContainer(stroke);
+    if (target) {
+      // The rect (and thus the widget's x/y from newImageWidget) is in
+      // absolute canvas coordinates; a child's x/y is relative to its
+      // parent's content box, so it needs converting before nesting it.
+      const origin = contentOrigin(state.project, target);
+      [imageWidget, animimgWidget].filter(Boolean).forEach((w) => {
+        w.x = Math.round(w.x - origin.x);
+        w.y = Math.round(w.y - origin.y);
+      });
+      target.children.push(imageWidget);
+      if (animimgWidget) target.children.push(animimgWidget);
+    } else {
+      state.project.widgets.push(imageWidget);
+      if (animimgWidget) state.project.widgets.push(animimgWidget);
+    }
     markProjectDirty();
     renderDesigner();
     toast(`${1 + (animimgWidget ? 1 : 0)} Widget(s) mit ${1 + frameCount} Bild(ern) angelegt.`);
@@ -1925,7 +2017,7 @@ function renderWidget(item) {
   if (state.selectedWidget === widget && !widget.locked && !managed) {
     const handle = document.createElement("span");
     handle.className = "resize-handle";
-    handle.addEventListener("pointerdown", (event) => beginResize(event, widget, node));
+    handle.addEventListener("pointerdown", (event) => beginResize(event, widget));
     node.append(handle);
   }
   return node;
@@ -1960,6 +2052,12 @@ function beginDrag(event, widget, node, box) {
     clientX: event.clientX, clientY: event.clientY,
     x: Number(widget.x) || 0, y: Number(widget.y) || 0,
   };
+  // Glow lines nested under this widget aren't part of the layout tree (their
+  // points are always absolute canvas coordinates, not a child x/y offset),
+  // so they need their own translation to follow the drag.
+  const childStrokes = (state.project.glow_strokes || [])
+    .filter((stroke) => stroke.parent_id === widget.id)
+    .map((stroke) => ({ stroke, points: stroke.points.map((p) => [...p]) }));
   node.setPointerCapture(event.pointerId);
   node.addEventListener("pointermove", move);
   node.addEventListener("pointerup", end, { once: true });
@@ -1968,10 +2066,17 @@ function beginDrag(event, widget, node, box) {
     const deltaY = (moveEvent.clientY - origin.clientY) / state.zoom;
     widget.x = clamp(Math.round(origin.x + deltaX), 0, state.project.canvas.width - box.width);
     widget.y = clamp(Math.round(origin.y + deltaY), 0, state.project.canvas.height - box.height);
-    // x/y are relative to the origin the layout gave this widget, which is not
-    // the canvas origin once it sits inside a padded or aligned parent.
-    node.style.left = `${box.originX + widget.x}px`;
-    node.style.top = `${box.originY + widget.y}px`;
+    // Re-running the layout (rather than just offsetting this node) keeps any
+    // children - and siblings anchored to this widget - moving along with it.
+    syncCanvasLayout();
+    if (childStrokes.length) {
+      const totalDeltaX = widget.x - origin.x;
+      const totalDeltaY = widget.y - origin.y;
+      childStrokes.forEach(({ stroke, points }) => {
+        stroke.points = points.map(([px, py]) => [px + totalDeltaX, py + totalDeltaY]);
+      });
+      renderGlowCanvas();
+    }
     $("#prop-x").value = widget.x;
     $("#prop-y").value = widget.y;
     markProjectDirty();
@@ -1979,7 +2084,7 @@ function beginDrag(event, widget, node, box) {
   function end() { node.removeEventListener("pointermove", move); }
 }
 
-function beginResize(event, widget, node) {
+function beginResize(event, widget) {
   event.stopPropagation();
   pushUndo();
   const origin = {
@@ -1996,8 +2101,9 @@ function beginResize(event, widget, node) {
     const deltaY = (moveEvent.clientY - origin.clientY) / state.zoom;
     widget.width = clamp(Math.round(origin.width + deltaX), 8, 4096);
     widget.height = clamp(Math.round(origin.height + deltaY), 8, 4096);
-    node.style.width = `${widget.width}px`;
-    node.style.height = `${widget.height}px`;
+    // A container's children can depend on its size (grid tracks, flex
+    // stretch), so re-run the layout instead of only resizing this node.
+    syncCanvasLayout();
     $("#prop-width").value = widget.width;
     $("#prop-height").value = widget.height;
     markProjectDirty();
@@ -2395,9 +2501,27 @@ function updateSelectedWidget(event) {
   const widget = state.selectedWidget;
   if (!widget) return;
   const key = event.target.id.replace("prop-", "");
-  if (key === "id") widget.id = event.target.value;
-  else if (["width", "height"].includes(key)) widget[key] = Math.max(1, Number(event.target.value));
-  else widget[key] = Number(event.target.value);
+  if (key === "id") {
+    widget.id = event.target.value;
+  } else if (["width", "height"].includes(key)) {
+    widget[key] = Math.max(1, Number(event.target.value));
+  } else if (key === "x" || key === "y") {
+    // Typing a new x/y is the same move as dragging the widget - nested glow
+    // lines need the same delta applied to their (always-absolute) points.
+    const delta = (Number(event.target.value) || 0) - (Number(widget[key]) || 0);
+    widget[key] = Number(event.target.value) || 0;
+    if (delta) {
+      (state.project.glow_strokes || [])
+        .filter((stroke) => stroke.parent_id === widget.id)
+        .forEach((stroke) => {
+          stroke.points = stroke.points.map(([px, py]) => (
+            key === "x" ? [px + delta, py] : [px, py + delta]
+          ));
+        });
+    }
+  } else {
+    widget[key] = Number(event.target.value);
+  }
   markProjectDirty();
   renderCanvas();
   renderTree();
@@ -2406,6 +2530,13 @@ function updateSelectedWidget(event) {
 function deleteSelectedWidget() {
   if (!state.selectedWidget) return;
   pushUndo();
+  // Glow lines aren't part of the widget tree, so removing a container would
+  // otherwise leave its child lines pointing at a parent_id that no longer
+  // exists anywhere - orphan them back to top-level instead.
+  const removedIds = new Set(allWidgets([state.selectedWidget]).map((widget) => widget.id));
+  (state.project.glow_strokes || []).forEach((stroke) => {
+    if (removedIds.has(stroke.parent_id)) stroke.parent_id = "";
+  });
   removeWidget(state.project.widgets, state.selectedWidget);
   state.selectedWidget = null;
   markProjectDirty();
@@ -2421,16 +2552,252 @@ function removeWidget(nodes, target) {
   return nodes.some((widget) => removeWidget(widget.children || [], target));
 }
 
+/** The array actually holding `target` (top-level list or some widget's
+ * `children`) plus its index there - the array reference is live, so
+ * splicing it moves/removes the real widget, not a copy. */
+function findWidgetLocation(nodes, target) {
+  const index = nodes.indexOf(target);
+  if (index >= 0) return { array: nodes, index };
+  for (const node of nodes) {
+    const found = findWidgetLocation(node.children || [], target);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** id of the widget whose `children` directly contains `target`, "" if
+ * `target` is top-level, or null if `target` isn't in the tree at all. */
+function findParentContainerId(nodes, target, parentId = "") {
+  if (nodes.includes(target)) return parentId;
+  for (const node of nodes) {
+    const found = findParentContainerId(node.children || [], target, node.id);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+function widgetAllowsChildren(widget) {
+  const schema = state.schemas.find((item) => item.type_key === widget.widget_type);
+  return Boolean(schema?.allows_children);
+}
+
+function cloneWidgetSubtree(widget) {
+  const usedIds = new Set(allWidgets().map((w) => w.id));
+  const assignIds = (node) => {
+    let n = 1;
+    let candidate = `${node.widget_type}_${n}`;
+    while (usedIds.has(candidate)) { n += 1; candidate = `${node.widget_type}_${n}`; }
+    node.id = candidate;
+    usedIds.add(candidate);
+    (node.children || []).forEach(assignIds);
+  };
+  const clone = JSON.parse(JSON.stringify(widget));
+  assignIds(clone);
+  return clone;
+}
+
+function duplicateWidget(widget) {
+  pushUndo();
+  const location = findWidgetLocation(state.project.widgets, widget);
+  if (!location) return;
+  const clone = cloneWidgetSubtree(widget);
+  location.array.splice(location.index + 1, 0, clone);
+  if (state.canvasMode !== "widgets") setCanvasMode("widgets");
+  state.selectedWidget = clone;
+  markProjectDirty();
+  renderDesigner();
+}
+
+function duplicateStroke(stroke) {
+  pushUndo();
+  const list = state.project.glow_strokes || [];
+  const index = list.indexOf(stroke);
+  if (index < 0) return;
+  const clone = JSON.parse(JSON.stringify(stroke));
+  clone.id = uniqueStrokeId();
+  list.splice(index + 1, 0, clone);
+  setCanvasMode("lines");
+  setLineTool("select");
+  state.selectedStroke = clone;
+  markProjectDirty();
+  renderDesigner();
+}
+
+// --- Hierarchy drag-and-drop -------------------------------------------------
+//
+// Widgets and glow lines live in different data shapes (a tree of `children`
+// arrays vs. one flat array with a `parent_id`), so the tree can't just splice
+// one unified list. Drop semantics: "into" a widget that allows children
+// nests the dragged item there; "before"/"after" a widget moves the dragged
+// item to be that widget's real sibling (same array, adjacent index); "before"
+// /"after" a glow line adopts that line's parent context (its container, or
+// top-level) since lines don't have a position index of their own relative to
+// sibling widgets - the tree always lists a container's child widgets before
+// its child lines, so there is no finer position to preserve there anyway.
+
+let treeDrag = null; // { kind: "widget", widget } | { kind: "stroke", stroke }
+
+function clearDropIndicators() {
+  $$(".tree-item.drop-before, .tree-item.drop-after, .tree-item.drop-into")
+    .forEach((el) => el.classList.remove("drop-before", "drop-after", "drop-into"));
+}
+
+function bindTreeItemDrag(item, payload, { allowInto }) {
+  item.draggable = true;
+  item.addEventListener("dragstart", (event) => {
+    event.stopPropagation();
+    treeDrag = payload;
+    event.dataTransfer.effectAllowed = "move";
+  });
+  item.addEventListener("dragover", (event) => {
+    if (!treeDrag) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = item.getBoundingClientRect();
+    const ratio = (event.clientY - rect.top) / rect.height;
+    clearDropIndicators();
+    if (allowInto && ratio > 0.25 && ratio < 0.75) item.classList.add("drop-into");
+    else if (ratio <= 0.5) item.classList.add("drop-before");
+    else item.classList.add("drop-after");
+  });
+  item.addEventListener("drop", (event) => {
+    if (!treeDrag) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const position = item.classList.contains("drop-into") ? "into"
+      : item.classList.contains("drop-after") ? "after" : "before";
+    clearDropIndicators();
+    performTreeDrop(treeDrag, { ...payload, position });
+    treeDrag = null;
+  });
+  item.addEventListener("dragend", (event) => {
+    event.stopPropagation();
+    clearDropIndicators();
+    treeDrag = null;
+  });
+}
+
+function performTreeDrop(dragged, target) {
+  if (!dragged) return;
+  if (dragged.kind === "widget" && target.kind === "widget" && dragged.widget === target.widget) return;
+  if (dragged.kind === "stroke" && target.kind === "stroke" && dragged.stroke === target.stroke) return;
+  pushUndo();
+
+  if (dragged.kind === "widget") {
+    const draggedWidget = dragged.widget;
+    if (target.kind === "widget" && allWidgets([draggedWidget]).includes(target.widget)) return; // no cycles
+    const from = findWidgetLocation(state.project.widgets, draggedWidget);
+    if (!from) return;
+    from.array.splice(from.index, 1);
+
+    if (target.kind === "widget" && target.position === "into" && widgetAllowsChildren(target.widget)) {
+      target.widget.children.push(draggedWidget);
+    } else if (target.kind === "widget") {
+      const to = findWidgetLocation(state.project.widgets, target.widget);
+      const destArray = to ? to.array : state.project.widgets;
+      const destIndex = to ? (target.position === "before" ? to.index : to.index + 1) : destArray.length;
+      destArray.splice(destIndex, 0, draggedWidget);
+    } else if (target.kind === "stroke") {
+      const containerId = target.stroke.parent_id;
+      const container = containerId ? allWidgets().find((w) => w.id === containerId) : null;
+      (container ? container.children : state.project.widgets).push(draggedWidget);
+    } else {
+      state.project.widgets.push(draggedWidget);
+    }
+    if (state.canvasMode !== "widgets") setCanvasMode("widgets");
+    state.selectedWidget = draggedWidget;
+  } else {
+    const draggedStroke = dragged.stroke;
+    const list = state.project.glow_strokes || [];
+    const fromIndex = list.indexOf(draggedStroke);
+    if (fromIndex < 0) return;
+    list.splice(fromIndex, 1);
+
+    if (target.kind === "widget" && target.position === "into" && widgetAllowsChildren(target.widget)) {
+      draggedStroke.parent_id = target.widget.id;
+      list.push(draggedStroke);
+    } else if (target.kind === "widget") {
+      draggedStroke.parent_id = findParentContainerId(state.project.widgets, target.widget) || "";
+      list.push(draggedStroke);
+    } else if (target.kind === "stroke") {
+      draggedStroke.parent_id = target.stroke.parent_id;
+      const targetIndex = list.indexOf(target.stroke);
+      const insertAt = target.position === "before" ? targetIndex : targetIndex + 1;
+      list.splice(Math.max(0, insertAt), 0, draggedStroke);
+    } else {
+      draggedStroke.parent_id = "";
+      list.push(draggedStroke);
+    }
+    setCanvasMode("lines");
+    setLineTool("select");
+    state.selectedStroke = draggedStroke;
+  }
+  markProjectDirty();
+  renderDesigner();
+}
+
+// Feather Icons' "eye" / "eye-off" glyphs (MIT-licensed geometry) instead of
+// an emoji pair - the crossed-out eye reads as "hidden" at a glance, unlike
+// the "see-no-evil monkey" which needs a title tooltip to make sense of.
+const ICON_EYE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.6 18.6 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+const ICON_DUPLICATE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+
 function renderTree() {
   const tree = $("#widget-tree");
   tree.replaceChildren();
   const widgets = allWidgets();
   const strokes = state.project.glow_strokes || [];
   tree.classList.toggle("empty", widgets.length === 0 && strokes.length === 0);
+
+  if (!tree.dataset.dropBound) {
+    tree.dataset.dropBound = "1";
+    tree.addEventListener("dragover", (event) => {
+      if (!treeDrag) return;
+      event.preventDefault();
+    });
+    tree.addEventListener("drop", (event) => {
+      if (!treeDrag) return;
+      event.preventDefault();
+      clearDropIndicators();
+      performTreeDrop(treeDrag, { kind: "root" });
+      treeDrag = null;
+    });
+  }
+
   if (!widgets.length && !strokes.length) {
     tree.textContent = "Noch keine Widgets";
     return;
   }
+
+  const appendStroke = (stroke, depth) => {
+    const item = document.createElement("div");
+    item.className = `tree-item${state.canvasMode === "lines" && state.selectedStroke === stroke ? " selected" : ""}`;
+    item.style.paddingLeft = `${9 + depth * 16}px`;
+
+    const label = document.createElement("span");
+    label.className = "tree-label";
+    label.textContent = `∿ ${stroke.name || stroke.id}`;
+    label.title = "Zur Bearbeitung der Glow-Linie auswählen";
+    label.addEventListener("click", () => {
+      setCanvasMode("lines");
+      setLineTool("select");
+      state.selectedStroke = stroke;
+      renderDesigner();
+    });
+
+    const glyphs = document.createElement("span");
+    glyphs.className = "tree-glyphs";
+    glyphs.append(
+      treeGlyph(stroke, "hidden", stroke.hidden ? ICON_EYE_OFF : ICON_EYE, stroke.hidden ? "Einblenden" : "Ausblenden"),
+      treeGlyph(stroke, "locked", stroke.locked ? "🔒" : "🔓", stroke.locked ? "Entsperren" : "Sperren"),
+      treeActionGlyph(ICON_DUPLICATE, "Duplizieren", () => duplicateStroke(stroke)),
+    );
+
+    item.append(label, glyphs);
+    tree.append(item);
+    bindTreeItemDrag(item, { kind: "stroke", stroke }, { allowInto: false });
+  };
 
   const appendNodes = (nodes, depth = 0) => nodes.forEach((widget) => {
     const item = document.createElement("div");
@@ -2449,49 +2816,27 @@ function renderTree() {
     const glyphs = document.createElement("span");
     glyphs.className = "tree-glyphs";
     glyphs.append(
-      treeGlyph(widget, "hidden", widget.hidden ? "🙈" : "👁", widget.hidden ? "Einblenden" : "Ausblenden"),
+      treeGlyph(widget, "hidden", widget.hidden ? ICON_EYE_OFF : ICON_EYE, widget.hidden ? "Einblenden" : "Ausblenden"),
       treeGlyph(widget, "locked", widget.locked ? "🔒" : "🔓", widget.locked ? "Entsperren" : "Sperren"),
+      treeActionGlyph(ICON_DUPLICATE, "Duplizieren", () => duplicateWidget(widget)),
     );
 
     item.append(label, glyphs);
     tree.append(item);
+    bindTreeItemDrag(item, { kind: "widget", widget }, { allowInto: widgetAllowsChildren(widget) });
     appendNodes(widget.children || [], depth + 1);
+    strokes.filter((stroke) => stroke.parent_id === widget.id).forEach((stroke) => appendStroke(stroke, depth + 1));
   });
   appendNodes(state.project.widgets);
 
-  if (strokes.length) {
-    const heading = document.createElement("div");
-    heading.className = "tree-subheading";
-    heading.textContent = "Glow-Linien";
-    tree.append(heading);
-
-    strokes.forEach((stroke) => {
-      const item = document.createElement("div");
-      item.className = `tree-item${state.canvasMode === "lines" && state.selectedStroke === stroke ? " selected" : ""}`;
-      item.style.paddingLeft = "9px";
-
-      const label = document.createElement("span");
-      label.className = "tree-label";
-      label.textContent = `∿ ${stroke.name || stroke.id}`;
-      label.title = "Zur Bearbeitung in den Glow-Linien-Modus wechseln";
-      label.addEventListener("click", () => {
-        setCanvasMode("lines");
-        setLineTool("select");
-        state.selectedStroke = stroke;
-        renderDesigner();
-      });
-
-      item.append(label);
-      tree.append(item);
-    });
-  }
+  strokes.filter((stroke) => !stroke.parent_id).forEach((stroke) => appendStroke(stroke, 0));
 }
 
-function treeGlyph(widget, flag, symbol, title) {
+function treeGlyph(widget, flag, iconHtml, title) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = `tree-glyph${widget[flag] ? " active" : ""}`;
-  button.textContent = symbol;
+  button.innerHTML = iconHtml;
   button.title = title;
   button.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -2501,6 +2846,19 @@ function treeGlyph(widget, flag, symbol, title) {
     renderCanvas();
     renderTree();
     if (state.selectedWidget === widget) renderProperties();
+  });
+  return button;
+}
+
+function treeActionGlyph(iconHtml, title, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "tree-glyph";
+  button.innerHTML = iconHtml;
+  button.title = title;
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onClick();
   });
   return button;
 }

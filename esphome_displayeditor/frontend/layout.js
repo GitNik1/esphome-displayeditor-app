@@ -428,3 +428,18 @@ export function computeLayout(project) {
   descend(project, project.widgets || [], boxes, cache);
   return boxes;
 }
+
+/**
+ * The origin a *new* child of `container` would place its own x/y against -
+ * i.e. the container's content box after padding. Used to convert an
+ * absolute canvas point into a relative x/y before appending something to
+ * `container.children`, without having to duplicate the padding math that
+ * `descend()` already applies to existing children.
+ */
+export function contentOrigin(project, container) {
+  const boxes = computeLayout(project);
+  const outer = boxes.get(container);
+  if (!outer) return { x: 0, y: 0 };
+  const pad = padding(styleOf(project, container));
+  return { x: outer.left + pad.left, y: outer.top + pad.top };
+}

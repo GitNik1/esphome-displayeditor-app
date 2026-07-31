@@ -418,6 +418,23 @@ class GlowStroke:
     closed: bool = False
     glow: GlowParams = field(default_factory=GlowParams)
     flow: FlowParams = field(default_factory=FlowParams)
+    # Empty string = not nested. A parent is cosmetic/organizational only -
+    # `points` always stay in absolute canvas coordinates, so nothing about
+    # rendering or hit-testing needs to know about it. It only affects: (1)
+    # the hierarchy tree grouping, (2) whether the editor drags this line's
+    # points along when the parent widget moves, and (3) which widget's
+    # `children` a baked image/animimg widget is appended to.
+    parent_id: str = ""
+    # Editor-only, like WidgetNode.hidden's canvas-preview effect - a hidden
+    # line is skipped when drawing the canvas (not just dimmed) but stays
+    # selectable via the hierarchy tree, and still bakes normally if
+    # explicitly selected and baked.
+    hidden: bool = False
+    # Editor-only, like WidgetNode.locked - blocks dragging the line's body or
+    # its point handles (both defined below in app.js), not deletion, the
+    # same asymmetry widgets already have (Delete still works on a locked
+    # widget; only the drag gesture is guarded).
+    locked: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -431,6 +448,9 @@ class GlowStroke:
             "closed": bool(self.closed),
             "glow": self.glow.to_dict(),
             "flow": self.flow.to_dict(),
+            "parent_id": self.parent_id,
+            "hidden": self.hidden,
+            "locked": self.locked,
         }
 
     @staticmethod
@@ -445,6 +465,9 @@ class GlowStroke:
         s.closed = bool(d.get("closed", False))
         s.glow = GlowParams.from_dict(d.get("glow", {}))
         s.flow = FlowParams.from_dict(d.get("flow", {}))
+        s.parent_id = str(d.get("parent_id", ""))
+        s.hidden = bool(d.get("hidden", False))
+        s.locked = bool(d.get("locked", False))
         return s
 
 

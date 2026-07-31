@@ -52,16 +52,12 @@
               <button id="zoom-fit" class="button subtle compact" title="Einpassen (Strg+0)">Einpassen</button>
               <button id="zoom-100" class="button subtle compact" title="Originalgröße (Strg+1)">1:1</button>
             </div>
-            <div class="toolbar-group canvas-mode-group">
-              <button id="mode-widgets" class="button subtle compact active" title="Widgets bearbeiten">Widgets</button>
-              <button id="mode-lines" class="button subtle compact" title="Glow-Linien bearbeiten">Glow-Linien</button>
-            </div>
             <div id="line-tool-group" class="toolbar-group hidden">
               <button id="tool-select" class="button subtle compact active" title="Auswahl (V)">Auswahl</button>
               <button id="tool-draw" class="button subtle compact" title="Linie zeichnen (P)">Linie zeichnen</button>
-              <button id="line-add" class="button subtle compact" title="Neue Linie beginnen">＋ Linie</button>
               <button id="line-preview" class="button subtle compact" title="Fluss-Vorschau (F5)">▶ Vorschau</button>
               <button id="line-delete" class="button danger compact" title="Ausgewählte Linie löschen" disabled>Löschen</button>
+              <button id="line-done" class="button subtle compact" title="Zurück zu Widgets">✓ Fertig</button>
             </div>
             <div class="toolbar-group">
               <button id="undo" class="button subtle" title="Rückgängig (Strg+Z)" disabled>↶</button>
@@ -107,7 +103,8 @@
             <div id="canvas-scaler" class="canvas-scaler">
               <div id="canvas" class="canvas" aria-label="LVGL-Zeichenfläche">
                 <div id="canvas-background" class="canvas-background"></div>
-                <canvas id="glow-canvas" class="glow-canvas"></canvas>
+                <canvas id="glow-canvas-back" class="glow-canvas"></canvas>
+                <canvas id="glow-canvas-front" class="glow-canvas"></canvas>
                 <div id="glow-handles" class="glow-handles"></div>
               </div>
             </div>
