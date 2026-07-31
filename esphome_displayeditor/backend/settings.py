@@ -23,6 +23,7 @@ CAPABILITY_MINIMUM_ROLE = {
     "designer.import_yaml": "viewer",
     "designer.project_write": "editor",
     "designer.asset_write": "editor",
+    "designer.asset_read": "viewer",
     "firmware.compile": "installer",
     "firmware.upload": "installer",
     "builder.manage": "administrator",
@@ -165,6 +166,10 @@ def capabilities(
         # write, and is unavailable in the native_only profile exactly like
         # configuration writes are.
         "designer.asset_write": filesystem and writable,
+        # Read-only, so it stays available in the read-only profile exactly
+        # like configuration.read - it lets the canvas show an imported
+        # config's own images/fonts instead of only ever accepting http(s).
+        "designer.asset_read": filesystem,
         "firmware.compile": builder,
         "firmware.upload": builder,
         "builder.manage": settings.profile == "full"

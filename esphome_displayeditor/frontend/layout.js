@@ -28,12 +28,31 @@ const DEFAULT_FONT_SIZE = 16;
 
 let measureContext = null;
 
-function measureText(text, fontSize) {
+function measureText(text, fontSize, family) {
   if (!measureContext) measureContext = document.createElement("canvas").getContext("2d");
-  measureContext.font = `${fontSize}px sans-serif`;
+  measureContext.font = `${fontSize}px ${family}`;
   const lines = String(text).split("\n");
   const width = Math.max(...lines.map((line) => measureContext.measureText(line).width));
   return { width: Math.ceil(width), height: Math.ceil(lines.length * fontSize * 1.25) };
+}
+
+// A deterministic CSS family name for a project font id, shared with app.js
+// (which registers a FontFace under this exact name once the referenced
+// file loads) so both modules agree on the name without importing each
+// other.
+export function fontFamilyId(id) {
+  return `esphome-font-${String(id || "").replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+}
+
+// Falls back to a generic sans-serif until (or unless) the real font finishes
+// loading - this is the layout/measurement counterpart to what the canvas
+// widget itself applies via the same family name in app.js.
+export function resolvedFontFamily(id) {
+  if (!id) return "sans-serif";
+  const family = fontFamilyId(id);
+  const loaded = typeof document !== "undefined" && document.fonts
+    && document.fonts.check(`16px "${family}"`);
+  return loaded ? `"${family}", sans-serif` : "sans-serif";
 }
 
 // --- value helpers ----------------------------------------------------------
@@ -110,7 +129,8 @@ function intrinsicSize(project, widget, cache) {
   let size;
 
   if (widget.widget_type === "label") {
-    size = measureText(widget.properties?.text ?? "", fontSize(project, style));
+    const family = resolvedFontFamily(style.text_font || project.default_font);
+    size = measureText(widget.properties?.text ?? "", fontSize(project, style), family);
   } else if (widget.widget_type === "image" || widget.widget_type === "animimg") {
     size = imageSize(project, widget.properties?.src) || { ...DEFAULT_SIZE };
   } else if ((widget.children || []).length) {

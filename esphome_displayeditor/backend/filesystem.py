@@ -70,6 +70,20 @@ def revision_for(content: bytes | str) -> str:
 #: proves nothing about what is actually inside the request body.
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
+#: Content-Type for each asset suffix the browser is allowed to read back -
+#: images and fonts an imported config already references by a local path
+#: (e.g. ``images/panel_bg.png``, ``fonts/OpenSans-Regular.ttf``), so the
+#: designer canvas can show/apply the real asset instead of only ever
+#: accepting http(s) URLs.
+_ASSET_CONTENT_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".bmp": "image/bmp",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+}
+
 
 class FilesystemBackend:
     _allowed_suffixes = {".yaml", ".yml"}
@@ -209,6 +223,42 @@ class FilesystemBackend:
         self._assert_access(relative, write=False)
         content = self._read(draft, missing_error="draft_not_found")
         return {"name": relative.as_posix(), "content": content, "revision": revision_for(content)}
+
+    def read_asset(self, name: str) -> tuple[bytes, str]:
+        """Read an image or font an imported config references by a local
+        path, e.g. ``images/panel_bg.png`` or ``fonts/OpenSans-Regular.ttf``.
+
+        Unlike ``write_image_asset``, this isn't confined to a single flat
+        folder: an imported config can put its assets anywhere under the
+        config root, and this only ever reads what's already there (the same
+        trust boundary ``read_config``/``list_configs`` already use), so the
+        broader path is safe - traversal, symlinks and hidden segments are
+        still rejected by ``_relative``/``_resolve``, same as everywhere else.
+        """
+        relative = self._relative(name, suffixes=set(_ASSET_CONTENT_TYPES))
+        self._assert_access(relative, write=False)
+        target = self._resolve(self.root, relative)
+        try:
+            descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError as exc:
+            raise ApiError("asset_not_found", "Asset was not found.", 404) from exc
+        except OSError as exc:
+            raise ApiError("invalid_path", "Asset could not be opened safely.") from exc
+        try:
+            stat = os.fstat(descriptor)
+            if not target.is_file() or target.is_symlink():
+                raise ApiError("invalid_path", "Path is not a regular file.")
+            if stat.st_size > self.settings.max_file_size:
+                raise ApiError("file_too_large", "Asset exceeds the configured size limit.", 413)
+            with os.fdopen(descriptor, "rb", closefd=True) as handle:
+                descriptor = -1
+                content = handle.read(self.settings.max_file_size + 1)
+            if len(content) > self.settings.max_file_size:
+                raise ApiError("file_too_large", "Asset exceeds the configured size limit.", 413)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        return content, _ASSET_CONTENT_TYPES[relative.suffix.lower()]
 
     def save_draft(self, name: str, content: str) -> dict:
         relative, _, draft = self._paths(name)

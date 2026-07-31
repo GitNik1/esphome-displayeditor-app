@@ -1045,6 +1045,16 @@ def create_app(
         )
         return result
 
+    @application.get("/api/v1/designer/assets/read/{name:path}")
+    async def read_designer_asset(name: str) -> Response:
+        ensure_capability_available("designer.asset_read")
+        content, content_type = filesystem.read_asset(name)
+        return Response(
+            content=content,
+            media_type=content_type,
+            headers={"Cache-Control": "no-store"},
+        )
+
     @application.get("/api/v1/designer/projects")
     async def list_designer_projects() -> dict:
         return {"projects": projects.list()}

@@ -1,4 +1,4 @@
-import { computeLayout, contentOrigin } from "./layout.js";
+import { computeLayout, contentOrigin, fontFamilyId, resolvedFontFamily } from "./layout.js";
 import { boundingBox, nearestSegment } from "./glowline/geometry.js";
 import { drawDocument, flowBoundsDocument, hasFlow, strokePath } from "./glowline/renderer.js";
 import { format565, hsvToRgb, quantizeImageData, rgb565to888, rgb888to565 } from "./glowline/rgb565.js";
@@ -1386,6 +1386,8 @@ function renderCanvas() {
   });
   canvas.append(glowCanvasFront, handles);
 
+  fontLibrary().forEach((font) => ensureFontLoaded(font.id));
+
   const pageWidgetCount = (state.project.pages || [])
     .reduce((count, page) => count + allWidgets(page.widgets || []).length, 0);
   const layerWidgetCount = allWidgets(state.project.top_layer?.widgets || []).length
@@ -2218,6 +2220,7 @@ function renderWidget(item) {
     const color = String(effectiveStyle.bg_color).replace("#", "");
     if (/^[0-9a-f]{6}$/i.test(color)) node.style.backgroundColor = `#${color}`;
   }
+  node.style.fontFamily = resolvedFontFamily(effectiveStyle.text_font || state.project.default_font);
   const imageSource = widget.widget_type === "image"
     ? displayableImageSource(widget.properties.src)
     : null;
@@ -2981,14 +2984,61 @@ function imageEntry(id) {
   return id ? imageLibrary().find((entry) => entry.id === id) : undefined;
 }
 
+function fontLibrary() {
+  if (!Array.isArray(state.project.fonts)) state.project.fonts = [];
+  return state.project.fonts;
+}
+
+// One attempt per font id per page load - "failed" is sticky (no retry loop
+// against a permanently-missing file), but a fresh project/import naturally
+// gets fresh ids to try again with.
+const fontLoadState = new Map();
+
+// Kicks off loading the real font file behind a project font entry (http(s)
+// as-is, a local path from an imported config via assetUrl()) so the canvas
+// can show its actual glyphs instead of only ever approximating with the
+// browser's generic sans-serif. Loading is async; once it resolves this
+// re-renders so layout/measurement (layout.js's resolvedFontFamily) and the
+// visible label text both pick up the real family.
+function ensureFontLoaded(fontId) {
+  if (!fontId || fontLoadState.has(fontId)) return;
+  const entry = fontLibrary().find((font) => font.id === fontId);
+  if (!entry || !entry.file_path) return;
+  fontLoadState.set(fontId, "loading");
+  const face = new FontFace(fontFamilyId(fontId), `url("${assetUrl(entry.file_path)}")`);
+  face.load().then((loaded) => {
+    document.fonts.add(loaded);
+    fontLoadState.set(fontId, "loaded");
+    renderDesigner();
+  }).catch(() => {
+    fontLoadState.set(fontId, "failed");
+  });
+}
+
 function isRemoteAsset(path) {
   return /^https?:\/\//i.test(String(path || ""));
 }
 
-// The canvas can only show sources the browser itself can fetch, i.e. URLs.
+// A local path (e.g. from an imported config's own `images:`/`font:` entry)
+// isn't something the browser can fetch directly - it lives on the HA host,
+// not the web. Route it through the read-only asset endpoint instead, which
+// confines itself to the same config directory those entries came from in
+// the first place. Deliberately not used by addImageSource(): a user typing
+// an arbitrary path into that prompt is a different trust situation than a
+// path that already existed in an imported project.
+function assetUrl(filePath) {
+  if (isRemoteAsset(filePath)) return filePath;
+  const appBase = window.location.pathname.endsWith("/")
+    ? window.location.pathname
+    : `${window.location.pathname}/`;
+  return `${appBase}api/v1/designer/assets/read/${encodedName(filePath)}`;
+}
+
+// The canvas can show any source the browser can fetch: an http(s) URL
+// as-is, or a local path (from an imported config) through assetUrl().
 function displayableImageSource(id) {
   const entry = imageEntry(id);
-  return entry && isRemoteAsset(entry.file_path) ? entry.file_path : null;
+  return entry && entry.file_path ? assetUrl(entry.file_path) : null;
 }
 
 function addImageSource() {

@@ -196,6 +196,120 @@ def test_upload_denied_write_is_audited(tmp_path: Path) -> None:
     assert audit.status_code in (200, 403)
 
 
+# --- reading an imported config's own local assets ---------------------------
+#
+# Unlike write_image_asset (one flat folder, PNG only, no draft step), this is
+# read-only and needs to reach anywhere under the config root - an imported
+# config can reference images/fonts by any relative path, not just images/.
+
+def test_read_asset_returns_content_and_content_type(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    (fs.root / "images").mkdir(parents=True)
+    (fs.root / "images" / "panel_bg.png").write_bytes(PNG_1X1)
+
+    content, content_type = fs.read_asset("images/panel_bg.png")
+    assert content == PNG_1X1
+    assert content_type == "image/png"
+
+
+def test_read_asset_works_for_a_font_in_a_different_folder(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    (fs.root / "fonts").mkdir(parents=True)
+    (fs.root / "fonts" / "OpenSans-Regular.ttf").write_bytes(b"not a real font, just bytes")
+
+    content, content_type = fs.read_asset("fonts/OpenSans-Regular.ttf")
+    assert content == b"not a real font, just bytes"
+    assert content_type == "font/ttf"
+
+
+def test_read_asset_rejects_disallowed_suffix(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    (fs.root / "secrets.yaml").write_text("api_password: hunter2")
+    with pytest.raises(ApiError) as raised:
+        fs.read_asset("secrets.yaml")
+    assert raised.value.error == "invalid_path"
+
+
+def test_read_asset_missing_file_returns_not_found(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    with pytest.raises(ApiError) as raised:
+        fs.read_asset("images/does_not_exist.png")
+    assert raised.value.error == "asset_not_found"
+
+
+@pytest.mark.parametrize("name", [
+    "../secrets.yaml.png",
+    "../../etc/whatever.png",
+    "..%2fescape.png",
+])
+def test_read_asset_rejects_traversal_attempts(tmp_path: Path, name: str) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    with pytest.raises(ApiError) as raised:
+        fs.read_asset(name)
+    assert raised.value.error == "invalid_path"
+
+
+def test_read_asset_rejects_oversized_content(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path, max_file_size=8))
+    (fs.root / "images").mkdir(parents=True)
+    (fs.root / "images" / "big.png").write_bytes(PNG_1X1)
+    with pytest.raises(ApiError) as raised:
+        fs.read_asset("images/big.png")
+    assert raised.value.error == "file_too_large"
+
+
+def test_read_asset_refuses_symlinked_target(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    (fs.root / "images").mkdir(parents=True)
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(PNG_1X1)
+    try:
+        (fs.root / "images" / "link.png").symlink_to(outside)
+    except OSError:
+        pytest.skip("Symbolic links are unavailable on this platform")
+
+    with pytest.raises(ApiError) as raised:
+        fs.read_asset("images/link.png")
+    assert raised.value.error == "invalid_path"
+
+
+def test_read_asset_http_endpoint_serves_the_file_without_a_user(tmp_path: Path) -> None:
+    """Reading is available to any viewer, no X-Remote-User-Id required -
+    mirrors GET /api/v1/configurations/{name}."""
+    settings = _settings(tmp_path)
+    (settings.config_root / "images").mkdir(parents=True, exist_ok=True)
+    (settings.config_root / "images" / "panel_bg.png").write_bytes(PNG_1X1)
+    client = TestClient(create_app(settings, serve_frontend=False))
+
+    response = client.get("/api/v1/designer/assets/read/images/panel_bg.png")
+    assert response.status_code == 200
+    assert response.content == PNG_1X1
+    assert response.headers["content-type"] == "image/png"
+
+
+def test_read_asset_http_endpoint_unavailable_in_native_only_profile(tmp_path: Path) -> None:
+    settings = _settings(tmp_path, profile="native_only")
+    (settings.config_root / "images").mkdir(parents=True, exist_ok=True)
+    (settings.config_root / "images" / "panel_bg.png").write_bytes(PNG_1X1)
+    client = TestClient(create_app(settings, serve_frontend=False))
+
+    response = client.get("/api/v1/designer/assets/read/images/panel_bg.png")
+    assert response.status_code == 403
+    assert response.json()["error"] == "capability_unavailable"
+
+
+def test_read_asset_http_endpoint_available_in_read_only_profile(tmp_path: Path) -> None:
+    """Reading isn't gated by `writable` - the read-only profile must still
+    be able to show an imported config's own assets."""
+    settings = _settings(tmp_path, profile="read_only", read_only=True)
+    (settings.config_root / "images").mkdir(parents=True, exist_ok=True)
+    (settings.config_root / "images" / "panel_bg.png").write_bytes(PNG_1X1)
+    client = TestClient(create_app(settings, serve_frontend=False))
+
+    response = client.get("/api/v1/designer/assets/read/images/panel_bg.png")
+    assert response.status_code == 200
+
+
 def test_the_uploaded_file_can_be_referenced_from_a_saved_project(tmp_path: Path) -> None:
     """The point of the whole feature: a baked frame must be usable as a
     normal, exportable image entry, not just sit on disk."""
