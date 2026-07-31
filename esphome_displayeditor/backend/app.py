@@ -127,7 +127,7 @@ def create_app(
 
     application = FastAPI(
         title="ESPHome Display Editor API",
-        version=os.getenv("APP_VERSION", "0.9.1"),
+        version=os.getenv("APP_VERSION", "0.9.11"),
         docs_url=None,
         redoc_url=None,
         openapi_url="/api/v1/openapi.json",

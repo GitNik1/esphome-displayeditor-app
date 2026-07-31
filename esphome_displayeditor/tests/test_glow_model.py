@@ -23,7 +23,7 @@ def test_glow_stroke_field_names_match_the_js_renderer_contract() -> None:
 
     assert set(d) == {
         "id", "points", "name", "color565", "width", "corner_radius",
-        "mode", "closed", "glow", "flow",
+        "mode", "closed", "glow", "flow", "parent_id", "hidden", "locked",
     }
     assert set(d["glow"]) == {"enabled", "radius", "intensity", "use_line_color", "color565"}
     assert set(d["flow"]) == {
