@@ -2,6 +2,7 @@ import { computeLayout, contentOrigin } from "./layout.js";
 import { boundingBox, nearestSegment } from "./glowline/geometry.js";
 import { drawDocument, flowBoundsDocument, hasFlow, strokePath } from "./glowline/renderer.js";
 import { format565, hsvToRgb, quantizeImageData, rgb565to888, rgb888to565 } from "./glowline/rgb565.js";
+import { ViewerController } from "./viewer/viewer.js";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -68,6 +69,8 @@ const state = {
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
+
+let viewer = null;
 
 function freshProject() {
   return {
@@ -471,6 +474,32 @@ function bindDesignerPaneSwitch() {
 
 function bindDesigner() {
   bindDesignerPaneSwitch();
+  viewer = new ViewerController({
+    dialog: $("#viewer-dialog"),
+    stage: $("#viewer-stage"),
+    frame: $("#viewer-frame"),
+    display: $("#viewer-display"),
+    title: $("#viewer-title"),
+    status: $("#viewer-status"),
+    zoomLabel: $("#viewer-zoom-label"),
+    rotationControl: $("#viewer-rotation"),
+  });
+  $("#open-viewer").addEventListener("click", () => viewer.open(state.project, {
+    name: state.projectName || $("#project-name").value || "Lokales Projekt",
+    backgroundPreview: state.backgroundPreview,
+  }));
+  $("#viewer-close").addEventListener("click", () => viewer.close());
+  $("#viewer-reset").addEventListener("click", () => viewer.reset());
+  $("#viewer-fit").addEventListener("click", () => viewer.fit());
+  $("#viewer-zoom-100").addEventListener("click", () => viewer.setZoom(1));
+  $("#viewer-zoom-out").addEventListener("click", () => viewer.setZoom(viewer.zoom / 1.25));
+  $("#viewer-zoom-in").addEventListener("click", () => viewer.setZoom(viewer.zoom * 1.25));
+  $("#viewer-rotation").addEventListener("change", (event) => viewer.setRotation(event.target.value));
+  $("#viewer-dialog").addEventListener("close", () => viewer.close());
+  $("#viewer-dialog").addEventListener("cancel", (event) => {
+    event.preventDefault();
+    viewer.close();
+  });
   $("#canvas-width").addEventListener("change", updateCanvasSize);
   $("#canvas-height").addEventListener("change", updateCanvasSize);
   $("#new-project").addEventListener("click", newDesignerProject);

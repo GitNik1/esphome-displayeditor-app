@@ -55,7 +55,12 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "ESPHome Display Editor" in response.text
+    assert 'id="open-viewer"' in response.text
+    assert 'id="viewer-dialog"' in response.text
     assert client.get("/app.js").status_code == 200
+    viewer = client.get("/viewer/viewer.js")
+    assert viewer.status_code == 200
+    assert "class ViewerController" in viewer.text
 
 
 def test_designer_project_api_requires_revision_and_ingress_user(tmp_path: Path) -> None:

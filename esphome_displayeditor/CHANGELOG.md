@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Added the first read-only browser Viewer: projects open in a full-screen,
+  isolated preview using the same layout engine as the designer, with fit,
+  zoom, rotation and reset controls. The viewer renders the eight currently
+  supported widget types plus GlowLine layers and cannot mutate the editor
+  project or invoke a write API.
+
 ## 0.10.0
 
 - Added the optional, fail-closed ESPHome Device Builder backend for ESPHome
