@@ -64,3 +64,28 @@ def test_local_asset_paths_are_blocked(tmp_path: Path) -> None:
         DesignerService(tmp_path).export_yaml(project)
     assert raised.value.error == "invalid_project"
 
+
+def test_external_asset_paths_are_allowed(tmp_path: Path) -> None:
+    """Assets belonging to the ESPHome config a project was imported from are
+    only ever written back out as text - the add-on never opens them - so the
+    rule above must not apply. Without this, importing any real config would
+    produce a project that can be neither saved nor exported."""
+    project = project_with_button()
+    project["images"] = [
+        {"id": "logo", "file_path": "images/logo.png", "external": True}
+    ]
+
+    result = DesignerService(tmp_path).export_yaml(project)
+
+    assert "images/logo.png" in result["yaml"]
+
+
+def test_external_flag_does_not_whitelist_editor_assets(tmp_path: Path) -> None:
+    project = project_with_button()
+    project["images"] = [
+        {"id": "logo", "file_path": "/etc/passwd", "external": False}
+    ]
+
+    with pytest.raises(ApiError):
+        DesignerService(tmp_path).export_yaml(project)
+

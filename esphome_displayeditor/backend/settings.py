@@ -50,6 +50,9 @@ def capabilities(settings: Settings) -> dict[str, bool]:
         "configuration.validate_esphome": False,
         "designer.project": True,
         "designer.export_yaml": True,
+        # Import only reads a configuration and returns a project; it never
+        # writes anything, so it stays available in the read-only profile.
+        "designer.import_yaml": True,
         "designer.project_write": writable,
         "firmware.compile": False,
         "firmware.upload": False,

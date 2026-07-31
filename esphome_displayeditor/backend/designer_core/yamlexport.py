@@ -13,6 +13,7 @@ again, both found in squareline-to-esphome/converter/styles.py through real
 
 from __future__ import annotations
 
+import copy
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -21,8 +22,8 @@ from typing import Any
 import yaml
 
 from .idgen import IdRegistry
-from .model import Project, WidgetNode
-from .widgetschema import WIDGET_SCHEMAS
+from .model import STATES_KEY, Project, WidgetNode
+from .widgetschema import LVGL_STYLE_KEYS, WIDGET_SCHEMAS
 
 _LEGACY_STYLE_REMAP = {
     "anim_time": "anim_duration", "transform_angle": "transform_rotation",
@@ -126,17 +127,34 @@ def _resolve_style_value(key: str, value: Any) -> Any:
 
 def clean_style_dict(style_tree: dict[str, Any]) -> dict[str, Any]:
     """Remaps legacy property names and resolves colour values, recursively
-    for the one level of part-nesting style_tree can have
-    (``{"indicator": {"bg_color": ...}}``)."""
+    for the part-nesting style_tree can have (``{"indicator": {...}}``) and
+    for per-state overrides (``{"states": {"pressed": {...}}}``).
+
+    States are stored under a reserved key because part and state names share
+    one namespace in YAML; here they are flattened back to the shape ESPHome
+    expects, i.e. ``pressed:`` sitting next to ``indicator:``.
+    """
     out: dict[str, Any] = {}
     for key, value in style_tree.items():
+        if key == STATES_KEY and isinstance(value, dict):
+            for state, sub_tree in value.items():
+                sub = clean_style_dict(sub_tree) if isinstance(sub_tree, dict) else None
+                if sub:
+                    out[state] = sub
+            continue
         if key in _STYLE_PART_KEYS and isinstance(value, dict):
             sub = clean_style_dict(value)
             if sub:
                 out[key] = sub
             continue
         canonical = _LEGACY_STYLE_REMAP.get(key, key)
-        resolved = _resolve_style_value(canonical, value)
+        # Only properties this build actually models get value resolution and
+        # the legacy rename; anything else is passthrough from an import and
+        # must reach the file exactly as it arrived.
+        if canonical in LVGL_STYLE_KEYS or key in LVGL_STYLE_KEYS:
+            resolved = _resolve_style_value(canonical, value)
+        else:
+            canonical, resolved = key, value
         if resolved is not None:
             out[canonical] = resolved
     return out
@@ -152,18 +170,29 @@ def _widget_content_dict(node: WidgetNode) -> dict[str, Any]:
 def _widget_dict(node: WidgetNode, registry: IdRegistry, issues: list[ExportIssue]) -> dict[str, Any]:
     schema = WIDGET_SCHEMAS.get(node.widget_type)
     if schema is None:
-        issues.append(ExportIssue("A", f"Unknown widget type '{node.widget_type}'.", node.id))
-        return {}
+        # An editor-created node of an unknown type is a bug and stays fatal.
+        # An imported one came from a config that was valid ESPHome to begin
+        # with, so refusing to write it back would be the greater harm.
+        if node.source != "imported":
+            issues.append(ExportIssue("A", f"Unknown widget type '{node.widget_type}'.", node.id))
+            return {}
+        issues.append(ExportIssue(
+            "B", f"Widget type '{node.widget_type}' has no editor support; "
+                 f"written back unchanged.", node.id))
 
     out: dict[str, Any] = {}
-    if node.id:
+    if node.id and not node.synthetic_id:
         out["id"] = node.id
     if node.x not in (0, "0"):
         out["x"] = node.x
     if node.y not in (0, "0"):
         out["y"] = node.y
-    out["width"] = node.width
-    out["height"] = node.height
+    # None means the source never specified a size - typically a grid or flex
+    # child whose size LVGL derives. Emitting a value would silently pin it.
+    if node.width is not None:
+        out["width"] = node.width
+    if node.height is not None:
+        out["height"] = node.height
     if node.align and node.align != "TOP_LEFT":
         out["align"] = node.align
     if node.align_to:
@@ -171,21 +200,45 @@ def _widget_dict(node: WidgetNode, registry: IdRegistry, issues: list[ExportIssu
     if node.hidden:
         out["hidden"] = True
 
+    if node.layout:
+        out["layout"] = copy.deepcopy(node.layout)
+    for key, value in node.grid_cell.items():
+        out[f"grid_cell_{key}"] = value
+
     out.update(_widget_content_dict(node))
 
+    # A widget may carry both a named style and inline overrides on top of it;
+    # ESPHome applies them in that order. Treating them as mutually exclusive
+    # silently dropped whichever half came second.
     if node.style_mode == "named" and node.style_refs:
         out["styles"] = node.style_refs[0] if len(node.style_refs) == 1 else list(node.style_refs)
-    elif node.style_tree:
+    if node.style_tree:
         out.update(clean_style_dict(node.style_tree))
 
     for trigger, actions in node.events.items():
         if actions:
             out[trigger] = actions
 
+    _merge_passthrough(out, node.extra, issues, node.id)
+
     if node.children:
         out["widgets"] = [{c.widget_type: _widget_dict(c, registry, issues)} for c in node.children]
 
     return out
+
+
+def _merge_passthrough(out: dict[str, Any], extra: dict[str, Any],
+                       issues: list[ExportIssue], where: str = "") -> None:
+    """Fold unmodelled keys back in without letting them clobber a value the
+    editor is responsible for - if both produced the same key, the edited one
+    is the newer truth."""
+    for key, value in extra.items():
+        if key in out:
+            issues.append(ExportIssue(
+                "C", f"Preserved key '{key}' also set by the editor; kept the edited value.",
+                where))
+            continue
+        out[key] = copy.deepcopy(value)
 
 
 def build_lvgl_tree(project: Project, registry: IdRegistry, issues: list[ExportIssue]) -> dict[str, Any]:
@@ -195,6 +248,12 @@ def build_lvgl_tree(project: Project, registry: IdRegistry, issues: list[ExportI
     }
     if project.default_font:
         lvgl["default_font"] = project.default_font
+    if project.theme:
+        theme_out = {
+            widget_type: clean_style_dict(style_tree)
+            for widget_type, style_tree in project.theme.items()
+        }
+        lvgl["theme"] = {k: v for k, v in theme_out.items() if v}
 
     widgets_out = [{c.widget_type: _widget_dict(c, registry, issues)} for c in project.widgets]
     if project.background.export_as_lvgl_image and project.background.path:
@@ -213,6 +272,7 @@ def build_lvgl_tree(project: Project, registry: IdRegistry, issues: list[ExportI
             {"id": s.id, **clean_style_dict(s.style_tree)} for s in project.styles
         ]
 
+    _merge_passthrough(lvgl, project.extra_lvgl, issues, "lvgl")
     return lvgl
 
 
@@ -236,15 +296,22 @@ def build_font_block(project: Project) -> list[dict[str, Any]] | None:
             entry["glyphsets"] = f.glyphsets
         if f.extras:
             entry["extras"] = f.extras
+        entry.update({k: v for k, v in f.extra.items() if k not in entry})
         entries.append(entry)
     return entries or None
 
 
 def _copy_asset(src_path: str, assets_dir: str, subfolder: str,
-                issues: list[ExportIssue], copied: list[str]) -> str:
+                issues: list[ExportIssue], copied: list[str],
+                external: bool = False) -> str:
     if not src_path:
         return ""
     if src_path.startswith(("http://", "https://")):
+        return src_path
+    if external:
+        # The path belongs to the ESPHome project this was imported from and
+        # is relative to *its* directory. Copying it here would both rewrite a
+        # path that is already correct and require reading a host file.
         return src_path
     if not os.path.isfile(src_path):
         issues.append(ExportIssue("A", f"Asset file not found: {src_path}"))
@@ -265,7 +332,8 @@ def build_image_block(project: Project, assets_dir: str,
     for img in project.images:
         entry: dict[str, Any] = {
             "platform": "file", "id": img.id,
-            "file": _copy_asset(img.file_path, assets_dir, "images", issues, copied),
+            "file": _copy_asset(img.file_path, assets_dir, "images", issues, copied,
+                                external=img.external),
         }
         if img.resize:
             entry["resize"] = img.resize
@@ -273,6 +341,7 @@ def build_image_block(project: Project, assets_dir: str,
             entry["dither"] = img.dither
         if img.transparency and img.transparency != "opaque":
             entry["transparency"] = img.transparency
+        entry.update({k: v for k, v in img.extra.items() if k not in entry})
         entries.append(entry)
 
     if project.background.export_as_lvgl_image and project.background.path:
@@ -311,16 +380,25 @@ def export_project(project: Project, output_path: str) -> ExportResult:
 
     assets_dir = os.path.join(os.path.dirname(os.path.abspath(output_path)), "assets")
 
+    # An imported project restricts this to ["lvgl"]: its fonts, images and
+    # colours are already defined by the config it came from, and redefining
+    # them beside it would collide on every id.
+    sections = set(project.export_sections or ["color", "font", "image", "lvgl"])
+
     doc: dict[str, Any] = {}
-    color_block = build_color_block(project)
-    if color_block:
-        doc["color"] = color_block
-    font_block = build_font_block(project)
-    if font_block:
-        doc["font"] = font_block
-    image_block, copied = build_image_block(project, assets_dir, issues)
-    if image_block:
-        doc["image"] = image_block
+    copied: list[str] = []
+    if "color" in sections:
+        color_block = build_color_block(project)
+        if color_block:
+            doc["color"] = color_block
+    if "font" in sections:
+        font_block = build_font_block(project)
+        if font_block:
+            doc["font"] = font_block
+    if "image" in sections:
+        image_block, copied = build_image_block(project, assets_dir, issues)
+        if image_block:
+            doc["image"] = image_block
     doc["lvgl"] = build_lvgl_tree(project, registry, issues)
 
     blocking = [i for i in issues if i.severity == "A"]
@@ -334,8 +412,17 @@ def export_project(project: Project, output_path: str) -> ExportResult:
         "#\n"
         f"# Requires a `display:` component with id: {project.display_id_placeholder}\n"
         "# in the target project - this file only defines the LVGL UI, not the\n"
-        "# physical display/touchscreen hardware.\n\n"
+        "# physical display/touchscreen hardware.\n"
     )
+    source_name = project.import_source.get("name") if project.import_source else None
+    if source_name:
+        header += (
+            "#\n"
+            f"# Imported from {source_name}, which was NOT modified.\n"
+            "# Remove that file's own `lvgl:` block before including this one -\n"
+            "# ESPHome would otherwise see the widget ids defined twice.\n"
+        )
+    header += "\n"
     body = yaml.dump(doc, Dumper=ESPHomeDumper, sort_keys=False,
                      default_flow_style=False, allow_unicode=True, width=100)
 

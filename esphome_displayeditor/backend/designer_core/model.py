@@ -12,12 +12,36 @@ from dataclasses import dataclass, field
 from typing import Any
 
 PROJECT_FORMAT = "esphome-lvgl-designer-project"
-PROJECT_FORMAT_VERSION = 1
+#: Version 2 adds the fields needed to hold an imported ESPHome config:
+#: WidgetNode.layout/grid_cell/extra/source, Project.theme/extra_lvgl, the
+#: "states" key inside style trees, and `external` assets. Older builds read
+#: every field with d.get(key, default), so they would load a v2 file, drop
+#: all of that silently, and write the truncated version back. The bump turns
+#: that data loss into an explicit refusal (projectformat.py, designer.py).
+PROJECT_FORMAT_VERSION = 2
 
 DEFAULT_W, DEFAULT_H = 480, 480
 
 #: Style-tree keys that name a further part rather than a style property.
 STYLE_PARTS = ("indicator", "knob", "items", "ticks", "selected", "scrollbar", "cursor")
+
+#: Reserved style-tree key holding per-state overrides:
+#: ``style_tree["states"]["pressed"] = {...}``. In YAML a state block sits flat
+#: alongside the part blocks (``pressed:`` next to ``knob:``), but part and
+#: state names share one namespace there. Nesting them under a reserved key
+#: keeps the model unambiguous; the exporter flattens it back out.
+STATES_KEY = "states"
+
+#: Style-tree keys moved out of ``style_tree`` into ``WidgetNode.layout`` when
+#: a version 1 project is loaded. ESPHome expects a nested ``layout:`` mapping,
+#: so emitting these as flat style properties never produced valid YAML.
+_LAYOUT_STYLE_MIGRATION = {
+    "layout_type": "type",
+    "flex_flow": "flex_flow",
+    "flex_align_main": "flex_align_main",
+    "flex_align_cross": "flex_align_cross",
+    "flex_align_track": "flex_align_track",
+}
 
 
 def _copy(value: Any) -> Any:
@@ -91,6 +115,25 @@ class WidgetNode:
     tile_col: int = 0
     tile_dir: str = "ALL"
 
+    #: This widget's own ESPHome ``layout:`` mapping, stored verbatim
+    #: (``{"type": "GRID", "grid_rows": [40, "FR(1)", "CONTENT"], ...}``).
+    #: Track values stay as written - parsing them is the canvas's job, and
+    #: round-tripping an unparsed scalar is always safe.
+    layout: dict[str, Any] = field(default_factory=dict)
+    #: Placement inside the *parent's* grid, without the ``grid_cell_`` prefix:
+    #: ``{"row_pos": 0, "column_pos": 1, "row_span": 2, "x_align": "CENTER"}``.
+    grid_cell: dict[str, Any] = field(default_factory=dict)
+    #: Widget keys this build does not model, kept verbatim so an imported
+    #: config survives a round trip instead of being silently truncated.
+    extra: dict[str, Any] = field(default_factory=dict)
+    #: "editor" | "imported". An unknown widget type is a fatal export error
+    #: for editor-created nodes (it would be a bug), but merely a warning for
+    #: imported ones - the source config was valid ESPHome to begin with.
+    source: str = "editor"
+    #: True when the importer invented the id because the source had none;
+    #: suppresses ``id:`` on export so the round trip stays clean.
+    synthetic_id: bool = False
+
     def walk(self):
         """Yield self and every descendant, depth-first."""
         yield self
@@ -113,6 +156,11 @@ class WidgetNode:
             "children": [c.to_dict() for c in self.children],
             "tab_title": self.tab_title,
             "tile_row": self.tile_row, "tile_col": self.tile_col, "tile_dir": self.tile_dir,
+            "layout": _copy(self.layout),
+            "grid_cell": _copy(self.grid_cell),
+            "extra": _copy(self.extra),
+            "source": self.source,
+            "synthetic_id": self.synthetic_id,
         }
 
     @staticmethod
@@ -137,7 +185,33 @@ class WidgetNode:
         n.tile_row = int(d.get("tile_row", 0))
         n.tile_col = int(d.get("tile_col", 0))
         n.tile_dir = d.get("tile_dir", "ALL")
+        n.layout = _copy(d.get("layout", {}))
+        n.grid_cell = _copy(d.get("grid_cell", {}))
+        n.extra = _copy(d.get("extra", {}))
+        n.source = d.get("source", "editor")
+        n.synthetic_id = bool(d.get("synthetic_id", False))
+        n._migrate_layout_style_props()
         return n
+
+    def _migrate_layout_style_props(self) -> None:
+        """Lift version 1's flat layout style properties into ``layout``.
+
+        Only runs when ``layout`` is still empty, so a v2 project that
+        deliberately carries both is left alone.
+        """
+        if self.layout:
+            return
+        moved = {}
+        for style_key, layout_key in _LAYOUT_STYLE_MIGRATION.items():
+            if style_key in self.style_tree:
+                moved[layout_key] = self.style_tree.pop(style_key)
+        # "NONE" was the default and means "no layout at all" - migrating it
+        # would turn every untouched v1 widget into one carrying a layout.
+        if moved.get("type", "NONE") == "NONE":
+            moved.pop("type", None)
+            if not moved:
+                return
+        self.layout = moved
 
 
 @dataclass
@@ -169,6 +243,11 @@ class FontLibraryEntry:
     glyphs: list[str] = field(default_factory=list)
     glyphsets: list[str] = field(default_factory=list)
     extras: list[dict] = field(default_factory=list)
+    #: See ImageLibraryEntry.external.
+    external: bool = False
+    #: Keys this build does not model (``refresh: never``, ...), kept verbatim.
+    #: Distinct from ``extras``, which is ESPHome's own ``extras:`` list.
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -180,6 +259,7 @@ class FontLibraryEntry:
             "size": self.size, "bpp": self.bpp,
             "glyphs": list(self.glyphs), "glyphsets": list(self.glyphsets),
             "extras": _copy(self.extras),
+            "external": self.external, "extra": _copy(self.extra),
         }
 
     @staticmethod
@@ -197,6 +277,8 @@ class FontLibraryEntry:
         f.glyphs = list(d.get("glyphs", []))
         f.glyphsets = list(d.get("glyphsets", []))
         f.extras = _copy(d.get("extras", []))
+        f.external = bool(d.get("external", False))
+        f.extra = _copy(d.get("extra", {}))
         return f
 
 
@@ -207,10 +289,18 @@ class ImageLibraryEntry:
     resize: str = ""
     dither: str = ""
     transparency: str = "opaque"
+    #: The asset belongs to the ESPHome project this was imported from, not to
+    #: this designer. Its path is emitted verbatim, never copied into an
+    #: assets/ folder, and never opened by the add-on - which is why it is
+    #: exempt from the local-file rule guarding against arbitrary host reads.
+    external: bool = False
+    #: Keys this build does not model (``type: RGB565``, ...), kept verbatim.
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "file_path": self.file_path, "resize": self.resize,
-                "dither": self.dither, "transparency": self.transparency}
+                "dither": self.dither, "transparency": self.transparency,
+                "external": self.external, "extra": _copy(self.extra)}
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> ImageLibraryEntry:
@@ -219,6 +309,8 @@ class ImageLibraryEntry:
         e.resize = d.get("resize", "")
         e.dither = d.get("dither", "")
         e.transparency = d.get("transparency", "opaque")
+        e.external = bool(d.get("external", False))
+        e.extra = _copy(d.get("extra", {}))
         return e
 
 
@@ -248,6 +340,26 @@ class Project:
     default_font: str = ""
     display_id_placeholder: str = "my_display"
 
+    #: ESPHome's ``lvgl: theme:`` block - ``{widget_type: style_dict}``, using
+    #: the same shape as ``WidgetNode.style_tree`` so parts and states nest
+    #: identically and the same helpers apply.
+    theme: dict[str, Any] = field(default_factory=dict)
+    #: Keys inside ``lvgl:`` this build does not model (``pages``, ``top_layer``,
+    #: ``msgboxes``, ``on_idle``, ...), kept verbatim.
+    extra_lvgl: dict[str, Any] = field(default_factory=dict)
+    #: How the canvas size was determined, so the UI can be honest about a
+    #: guess: user | display_dimensions | display_model | root_grid |
+    #: bounding_box | default.
+    canvas_source: str = "default"
+    #: Top-level blocks the exporter may emit. An imported project restricts
+    #: this to ["lvgl"], so the generated file can sit next to the original
+    #: config without redefining its fonts, images and colors.
+    export_sections: list[str] = field(
+        default_factory=lambda: ["color", "font", "image", "lvgl"])
+    #: Provenance of an import - ``{"name": ..., "revision": ...}``. Recorded
+    #: for display only; nothing ever writes back to the source.
+    import_source: dict[str, Any] = field(default_factory=dict)
+
     def all_widgets(self):
         """Yield every WidgetNode in the tree, depth-first."""
         for w in self.widgets:
@@ -272,6 +384,11 @@ class Project:
             "fonts": [f.to_dict() for f in self.fonts],
             "images": [i.to_dict() for i in self.images],
             "colors": [c.to_dict() for c in self.colors],
+            "theme": _copy(self.theme),
+            "extra_lvgl": _copy(self.extra_lvgl),
+            "canvas_source": self.canvas_source,
+            "export_sections": list(self.export_sections),
+            "import_source": _copy(self.import_source),
         }
 
     @staticmethod
@@ -288,4 +405,10 @@ class Project:
         p.fonts = [FontLibraryEntry.from_dict(f) for f in d.get("fonts", [])]
         p.images = [ImageLibraryEntry.from_dict(i) for i in d.get("images", [])]
         p.colors = [ColorLibraryEntry.from_dict(c) for c in d.get("colors", [])]
+        p.theme = _copy(d.get("theme", {}))
+        p.extra_lvgl = _copy(d.get("extra_lvgl", {}))
+        p.canvas_source = d.get("canvas_source", "default")
+        p.export_sections = list(
+            d.get("export_sections", ["color", "font", "image", "lvgl"]))
+        p.import_source = _copy(d.get("import_source", {}))
         return p

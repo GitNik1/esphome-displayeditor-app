@@ -10,8 +10,13 @@ from typing import Any
 
 from .designer_core.idgen import IdRegistry
 from .designer_core.model import PROJECT_FORMAT, PROJECT_FORMAT_VERSION, Project
-from .designer_core.widgetschema import WIDGET_SCHEMAS
+from .designer_core.widgetschema import GRID_CELL_PROPS, STATE_VALUES, WIDGET_SCHEMAS
 from .designer_core.yamlexport import ExportError, export_project
+from .designer_core.yamlimport import (
+    LvglImportError,
+    import_esphome_yaml,
+    probe_esphome_yaml,
+)
 from .errors import ApiError
 
 _ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -42,6 +47,12 @@ class DesignerService:
             "project_format": PROJECT_FORMAT,
             "project_format_version": PROJECT_FORMAT_VERSION,
             "widgets": widgets,
+            # Grid placement is not a per-type property: any widget can be a
+            # grid child, so it is described once instead of on every schema.
+            "grid_cell_properties": [
+                {**asdict(prop), "label": prop.label(lang)} for prop in GRID_CELL_PROPS
+            ],
+            "states": list(STATE_VALUES),
         }
 
     def validate(self, payload: dict[str, Any]) -> tuple[Project, list[dict]]:
@@ -104,15 +115,24 @@ class DesignerService:
         # risk: this add-on never fetches them, it only writes them into the
         # exported YAML, and ESPHome resolves them at compile time. The
         # exporter already passes URLs through verbatim (see _copy_asset).
+        # `external` assets belong to the ESPHome config a project was imported
+        # from. Their paths are relative to *that* file and are only ever copied
+        # into the exported YAML as text - the add-on never opens them - so they
+        # carry none of the risk this rule exists to prevent.
         local_resources = [
             image.file_path
             for image in project.images
-            if image.file_path and not _is_remote_asset(image.file_path)
+            if image.file_path
+            and not image.external
+            and not _is_remote_asset(image.file_path)
         ]
         local_resources.extend(
             font.file_path
             for font in project.fonts
-            if font.source_kind == "file" and font.file_path and not _is_remote_asset(font.file_path)
+            if font.source_kind == "file"
+            and font.file_path
+            and not font.external
+            and not _is_remote_asset(font.file_path)
         )
         if (
             project.background.export_as_lvgl_image
@@ -131,6 +151,48 @@ class DesignerService:
                 }
             )
         return project, issues
+
+    def import_yaml(
+        self,
+        text: str,
+        *,
+        canvas: tuple[int, int] | None = None,
+        source_name: str = "",
+    ) -> dict:
+        """Turn an existing ESPHome config into a project payload.
+
+        Read-only in both directions: the source text is parsed, never written
+        back, and the result is returned rather than saved - the caller decides
+        whether to keep it, using the ordinary project-save endpoint.
+        """
+        try:
+            result = import_esphome_yaml(text, source_name=source_name, canvas_size=canvas)
+        except LvglImportError as exc:
+            raise ApiError("import_failed", str(exc), 422) from exc
+
+        payload = result.project.to_dict()
+        # Run the normal validation too, so the caller gets one issue list and
+        # the same failure modes as any other project.
+        _project, validation_issues = self.validate(payload)
+        issues = [issue.to_dict() for issue in result.issues]
+        issues.extend(
+            {"severity": i["severity"], "message": i["message"],
+             "path": "", "widget_id": i.get("widget") or i.get("resource", "")}
+            for i in validation_issues
+        )
+        blocking = [i for i in issues if i["severity"] in ("A", "error")]
+        return {
+            "project": payload,
+            "issues": issues,
+            "stats": result.stats,
+            "valid": not blocking,
+        }
+
+    def probe_yaml(self, text: str) -> dict:
+        try:
+            return probe_esphome_yaml(text)
+        except LvglImportError as exc:
+            raise ApiError("import_failed", str(exc), 422) from exc
 
     def export_yaml(self, payload: dict[str, Any]) -> dict:
         project, issues = self.validate(payload)

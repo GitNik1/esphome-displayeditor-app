@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <title>GlowLine Port-Vergleich</title>
+    <style>
+      body { background: #111; color: #eee; font: 13px system-ui; margin: 16px; }
+      table { border-collapse: collapse; }
+      td, th { border: 1px solid #444; padding: 4px 8px; text-align: left; }
+      canvas, img { image-rendering: pixelated; background: #000; vertical-align: middle; }
+      .bad { color: #ff9cab; }
+      .ok { color: #7ee787; }
+    </style>
+  </head>
+  <body>
+    <h1>GlowLine: JS-Port gegen Qt-Referenz</h1>
+    <div id="out">läuft …</div>
+    <script type="module">
+      import { drawStroke, flowBoundsDocument, flowLayout, strokePath }
+        from "./glowline/renderer.js";
+
+      const manifest = await (await fetch("./ref/manifest.json")).json();
+
+      function loadImage(src) {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error(src));
+          img.src = src;
+        });
+      }
+
+      function renderCase(entry, { phase = 0, withLines = true, withFlow = true }) {
+        const [w, h] = entry.size;
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        for (const stroke of entry.strokes) {
+          drawStroke(ctx, stroke, "export", phase, withLines, withFlow);
+        }
+        return canvas;
+      }
+
+      function compare(canvas, img) {
+        const w = canvas.width;
+        const h = canvas.height;
+        const ref = document.createElement("canvas");
+        ref.width = w; ref.height = h;
+        const rctx = ref.getContext("2d", { willReadFrequently: true });
+        rctx.drawImage(img, 0, 0);
+
+        const a = canvas.getContext("2d").getImageData(0, 0, w, h).data;
+        const b = rctx.getImageData(0, 0, w, h).data;
+        let sum = 0, max = 0, over = 0, lit = 0;
+        for (let i = 0; i < a.length; i += 4) {
+          // Compare against the reference composited over black, so the
+          // premultiplied-alpha differences do not dominate the metric.
+          for (let c = 0; c < 3; c += 1) {
+            const av = (a[i + c] * a[i + 3]) / 255;
+            const bv = (b[i + c] * b[i + 3]) / 255;
+            const d = Math.abs(av - bv);
+            sum += d;
+            if (d > max) max = d;
+            if (d > 24) over += 1;
+          }
+          if (a[i + 3] > 8 || b[i + 3] > 8) lit += 1;
+        }
+        const n = (a.length / 4) * 3;
+        return { mean: sum / n, max, overPct: (over / n) * 100, lit };
+      }
+
+      const rows = [];
+      for (const [name, entry] of Object.entries(manifest)) {
+        // Static render (lines + glow, flow drawn at phase 0 as Qt does)
+        const canvas = renderCase(entry, {});
+        const img = await loadImage(`./ref/${name}.png`);
+        rows.push([name, compare(canvas, img), canvas, img]);
+
+        if (entry.frames) {
+          for (let i = 0; i < entry.frames; i += 1) {
+            const c = renderCase(entry, { phase: i / entry.frames, withLines: false });
+            const r = await loadImage(`./ref/${name}_flow_${i}.png`);
+            rows.push([`${name} frame ${i}`, compare(c, r), c, r]);
+          }
+        }
+      }
+
+      // flow_layout / bounds cross-check
+      const numeric = [];
+      for (const [name, entry] of Object.entries(manifest)) {
+        entry.strokes.forEach((s, i) => {
+          const expected = entry.flow_layout[i];
+          if (!expected) return;
+          const got = flowLayout(strokePath(s).measure, s.flow.spacing);
+          numeric.push([`${name}[${i}] flowLayout`,
+            `Qt ${expected[0]} / ${expected[1].toFixed(3)}`,
+            `JS ${got[0]} / ${got[1].toFixed(3)}`,
+            Math.abs(got[1] - expected[1]) < 0.05 && got[0] === expected[0]]);
+        });
+        if (entry.flow_bounds) {
+          const b = flowBoundsDocument({ strokes: entry.strokes });
+          const e = entry.flow_bounds;
+          const err = Math.max(Math.abs(b.left - e[0]), Math.abs(b.top - e[1]),
+                               Math.abs(b.right - e[2]), Math.abs(b.bottom - e[3]));
+          numeric.push([`${name} flowBounds`, e.map(v => v.toFixed(1)).join(", "),
+            [b.left, b.top, b.right, b.bottom].map(v => v.toFixed(1)).join(", "),
+            err < 0.5]);
+        }
+      }
+
+      const out = document.getElementById("out");
+      out.replaceChildren();
+      const table = document.createElement("table");
+      table.innerHTML = "<tr><th>Fall</th><th>Mittel</th><th>Max</th><th>&gt;24 %</th>"
+        + "<th>JS</th><th>Qt</th></tr>";
+      for (const [name, m, canvas, img] of rows) {
+        const tr = document.createElement("tr");
+        const cls = m.mean < 3 && m.overPct < 1 ? "ok" : "bad";
+        tr.innerHTML = `<td>${name}</td><td class="${cls}">${m.mean.toFixed(2)}</td>`
+          + `<td>${m.max.toFixed(0)}</td><td class="${cls}">${m.overPct.toFixed(2)}</td>`;
+        const t1 = document.createElement("td"); t1.append(canvas);
+        const t2 = document.createElement("td"); t2.append(img);
+        tr.append(t1, t2);
+        table.append(tr);
+      }
+      out.append(table);
+
+      const nt = document.createElement("table");
+      nt.innerHTML = "<tr><th>Prüfung</th><th>Qt</th><th>JS</th><th>ok</th></tr>";
+      numeric.forEach(([label, a, b, ok]) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${label}</td><td>${a}</td><td>${b}</td>`
+          + `<td class="${ok ? "ok" : "bad"}">${ok ? "ja" : "NEIN"}</td>`;
+        nt.append(tr);
+      });
+      out.append(nt);
+
+      window.__result = {
+        worstMean: Math.max(...rows.map(([, m]) => m.mean)),
+        worstOverPct: Math.max(...rows.map(([, m]) => m.overPct)),
+        rows: rows.map(([n, m]) => [n, +m.mean.toFixed(2), +m.overPct.toFixed(2)]),
+        numericAllOk: numeric.every(([, , , ok]) => ok),
+        numeric,
+      };
+    </script>
+  </body>
+</html>

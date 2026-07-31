@@ -32,6 +32,19 @@ class DesignerProjectRequest(BaseModel):
     project: dict[str, Any]
 
 
+class CanvasSize(BaseModel):
+    width: int = Field(ge=1, le=4096)
+    height: int = Field(ge=1, le=4096)
+
+
+class ImportRequest(BaseModel):
+    """Either an existing configuration by name, or pasted/uploaded content."""
+
+    configuration: str | None = None
+    content: str | None = Field(default=None, max_length=4 * 1024 * 1024)
+    canvas: CanvasSize | None = None
+
+
 class SaveDesignerProjectRequest(DesignerProjectRequest):
     expected_revision: str | None = Field(
         default=None, pattern=r"^sha256:[0-9a-f]{64}$"
@@ -186,6 +199,36 @@ def create_app(runtime_settings: Settings | None = None, *, serve_frontend: bool
     @application.post("/api/v1/designer/projects/export-yaml")
     async def export_project_yaml(body: DesignerProjectRequest) -> dict:
         return designer.export_yaml(body.project)
+
+    def _import_source(body: ImportRequest) -> tuple[str, str]:
+        """Resolve the text to import, and the name to record as its origin.
+
+        A named configuration is read through FilesystemBackend.read_config,
+        which already enforces the path, symlink, size and secrets.yaml rules
+        and is strictly read-only - the import path has no access to
+        save_draft or publish at all, so it cannot write back to the source.
+        """
+        if body.configuration:
+            source = filesystem.read_config(body.configuration)
+            return source["content"], source["name"]
+        if body.content is None:
+            raise ApiError(
+                "invalid_request",
+                "Provide either a configuration name or file content.",
+                422,
+            )
+        return body.content, ""
+
+    @application.post("/api/v1/designer/import/probe")
+    async def probe_import(body: ImportRequest) -> dict:
+        text, _name = _import_source(body)
+        return designer.probe_yaml(text)
+
+    @application.post("/api/v1/designer/import")
+    async def import_configuration(body: ImportRequest) -> dict:
+        text, name = _import_source(body)
+        canvas = (body.canvas.width, body.canvas.height) if body.canvas else None
+        return designer.import_yaml(text, canvas=canvas, source_name=name)
 
     @application.get("/api/v1/designer/projects")
     async def list_designer_projects() -> dict:

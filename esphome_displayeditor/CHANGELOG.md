@@ -1,5 +1,106 @@
 # Changelog
 
+## 0.6.0
+
+The constructs an imported config is built from are now editable, not just
+preserved and drawn.
+
+- **Layout** section: switch a container between none, flex and grid, and edit
+  the grid tracks (`40, FR(1), CONTENT`) or the flex flow and alignment.
+  Only the options belonging to the selected type are shown, so grid tracks
+  cannot be set on a flex container.
+- **Grid cell** section, shown only when the parent actually lays out a grid:
+  row and column, spans and per-cell alignment.
+- **State** selector on the style section. Picking `pressed` points every
+  style control at that state's overrides; the base style is left alone, and
+  the heading says which state is being edited.
+- **Preserved keys** are listed read-only on the widget that carries them, so
+  passthrough is visible rather than a silent black hole.
+- Editing layout or placement recomputes the whole canvas, since it moves
+  everything else in the container too.
+- `animimg` has a palette entry and icon.
+
+Verified against the imported test config: moving a status bar from grid
+column 1 to 0 and rewriting its tracks from `[200, FR(1), 200]` to
+`[100, FR(1)]` repositions it and its children on the canvas immediately, and
+the export writes exactly those values back while leaving everything else -
+`bg_image_src`, the container's own cell defaults, the automations - intact.
+Editing the `pressed` colour of a button writes a `pressed:` block and leaves
+the base `bg_color` untouched.
+
+## 0.5.0
+
+- The canvas now resolves layout instead of only reading stored coordinates.
+  A hand-written config places widgets by grid cells and flex flow and lets
+  LVGL derive their sizes, so an imported interface used to stack at the
+  origin. `frontend/layout.js` computes grid tracks (pixels, `FR(n)` and
+  `CONTENT`), cell spans and alignment, flex flow with wrapping, growth and
+  the three alignment axes, and absolute placement including `align`/
+  `align_to`, which the canvas ignored entirely before.
+- Intrinsic sizes come from the project itself where possible: a label is
+  measured with the size of the font it actually references, and an image
+  uses its declared `resize:` rather than a guess.
+- The screen's own layout is honoured. In the test config the 720x720 root
+  grid belongs to `lvgl:` itself, not to any widget, so top-level widgets are
+  laid out by it.
+- A widget positioned by a parent layout is no longer draggable and has no
+  resize handle: writing x/y there produces an offset fighting the layout
+  rather than a move. Its position is edited through the grid cell instead.
+
+Checked against the real config: of 31 widgets only two now sit at the
+origin - and both belong there. Spot-checked positions match the source
+design, e.g. a status-bar label centred in the first of three `[200, FR(1),
+200]` columns lands at x=159, and an absolutely placed animation inside a
+container at (80,40) lands at its own (274,54) plus that origin.
+
+This is an approximation, not an emulation: LVGL computes on the device with
+font metrics we do not have. Verify the real arrangement with an SDL preview.
+
+## 0.4.0
+
+Import an existing ESPHome configuration and edit its LVGL interface.
+
+- New "YAML importieren" dialog: pick one of the configurations already on the
+  host (or a local file), see what the import would produce - widget counts,
+  unsupported types, detected display size and how it was detected - and
+  correct the size before committing.
+- The source configuration is never written to. Import reads through the same
+  guarded accessor as everything else and the import path has no access to the
+  draft or publish machinery at all, so this is structural rather than a
+  convention. An imported project exports to a *new* file, and its header says
+  which config it came from and that the original was left alone.
+- Anything this build does not model - unknown style properties, widget types,
+  `pages:`, the screen's own layout - is preserved verbatim and written back
+  unchanged, rather than silently disappearing on the next export.
+
+Project format version 2 (older desktop builds now refuse such files instead
+of loading them and silently dropping the new fields):
+
+- Widgets gained `layout`, `grid_cell`, `extra`, `source` and `synthetic_id`;
+  projects gained `theme`, `extra_lvgl`, `canvas_source`, `export_sections`
+  and `import_source`. Per-state styles live under a reserved `states` key.
+- Layout moved out of the style properties into a nested `layout:` mapping.
+  ESPHome never accepted it as flat style keys, so the previous output was not
+  valid ESPHome. Version 1 projects are migrated on load.
+- A widget may now carry a named style *and* inline overrides; they were
+  treated as mutually exclusive, which silently dropped the overrides.
+- Assets belonging to an imported config are marked `external`: emitted
+  verbatim, never copied, and exempt from the local-file restriction. Without
+  this, importing any real config produced a project that could be neither
+  saved nor exported.
+- Widget sizes are optional. The exporter wrote `width`/`height`
+  unconditionally, which would have injected a fixed size into every
+  grid-managed widget and broken the layout on write-back.
+
+Verified end to end against a real 1048-line device config: 31 widgets import
+with no blocking issues, and an import/export round trip of its `lvgl:` block
+differs only in dropping an explicit `align: TOP_LEFT`, which is LVGL's
+default anyway.
+
+Not yet: the canvas still places imported widgets by their stored coordinates,
+so grid- and flex-managed layouts stack at the origin. Editing works through
+the hierarchy and the property panel.
+
 ## 0.3.1
 
 - The image widget's source is now a picker over the project's image library

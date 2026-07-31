@@ -70,6 +70,8 @@ input:focus { border-color: var(--accent); }
 .canvas { position: relative; transform-origin: top left; flex: none; width: 480px; height: 480px; background: #f5f7fa; box-shadow: 0 18px 60px #0009; overflow: hidden; touch-action: none; }
 .canvas-background { position: absolute; inset: 0; background-position: center; background-size: contain; background-repeat: no-repeat; pointer-events: none; }
 .canvas-widget.locked { cursor: not-allowed; }
+/* Position owned by a parent grid/flex arrangement, so not freely draggable. */
+.canvas-widget.managed { cursor: pointer; }
 .canvas-widget[data-type="image"] { background: transparent; border-style: dashed; padding: 0; }
 .widget-image { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; }
 .canvas-widget { position: absolute; display: grid; place-items: center; min-width: 8px; min-height: 8px; border: 1px solid #44556a; border-radius: 4px; color: #f4f7fa; background: #263345; cursor: move; user-select: none; overflow: hidden; font-size: 13px; }
@@ -130,6 +132,19 @@ input:focus { border-color: var(--accent); }
 /* Style section */
 .style-actions { margin-bottom: 14px; }
 .style-locked { opacity: .55; pointer-events: none; }
+
+/* Preserved-but-not-editable keys */
+.extra-keys { max-height: 160px; margin: 0 0 14px; padding: 10px 12px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: #0c1420; color: var(--muted); font-size: 11px; line-height: 1.5; white-space: pre; }
+
+/* Import dialog */
+.import-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 0 14px; }
+.import-body > label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
+.import-or { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; text-align: center; }
+.import-summary { padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--text); font-size: 12px; line-height: 1.6; }
+.import-summary ul { margin: 8px 0 0; padding-left: 18px; }
+.import-summary li { margin-bottom: 4px; }
+.import-summary.import-error { border-color: var(--danger); color: #ff9cab; }
+.import-warning { color: #ffd57b; }
 
 /* Export issues */
 .issues { margin: 0 0 12px; padding: 12px 14px; border: 1px solid #ad7d20; border-radius: 8px; background: #372b16; color: #ffd57b; font-size: 12px; }

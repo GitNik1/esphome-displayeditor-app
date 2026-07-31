@@ -1,3 +1,5 @@
+import { computeLayout } from "./layout.js";
+
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -8,6 +10,7 @@ const state = {
   selectedWidget: null,
   activeConfig: null,
   activeRevision: null,
+  configurations: [],
   hasDraft: false,
   project: freshProject(),
   projectName: null,
@@ -17,6 +20,10 @@ const state = {
   redo: [],
   zoom: 1,
   backgroundPreview: null,
+  gridCellProperties: [],
+  states: [],
+  // Which LVGL state the style controls currently edit. "" is the base style.
+  activeState: "",
 };
 
 const MIN_ZOOM = 0.1;
@@ -25,7 +32,7 @@ const MAX_ZOOM = 8;
 function freshProject() {
   return {
     format: "esphome-lvgl-designer-project",
-    format_version: 1,
+    format_version: 2,
     canvas: { width: 480, height: 480 },
     background: { path: "", export_as_lvgl_image: false, image_id: "bg_image", opacity_in_editor: 40 },
     display_id_placeholder: "my_display",
@@ -35,6 +42,11 @@ function freshProject() {
     fonts: [],
     images: [],
     colors: [],
+    theme: {},
+    extra_lvgl: {},
+    canvas_source: "default",
+    export_sections: ["color", "font", "image", "lvgl"],
+    import_source: {},
   };
 }
 
@@ -85,6 +97,9 @@ async function initialize() {
     state.system = system;
     state.capabilities = capabilityData.capabilities;
     state.schemas = schemaData.widgets;
+    state.gridCellProperties = schemaData.grid_cell_properties || [];
+    state.states = schemaData.states || [];
+    renderStateChoices();
     $("#health").classList.toggle("ok", health.status === "ok");
     $("#profile").textContent = `${system.profile} · ${system.user.display_name || system.user.name || "Ingress"}`;
     $("#system-json").textContent = JSON.stringify({ system, ...capabilityData }, null, 2);
@@ -126,6 +141,7 @@ function bindDesigner() {
   });
   $("#prop-locked").addEventListener("change", () => toggleWidgetFlag("locked"));
   $("#prop-hidden").addEventListener("change", () => toggleWidgetFlag("hidden"));
+  $("#style-state").addEventListener("change", changeActiveState);
   $("#style-mode").addEventListener("change", changeStyleMode);
   $("#style-ref").addEventListener("change", changeStyleRef);
   $("#save-as-style").addEventListener("click", saveCurrentStyleAsNamed);
@@ -144,6 +160,13 @@ function bindDesigner() {
   $("#bg-preview-pick").addEventListener("click", () => $("#bg-preview-file").click());
   $("#bg-preview-file").addEventListener("change", loadBackgroundPreview);
   $("#bg-preview-clear").addEventListener("click", clearBackgroundPreview);
+
+  $("#import-yaml").addEventListener("click", openImportDialog);
+  $("#close-import").addEventListener("click", () => $("#import-dialog").close());
+  $("#import-config").addEventListener("change", probeSelectedConfiguration);
+  $("#import-pick-file").addEventListener("click", () => $("#import-file").click());
+  $("#import-file").addEventListener("change", probePickedFile);
+  $("#do-import").addEventListener("click", runImport);
   $("#close-dialog").addEventListener("click", () => $("#yaml-dialog").close());
   $("#copy-yaml").addEventListener("click", async () => {
     await navigator.clipboard.writeText($("#yaml-output").textContent);
@@ -262,6 +285,173 @@ function downloadDesignerProject() {
   toast("Projektdatei heruntergeladen.");
 }
 
+// --- Import an existing ESPHome configuration -------------------------------
+// Two steps on purpose: probe first so the user sees what would happen before
+// their current project is replaced, and can correct the detected canvas size.
+
+const importState = { configuration: null, content: null, fileName: "", stats: null };
+
+function openImportDialog() {
+  const select = $("#import-config");
+  select.replaceChildren(new Option("Datei wählen …", ""));
+  state.configurations.forEach((config) => select.append(new Option(config.name, config.name)));
+  resetImportSelection();
+  $("#import-dialog").showModal();
+}
+
+function resetImportSelection() {
+  importState.configuration = null;
+  importState.content = null;
+  importState.fileName = "";
+  importState.stats = null;
+  $("#import-file-name").textContent = "";
+  $("#import-summary").classList.add("hidden");
+  $("#import-canvas").classList.add("hidden");
+  $("#do-import").disabled = true;
+}
+
+async function probeSelectedConfiguration() {
+  const name = $("#import-config").value;
+  if (!name) return resetImportSelection();
+  importState.configuration = name;
+  importState.content = null;
+  importState.fileName = "";
+  $("#import-file-name").textContent = "";
+  await probeImport({ configuration: name });
+}
+
+async function probePickedFile(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  if (file.size > 4 * 1024 * 1024) {
+    toast("Die Datei ist zu groß (max. 4 MB).", true);
+    return;
+  }
+  importState.configuration = null;
+  importState.content = await file.text();
+  importState.fileName = file.name;
+  $("#import-config").value = "";
+  $("#import-file-name").textContent = file.name;
+  await probeImport({ content: importState.content });
+}
+
+async function probeImport(payload) {
+  const summary = $("#import-summary");
+  summary.classList.remove("hidden");
+  summary.textContent = "Wird analysiert …";
+  try {
+    const stats = await api("designer/import/probe", {
+      method: "POST", body: JSON.stringify(payload),
+    });
+    importState.stats = stats;
+    renderImportSummary(stats);
+    $("#import-width").value = stats.canvas.width;
+    $("#import-height").value = stats.canvas.height;
+    $("#import-canvas").classList.remove("hidden");
+    $("#do-import").disabled = false;
+  } catch (error) {
+    importState.stats = null;
+    summary.textContent = error.message;
+    summary.classList.add("import-error");
+    $("#import-canvas").classList.add("hidden");
+    $("#do-import").disabled = true;
+  }
+}
+
+const CANVAS_SOURCE_LABELS = {
+  user: "manuell gesetzt",
+  display_dimensions: "aus display: übernommen",
+  display_model: "aus dem Display-Modell abgeleitet",
+  root_grid: "aus dem Wurzel-Grid berechnet",
+  bounding_box: "aus den Widget-Positionen geschätzt",
+  default: "Standardwert — bitte prüfen",
+};
+
+function renderImportSummary(stats) {
+  const summary = $("#import-summary");
+  summary.classList.remove("import-error");
+  summary.replaceChildren();
+
+  const types = Object.entries(stats.widget_types)
+    .map(([type, count]) => `${count}× ${type}`).join(", ");
+  const lines = [
+    `${stats.widget_count} Widgets (${types})`,
+    `Bildgröße ${stats.canvas.width}×${stats.canvas.height} — ${
+      CANVAS_SOURCE_LABELS[stats.canvas.source] || stats.canvas.source}`,
+  ];
+  if (stats.images || stats.fonts || stats.styles) {
+    lines.push(`${stats.images} Bilder, ${stats.fonts} Schriften, ${stats.styles} Stile`);
+  }
+  lines.forEach((text) => {
+    const row = document.createElement("div");
+    row.textContent = text;
+    summary.append(row);
+  });
+
+  if (stats.unsupported_types.length) {
+    summary.append(warningRow(
+      `Ohne Editor-Unterstützung: ${stats.unsupported_types.join(", ")} — wird erhalten, aber nicht bearbeitbar.`));
+  }
+  if (stats.preserved_keys.length) {
+    summary.append(warningRow(
+      `${stats.preserved_keys.length} unbekannte Eigenschaften werden unverändert mitgeführt.`));
+  }
+  if (stats.issues.A) {
+    summary.append(warningRow(`${stats.issues.A} blockierende Probleme.`, true));
+  }
+}
+
+function warningRow(text, severe = false) {
+  const row = document.createElement("div");
+  row.className = severe ? "issue-error" : "import-warning";
+  row.textContent = text;
+  return row;
+}
+
+async function runImport() {
+  if (state.projectDirty && !confirm("Ungespeicherte Änderungen verwerfen?")) return;
+  const payload = importState.configuration
+    ? { configuration: importState.configuration }
+    : { content: importState.content };
+  payload.canvas = {
+    width: clamp(Number($("#import-width").value), 1, 4096),
+    height: clamp(Number($("#import-height").value), 1, 4096),
+  };
+
+  $("#do-import").disabled = true;
+  try {
+    const result = await api("designer/import", { method: "POST", body: JSON.stringify(payload) });
+    if (!result.valid) {
+      // Keep the dialog open - the summary is the only place these are
+      // visible, and adopting a project we know is broken helps nobody.
+      renderIssues($("#import-summary"), result.issues, "beim Import");
+      return;
+    }
+    state.project = result.project;
+    // An import is not "the saved project under this name" - it is a new,
+    // unsaved document derived from a config we must never write back to.
+    state.projectName = null;
+    state.projectRevision = null;
+    state.projectDirty = true;
+    state.selectedWidget = null;
+    state.backgroundPreview = null;
+    $("#project-name").value = normalizeProjectName(
+      importState.configuration || importState.fileName || "import");
+    resetHistory();
+    renderDesigner();
+    fitCanvasToView();
+    $("#import-dialog").close();
+    const warnings = result.issues.filter((issue) => issue.severity === "B").length;
+    toast(`${result.stats.widget_count} Widgets importiert.`
+      + (warnings ? ` ${warnings} Hinweis(e) — siehe YAML-Export.` : ""));
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    $("#do-import").disabled = false;
+  }
+}
+
 async function loadServerProjects() {
   try {
     const result = await api("designer/projects");
@@ -354,7 +544,9 @@ async function deleteServerProject() {
 function normalizeProjectName(value) {
   let name = String(value || "display").trim().replace(/[^A-Za-z0-9._-]+/g, "-");
   name = name.replace(/^\.+/, "") || "display";
-  if (name.endsWith(".lvgldesign")) name = name.slice(0, -".lvgldesign".length);
+  // Drop a source extension too, so importing panel.yaml gives panel.lvgldesign
+  // rather than panel.yaml.lvgldesign.
+  name = name.replace(/\.(lvgldesign|ya?ml)$/i, "");
   return `${name.slice(0, 116) || "display"}.lvgldesign`;
 }
 
@@ -419,7 +611,10 @@ function updateCanvasSize() {
 function renderPalette() {
   const palette = $("#palette");
   palette.replaceChildren();
-  const icons = { obj: "▣", container: "▤", label: "T", button: "▰", switch: "◉", slider: "━", image: "▧" };
+  const icons = {
+    obj: "▣", container: "▤", label: "T", button: "▰",
+    switch: "◉", slider: "━", image: "▧", animimg: "▩",
+  };
   state.schemas.forEach((schema) => {
     const button = document.createElement("button");
     const icon = document.createElement("span");
@@ -478,6 +673,11 @@ function addWidget(schema) {
     tile_row: 0,
     tile_col: 0,
     tile_dir: "ALL",
+    layout: {},
+    grid_cell: {},
+    extra: {},
+    source: "editor",
+    synthetic_id: false,
   };
   target.push(widget);
   state.selectedWidget = widget;
@@ -486,15 +686,25 @@ function addWidget(schema) {
 }
 
 function visualWidgets() {
-  const result = [];
-  const visit = (nodes, offsetX = 0, offsetY = 0, depth = 0) => nodes.forEach((widget) => {
-    const left = offsetX + (Number(widget.x) || 0);
-    const top = offsetY + (Number(widget.y) || 0);
-    result.push({ widget, left, top, offsetX, offsetY, depth });
-    visit(widget.children || [], left, top, depth + 1);
+  // The layout engine resolves grid/flex/align placement; a widget with no
+  // computed box (an unknown parent arrangement) falls back to its raw
+  // coordinates so it stays reachable rather than vanishing.
+  const boxes = computeLayout(state.project);
+  return allWidgets().map((widget) => {
+    const box = boxes.get(widget);
+    return box
+      ? { widget, ...box }
+      : {
+          widget,
+          left: Number(widget.x) || 0,
+          top: Number(widget.y) || 0,
+          width: Number(widget.width) || 100,
+          height: Number(widget.height) || 40,
+          managed: false,
+          originX: 0,
+          originY: 0,
+        };
   });
-  visit(state.project.widgets);
-  return result;
 }
 
 function renderDesigner() {
@@ -588,14 +798,15 @@ function renderDesignerStatus() {
 }
 
 function renderWidget(item) {
-  const { widget, left, top, offsetX, offsetY } = item;
+  const { widget, left, top, width, height, managed } = item;
   const node = document.createElement("div");
   node.className = `canvas-widget${state.selectedWidget === widget ? " selected" : ""}`;
   node.dataset.type = widget.widget_type;
+  if (managed) node.classList.add("managed");
   node.style.left = `${left}px`;
   node.style.top = `${top}px`;
-  node.style.width = `${Number(widget.width) || 1}px`;
-  node.style.height = `${Number(widget.height) || 1}px`;
+  node.style.width = `${Math.max(1, width)}px`;
+  node.style.height = `${Math.max(1, height)}px`;
   node.style.opacity = widget.hidden ? "0.35" : "1";
   if (widget.locked) node.classList.add("locked");
   const effectiveStyle = effectiveStyleTree(widget);
@@ -624,8 +835,8 @@ function renderWidget(item) {
   } else {
     node.textContent = widget.properties.text || widget.id;
   }
-  node.addEventListener("pointerdown", (event) => beginDrag(event, widget, node, offsetX, offsetY));
-  if (state.selectedWidget === widget && !widget.locked) {
+  node.addEventListener("pointerdown", (event) => beginDrag(event, widget, node, item));
+  if (state.selectedWidget === widget && !widget.locked && !managed) {
     const handle = document.createElement("span");
     handle.className = "resize-handle";
     handle.addEventListener("pointerdown", (event) => beginResize(event, widget, node));
@@ -644,25 +855,37 @@ function effectiveStyleTree(widget) {
   return merged;
 }
 
-function beginDrag(event, widget, node, offsetX, offsetY) {
+function beginDrag(event, widget, node, box) {
   if (event.target.classList.contains("resize-handle")) return;
   state.selectedWidget = widget;
   renderProperties();
   renderTree();
   $$(".canvas-widget").forEach((item) => item.classList.toggle("selected", item === node));
   if (widget.locked) return;
+  if (box.managed) {
+    // A parent grid or flex arrangement owns this position. Writing an x/y
+    // here would be an offset fighting the layout, not a move - so the
+    // position is edited through the grid cell fields instead.
+    toast("Position wird vom Layout des Elternteils bestimmt.");
+    return;
+  }
   pushUndo();
-  const origin = { clientX: event.clientX, clientY: event.clientY, x: Number(widget.x), y: Number(widget.y) };
+  const origin = {
+    clientX: event.clientX, clientY: event.clientY,
+    x: Number(widget.x) || 0, y: Number(widget.y) || 0,
+  };
   node.setPointerCapture(event.pointerId);
   node.addEventListener("pointermove", move);
   node.addEventListener("pointerup", end, { once: true });
   function move(moveEvent) {
     const deltaX = (moveEvent.clientX - origin.clientX) / state.zoom;
     const deltaY = (moveEvent.clientY - origin.clientY) / state.zoom;
-    widget.x = clamp(Math.round(origin.x + deltaX), 0, state.project.canvas.width - Number(widget.width));
-    widget.y = clamp(Math.round(origin.y + deltaY), 0, state.project.canvas.height - Number(widget.height));
-    node.style.left = `${offsetX + widget.x}px`;
-    node.style.top = `${offsetY + widget.y}px`;
+    widget.x = clamp(Math.round(origin.x + deltaX), 0, state.project.canvas.width - box.width);
+    widget.y = clamp(Math.round(origin.y + deltaY), 0, state.project.canvas.height - box.height);
+    // x/y are relative to the origin the layout gave this widget, which is not
+    // the canvas origin once it sits inside a padded or aligned parent.
+    node.style.left = `${box.originX + widget.x}px`;
+    node.style.top = `${box.originY + widget.y}px`;
     $("#prop-x").value = widget.x;
     $("#prop-y").value = widget.y;
     markProjectDirty();
@@ -708,8 +931,12 @@ function renderProperties() {
   $("#prop-height").value = widget.height;
   $("#prop-locked").checked = Boolean(widget.locked);
   $("#prop-hidden").checked = Boolean(widget.hidden);
+  renderLayoutSection(widget);
+  renderGridCellSection(widget);
+  renderStateChoices();
   renderStyleControls(widget);
   renderDynamicProperties(widget);
+  renderExtraKeys(widget);
 }
 
 function toggleWidgetFlag(flag) {
@@ -806,9 +1033,16 @@ function renderDynamicProperties(widget) {
   container.replaceChildren();
   const schema = state.schemas.find((item) => item.type_key === widget.widget_type);
   if (!schema) return;
+  // Layout and grid placement have their own sections in the markup, so the
+  // panel can read top-down: what it is, where it sits, then how it looks.
+  const inline = schema.properties.filter(
+    (property) => property.category === "content" || property.category === "style");
+
   let previousSection = "";
-  schema.properties.forEach((property, index) => {
-    const section = property.category === "content" ? "Inhalt" : `Stil · ${property.part}`;
+  inline.forEach((property, index) => {
+    const section = property.category === "content"
+      ? "Inhalt"
+      : `Stil · ${property.part}${state.activeState ? ` · ${state.activeState}` : ""}`;
     if (section !== previousSection) {
       const heading = document.createElement("div");
       heading.className = "property-section";
@@ -816,25 +1050,108 @@ function renderDynamicProperties(widget) {
       container.append(heading);
       previousSection = section;
     }
-    const label = document.createElement("label");
-    label.textContent = property.label;
-    const target = propertyTarget(widget, property, false);
-    const value = target?.[property.key];
-    const control = propertyControl(property, value, index);
-    control.addEventListener("focus", pushUndo);
-    control.addEventListener("change", () => updateDynamicProperty(widget, property, control));
-    control.addEventListener("input", () => updateDynamicProperty(widget, property, control));
-    if (property.kind === "bool") label.className = "checkbox-field";
-    label.append(control);
-    container.append(label);
+    container.append(propertyField(widget, property, index));
   });
 }
 
-function propertyTarget(widget, property, create) {
-  if (property.category === "content") return widget.properties;
-  if (property.part === "main") return widget.style_tree;
-  if (!widget.style_tree[property.part] && create) widget.style_tree[property.part] = {};
-  return widget.style_tree[property.part];
+function renderLayoutSection(widget) {
+  const schema = state.schemas.find((item) => item.type_key === widget.widget_type);
+  const properties = (schema?.properties || []).filter((p) => p.category === "layout");
+  $("#layout-section").classList.toggle("hidden", !properties.length);
+  if (!properties.length) return;
+
+  const container = $("#layout-properties");
+  container.replaceChildren();
+  const type = String((widget.layout || {}).type || "NONE").toUpperCase();
+  properties.forEach((property, index) => {
+    // Flex and grid options are mutually exclusive; showing both at once
+    // invites setting grid tracks on a flex container.
+    if (property.key.startsWith("flex_") && type !== "FLEX") return;
+    if (property.key.startsWith("grid_") && type !== "GRID") return;
+    container.append(propertyField(widget, property, `lay-${index}`));
+  });
+}
+
+function propertyField(widget, property, index, targetKind) {
+  const label = document.createElement("label");
+  label.textContent = property.label;
+  const target = propertyTarget(widget, property, false, targetKind);
+  const value = target?.[property.key];
+  const control = propertyControl(property, value, index);
+  control.addEventListener("focus", pushUndo);
+  control.addEventListener("change", () => updateDynamicProperty(widget, property, control, targetKind));
+  control.addEventListener("input", () => updateDynamicProperty(widget, property, control, targetKind));
+  if (property.kind === "bool") label.className = "checkbox-field";
+  label.append(control);
+  return label;
+}
+
+function propertyTarget(widget, property, create, kind = property.category) {
+  if (kind === "content") return widget.properties;
+  if (kind === "layout") {
+    if (!widget.layout && create) widget.layout = {};
+    return widget.layout;
+  }
+  if (kind === "grid_cell") {
+    if (!widget.grid_cell && create) widget.grid_cell = {};
+    return widget.grid_cell;
+  }
+  // Style: a selected state routes into style_tree.states[<state>], which is
+  // where the exporter expects per-state overrides to live.
+  let root = widget.style_tree;
+  if (state.activeState) {
+    if (!root.states && create) root.states = {};
+    if (!root.states?.[state.activeState] && create) root.states[state.activeState] = {};
+    root = root.states?.[state.activeState];
+  }
+  if (!root) return undefined;
+  if (property.part === "main") return root;
+  if (!root[property.part] && create) root[property.part] = {};
+  return root[property.part];
+}
+
+function renderStateChoices() {
+  const select = $("#style-state");
+  select.replaceChildren(new Option("Normal", ""));
+  state.states.forEach((name) => select.append(new Option(name, name)));
+  select.value = state.activeState;
+}
+
+function changeActiveState() {
+  state.activeState = $("#style-state").value;
+  renderProperties();
+}
+
+function renderGridCellSection(widget) {
+  const section = $("#grid-cell-section");
+  const parent = findParent(state.project.widgets, widget);
+  const parentLayout = parent ? parent.layout : (state.project.extra_lvgl || {}).layout;
+  const isGridChild = String(parentLayout?.type || "").toUpperCase() === "GRID";
+  section.classList.toggle("hidden", !isGridChild);
+  if (!isGridChild) return;
+
+  const container = $("#grid-cell-properties");
+  container.replaceChildren();
+  state.gridCellProperties.forEach((property, index) => {
+    container.append(propertyField(widget, property, `gc-${index}`, "grid_cell"));
+  });
+}
+
+function findParent(nodes, target, parent = null) {
+  for (const node of nodes) {
+    if (node === target) return parent;
+    const found = findParent(node.children || [], target, node);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function renderExtraKeys(widget) {
+  const section = $("#extra-keys-section");
+  const keys = Object.keys(widget.extra || {});
+  section.classList.toggle("hidden", keys.length === 0);
+  if (!keys.length) return;
+  $("#extra-keys").textContent = JSON.stringify(widget.extra, null, 2);
 }
 
 const ADD_IMAGE_OPTION = "__add_image__";
@@ -915,6 +1232,14 @@ function propertyControl(property, value, index) {
       control.append(new Option(String(value), String(value)));
     }
     control.value = value ?? "";
+  } else if (LIST_KINDS.includes(property.kind)) {
+    // The model value is a list even though the editor is one line - grid
+    // tracks and animation frames are both short, comma-separated sequences.
+    control = document.createElement("input");
+    control.type = "text";
+    control.value = Array.isArray(value) ? value.join(", ") : "";
+    control.placeholder = property.kind === "grid_track_list"
+      ? "40, FR(1), CONTENT" : "img_a, img_b";
   } else {
     control = document.createElement("input");
     control.type = ["int", "float"].includes(property.kind) ? "number" : "text";
@@ -927,8 +1252,17 @@ function propertyControl(property, value, index) {
   return control;
 }
 
-function updateDynamicProperty(widget, property, control) {
-  const target = propertyTarget(widget, property, true);
+const LIST_KINDS = ["grid_track_list", "image_ref_list"];
+
+function parseListValue(property, text) {
+  const items = String(text).split(",").map((part) => part.trim()).filter(Boolean);
+  if (property.kind !== "grid_track_list") return items;
+  // Pixel tracks are numbers; FR(n) and CONTENT stay strings.
+  return items.map((part) => (/^-?\d+$/.test(part) ? Number(part) : part));
+}
+
+function updateDynamicProperty(widget, property, control, targetKind = property.category) {
+  const target = propertyTarget(widget, property, true, targetKind);
   if (property.kind === "image_ref" && control.value === ADD_IMAGE_OPTION) {
     pushUndo();
     const id = addImageSource();
@@ -941,15 +1275,34 @@ function updateDynamicProperty(widget, property, control) {
     renderDesigner();
     return;
   }
+
   let value;
   if (property.kind === "bool") value = control.checked;
+  else if (LIST_KINDS.includes(property.kind)) value = parseListValue(property, control.value);
   else if (["int", "float"].includes(property.kind)) value = control.value === "" ? null : Number(control.value);
   else value = control.value;
-  if ((value === "" || value === null) && property.category === "style") delete target[property.key];
-  else if (value === "" && property.kind === "enum") delete target[property.key];
-  else target[property.key] = value;
+
+  // An empty field means "unset", not "set to empty" - carrying blanks into
+  // layout or grid placement would emit keys the source never had.
+  const clears = value === "" || value === null
+    || (Array.isArray(value) && value.length === 0);
+  if (clears && (targetKind !== "content" || property.kind === "enum")) {
+    delete target[property.key];
+  } else {
+    target[property.key] = value;
+  }
+
+  if (targetKind === "layout" && String(target.type || "NONE").toUpperCase() === "NONE") {
+    // A layout mapping with no type is not a layout; leaving the leftovers
+    // would emit `layout: {flex_flow: ROW}` on a widget that has none.
+    Object.keys(target).forEach((key) => delete target[key]);
+  }
+
   markProjectDirty();
+  // Layout and placement change where everything else sits, so the whole
+  // canvas has to be recomputed rather than just this widget repainted.
   renderCanvas();
+  if (targetKind === "layout" || targetKind === "grid_cell") renderProperties();
 }
 
 function updateSelectedWidget(event) {
@@ -1051,21 +1404,43 @@ async function exportDesignerYaml() {
 }
 
 function renderExportIssues(issues) {
-  const container = $("#yaml-issues");
+  renderIssues($("#yaml-issues"), issues, "beim Export");
+}
+
+function isBlockingIssue(issue) {
+  // Validation issues use severity "error"; the YAML exporter and importer
+  // use "A" (blocking) vs "B" (warning) vs "C" (informational).
+  return issue.severity === "error" || issue.severity === "A";
+}
+
+function renderIssues(container, issues, context = "") {
   container.replaceChildren();
-  container.classList.toggle("hidden", issues.length === 0);
-  if (!issues.length) return;
+  // "Preserved but not editable" notes are informational and a real config
+  // produces dozens of them - listing each one would bury the real warnings.
+  const notable = issues.filter((issue) => issue.severity !== "C");
+  const preserved = issues.length - notable.length;
+  container.classList.toggle("hidden", !notable.length && !preserved);
+  if (!notable.length && !preserved) return;
+
   const heading = document.createElement("strong");
-  heading.textContent = `${issues.length} Hinweis(e) beim Export`;
+  heading.textContent = notable.length
+    ? `${notable.length} Hinweis(e) ${context}`.trim()
+    : `${preserved} Eigenschaft(en) unverändert übernommen`;
   container.append(heading);
+
+  if (notable.length && preserved) {
+    const note = document.createElement("div");
+    note.className = "import-warning";
+    note.textContent = `Zusätzlich ${preserved} Eigenschaft(en) unverändert übernommen.`;
+    container.append(note);
+  }
+  if (!notable.length) return;
+
   const list = document.createElement("ul");
-  issues.forEach((issue) => {
+  notable.forEach((issue) => {
     const entry = document.createElement("li");
-    // Validation issues use severity "error"; yamlexport uses "A" (blocking)
-    // vs "B"/"C" (reported but non-fatal).
-    const blocking = issue.severity === "error" || issue.severity === "A";
-    entry.className = blocking ? "issue-error" : "issue-warning";
-    const where = issue.widget_id || issue.widget || issue.resource || "";
+    entry.className = isBlockingIssue(issue) ? "issue-error" : "issue-warning";
+    const where = issue.widget_id || issue.widget || issue.resource || issue.path || "";
     entry.textContent = where ? `${where}: ${issue.message}` : issue.message;
     list.append(entry);
   });
@@ -1083,6 +1458,7 @@ function bindConfigurations() {
 async function loadConfigurations() {
   try {
     const result = await api("configurations");
+    state.configurations = result.configurations;
     const list = $("#config-list");
     list.replaceChildren();
     list.classList.toggle("empty", result.configurations.length === 0);

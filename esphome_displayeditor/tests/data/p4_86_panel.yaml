@@ -1,0 +1,820 @@
+display:
+  - platform: mipi_dsi
+    id: main_display
+    model: WAVESHARE-P4-86-PANEL
+    auto_clear_enabled: false
+    update_interval: never
+font:
+  - file:
+      type: web
+      url: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+      # Standard waere 1d, d.h. taeglich neu laden. "never" nutzt den lokalen
+      # Cache dauerhaft: Rebuild klappt offline und liefert stets dieselben Icons.
+      refresh: never
+    id: icons_44
+    size: 44
+    bpp: 4
+    glyphs:
+      - "\U000F02DC"   # mdi:home
+      - "\U000F0335"   # mdi:lightbulb
+      - "\U000F0393"   # mdi:thermostat
+      - "\U000F02FC"   # mdi:information
+      - "\U000F0493"   # mdi:cog
+      - "\U000F0425"   # mdi:power
+
+# -----------------------------------------------------------------------
+# LVGL - Minimalseite als Ausgangspunkt
+# -----------------------------------------------------------------------
+image:
+  - platform: file
+    id: empty_bg
+    file: "images/emptybg.png"
+    type: RGB565
+    resize: 560x680
+    
+  - platform: file
+    id: imgsprinterbg
+    file: "images/sprinter_luefter_static.png"
+    type: RGB565
+    # Quelle ist bereits exakt 560x680 - kein resize noetig.
+
+  - platform: file
+    id: top_bg
+    file: "images/topbg.png"
+    type: RGB565
+    resize: 560x40
+
+  # Linie 1 - 169x20 px, Zielposition (274, 54) auf dem 560x680-Blatt.
+  # 10 Einzelbilder aus dem GlowLine-Editor.
+  - platform: file
+    file: "images/sprinter_luefter_linie1_flow_00.png"
+    id: sprinterbg_linie1_00
+    type: RGB565
+    transparency: alpha_channel
+  - platform: file
+    file: "images/sprinter_luefter_linie1_flow_01.png"
+    id: sprinterbg_linie1_01
+    type: RGB565
+    transparency: alpha_channel
+  - platform: file
+    file: "images/sprinter_luefter_linie1_flow_02.png"
+    id: sprinterbg_linie1_02
+    type: RGB565
+    transparency: alpha_channel
+  - platform: file
+    file: "images/sprinter_luefter_linie1_flow_03.png"
+    id: sprinterbg_linie1_03
+    type: RGB565
+    transparency: alpha_channel
+  - platform: file
+    file: "images/sprinter_luefter_linie1_flow_04.png"
+    id: sprinterbg_linie1_04
+    type: RGB565
+    transparency: alpha_channel
+  - platform: file
+    file: "images/sprinter_luefter_linie1_flow_05.png"
+    id: sprinterbg_linie1_05
+    type: RGB565
+    transparency: alpha_channel
+  - platform: file
+    file: "images/sprinter_luefter_linie1_flow_06.png"
+    id: sprinterbg_linie1_06
+    type: RGB565
+    transparency: alpha_channel
+  - platform: file
+    file: "images/sprinter_luefter_linie1_flow_07.png"
+    id: sprinterbg_linie1_07
+    type: RGB565
+    transparency: alpha_channel
+  - platform: file
+    file: "images/sprinter_luefter_linie1_flow_08.png"
+    id: sprinterbg_linie1_08
+    type: RGB565
+    transparency: alpha_channel
+  - platform: file
+    file: "images/sprinter_luefter_linie1_flow_09.png"
+    id: sprinterbg_linie1_09
+    type: RGB565
+    transparency: alpha_channel
+# ============================================================
+# ZEITQUELLE
+# Falls bereits ein time:-Block vorhanden ist, dort einfügen.
+# ============================================================
+
+time:
+lvgl:
+  displays:
+    - main_display
+
+
+  default_font: montserrat_16
+
+  bg_color: 0x101318
+  bg_opa: COVER
+
+  pad_all: 0
+
+  # Optional, abhängig vom verfügbaren RAM:
+  # buffer_size: 12%
+
+  theme:
+    button:
+      bg_color: 0x272D36
+      bg_opa: COVER
+      border_width: 0
+      radius: 8
+      text_color: 0xFFFFFF
+
+      # Ohne das beschneidet die Default-Polsterung des LVGL-Button-Styles
+      # (20 px horizontal) das 44-px-Icon auf 40 px Innenbreite.
+      pad_all: 0
+
+      # Glow-Grundzustand: aus.
+      # shadow_width/opa auf 0 neutralisieren zugleich den Default-Schatten,
+      # den das helle LVGL-Theme an Buttons setzt.
+      shadow_color: 0x4FA3FF
+      shadow_offset_x: 0
+      shadow_offset_y: 0
+      shadow_width: 0
+      shadow_spread: 0
+      shadow_opa: 0%
+
+      # Glow beim Druecken
+      pressed:
+        bg_color: 0x3A4552
+        shadow_width: 24
+        shadow_spread: 2
+        shadow_opa: 85%
+
+  # ==========================================================
+  # HAUPT-GRID
+  #
+  # 720 × 720 px
+  #
+  # Spalten:
+  #   80 px | 560 px | 80 px
+  #
+  # Zeilen:
+  #   40 px
+  #   680 px
+  # ==========================================================
+
+  layout:
+    type: GRID
+
+    grid_rows:
+      - 40
+      - 680
+
+    grid_columns:
+      - 80
+      - 560
+      - 80
+
+    pad_row: 0
+    pad_column: 0
+
+    grid_cell_x_align: STRETCH
+    grid_cell_y_align: STRETCH
+
+    # Mehrere Content-Container liegen in Zelle 1/1.
+    multiple_widgets_per_cell: true
+
+  widgets:
+
+    # ========================================================
+    # LINKES MENÜ
+    # 80 × 720 px
+    # ========================================================
+
+    - obj:
+        id: left_menu
+
+        grid_cell_row_pos: 0
+        grid_cell_row_span: 2
+        grid_cell_column_pos: 0
+
+        bg_color: 0x181D23
+        bg_opa: COVER
+
+        border_width: 0
+        radius: 0
+        pad_all: 0
+
+#        pad_left: 6
+#        pad_right: 6
+#        pad_top: 8
+#        pad_bottom: 8
+
+        layout:
+          type: FLEX
+          flex_flow: COLUMN
+          flex_align_main: START
+          flex_align_cross: STRETCH
+          flex_align_track: START
+#          pad_row: 8
+
+          
+
+        widgets:
+
+          # --------------------------------------------------
+          # HOME
+          # --------------------------------------------------
+
+          - button:
+              id: button_home
+              width: 100%
+              height: 180
+
+              text: "\U000F02DC"        # mdi:home
+              text_font: icons_44
+              bg_color: 0x376A9E
+
+              on_click:
+                - lvgl.widget.hide:
+                    - content_home
+                    - content_light
+                    - content_climate
+                    - content_info
+                    - content_setup
+                    - content_power
+
+                - lvgl.widget.show: content_home
+
+                - lvgl.label.update:
+                    id: active_view_label
+                    text: "Home"
+
+          # --------------------------------------------------
+          # LICHT
+          # --------------------------------------------------
+
+          - button:
+              id: button_light
+              width: 100%
+              height: 180
+
+              text: "\U000F0335"        # mdi:lightbulb
+              text_font: icons_44
+
+              on_click:
+                - lvgl.widget.hide:
+                    - content_home
+                    - content_light
+                    - content_climate
+                    - content_info
+                    - content_setup
+                    - content_power
+
+                - lvgl.widget.show: content_light
+
+                - lvgl.label.update:
+                    id: active_view_label
+                    text: "Licht"
+
+          # --------------------------------------------------
+          # KLIMA
+          # --------------------------------------------------
+
+          - button:
+              id: button_climate
+              width: 100%
+              height: 180
+
+              text: "\U000F0393"        # mdi:thermostat
+              text_font: icons_44
+
+              on_click:
+                - lvgl.widget.hide:
+                    - content_home
+                    - content_light
+                    - content_climate
+                    - content_info
+                    - content_setup
+                    - content_power
+
+                - lvgl.widget.show: content_climate
+
+                - lvgl.label.update:
+                    id: active_view_label
+                    text: "Klima"
+
+
+    # ========================================================
+    # STATUSLEISTE
+    # 560 × 40 px
+    # ========================================================
+
+    - obj:
+        id: status_bar
+
+        grid_cell_row_pos: 0
+        grid_cell_column_pos: 1
+        
+        bg_image_src: top_bg
+        bg_color: 0x20262E
+        bg_opa: COVER
+
+        border_width: 0
+        radius: 0
+
+#        pad_left: 12
+#        pad_right: 12
+#        pad_top: 0
+#        pad_bottom: 0
+
+        layout:
+          type: GRID
+
+          grid_rows:
+            - FR(1)
+
+          grid_columns:
+            - 200
+            - FR(1)
+            - 200
+
+          grid_cell_y_align: CENTER
+
+        widgets:
+
+          # Aktueller Bereich
+          - label:
+              id: active_view_label
+
+              grid_cell_row_pos: 0
+              grid_cell_column_pos: 0
+              grid_cell_x_align: CENTER
+              grid_cell_y_align: END
+
+              text: "Home"
+              text_font: montserrat_16
+              text_color: 0xFFFFFF
+
+          # Verbindungsstatus
+          - label:
+              id: connection_label
+
+              grid_cell_row_pos: 0
+              grid_cell_column_pos: 1
+              grid_cell_x_align: CENTER
+              grid_cell_y_align: END
+
+              text: "● Online"
+              text_font: montserrat_14
+              text_color: 0x55DD88
+
+          # Uhrzeit
+          - label:
+              id: clock_label
+
+              grid_cell_row_pos: 0
+              grid_cell_column_pos: 2
+              grid_cell_x_align: CENTER
+              grid_cell_y_align: END
+
+              text: "--:--"
+              text_font: montserrat_16
+              text_color: 0xFFFFFF
+
+
+    # ========================================================
+    # CONTENT: HOME
+    # Beim Start sichtbar
+    # ========================================================
+
+    - obj:
+        id: content_home
+
+        grid_cell_row_pos: 1
+        grid_cell_column_pos: 1
+
+        bg_image_src: empty_bg
+        bg_color: 0x101318
+        bg_opa: COVER
+
+        border_width: 0
+        radius: 0
+#        pad_all: 18
+
+        layout:
+          type: GRID
+
+          grid_rows:
+            - CONTENT
+            - FR(1)
+
+          grid_columns:
+            - FR(1)
+
+          grid_cell_x_align: STRETCH
+          grid_cell_y_align: STRETCH
+
+#          pad_row: 16
+
+        widgets:
+          - label:
+              grid_cell_row_pos: 0
+              grid_cell_column_pos: 0
+
+              text: "Home"
+              text_font: montserrat_28
+              text_color: 0xFFFFFF
+
+          - obj:
+              grid_cell_row_pos: 1
+              grid_cell_column_pos: 0
+
+              bg_color: 0x1B2129
+              bg_opa: COVER
+
+              border_color: 0x303945
+              border_width: 1
+              radius: 12
+
+              widgets:
+                - label:
+                    align: CENTER
+                    width: 90%
+
+                    text: |-
+                      Willkommen auf der
+                      Hauptseite.
+
+                    text_align: CENTER
+                    text_font: montserrat_20
+                    text_color: 0xBFC7D2
+                    long_mode: WRAP
+
+
+    # ========================================================
+    # CONTENT: LICHT
+    # Beim Start ausgeblendet
+    # ========================================================
+
+    - obj:
+        id: content_light
+        hidden: true
+
+        grid_cell_row_pos: 1
+        grid_cell_column_pos: 1
+
+        bg_image_src: empty_bg
+        bg_color: 0x101318
+        bg_opa: COVER
+
+        border_width: 0
+        radius: 0
+#        pad_all: 18
+
+        layout:
+          type: GRID
+
+          grid_rows:
+            - CONTENT
+            - FR(1)
+
+          grid_columns:
+            - FR(1)
+
+          grid_cell_x_align: STRETCH
+          grid_cell_y_align: STRETCH
+
+#          pad_row: 16
+
+        widgets:
+          - label:
+              grid_cell_row_pos: 0
+              grid_cell_column_pos: 0
+
+              text: "Licht"
+              text_font: montserrat_28
+              text_color: 0xFFFFFF
+
+          - obj:
+              grid_cell_row_pos: 1
+              grid_cell_column_pos: 0
+
+              bg_color: 0x1B2129
+              bg_opa: COVER
+
+              border_color: 0x303945
+              border_width: 1
+              radius: 12
+
+              widgets:
+                - label:
+                    align: CENTER
+                    width: 90%
+
+                    text: |-
+                      Hier werden später
+                      Lampen und Lichtgruppen
+                      angezeigt.
+
+                    text_align: CENTER
+                    text_font: montserrat_20
+                    text_color: 0xBFC7D2
+                    long_mode: WRAP
+
+
+    # ========================================================
+    # CONTENT: KLIMA
+    # ========================================================
+
+    - obj:
+        id: content_climate
+        hidden: true
+
+        grid_cell_row_pos: 1
+        grid_cell_column_pos: 1
+        
+        bg_image_src: imgsprinterbg
+        bg_color: 0x101318
+        bg_opa: COVER
+
+        border_width: 0
+        radius: 0
+
+        # Kein Layout und keine Polsterung: die Animationen werden
+        # pixelgenau auf das 560x680-Hintergrundbild gesetzt, also muss
+        # der Inhaltsbereich exakt dem Bild entsprechen. Ein GRID-Layout
+        # wuerde x/y der Kinder bei jedem Layout-Durchlauf ueberschreiben.
+        pad_all: 0
+
+        widgets:
+          - animimg:          # Linie 1 - 169x20 px an (274, 54)
+              id: sprinterbg_linie1_anim
+              src:
+                - sprinterbg_linie1_00
+                - sprinterbg_linie1_01
+                - sprinterbg_linie1_02
+                - sprinterbg_linie1_03
+                - sprinterbg_linie1_04
+                - sprinterbg_linie1_05
+                - sprinterbg_linie1_06
+                - sprinterbg_linie1_07
+                - sprinterbg_linie1_08
+                - sprinterbg_linie1_09
+              align: TOP_LEFT
+              x: 274
+              y: 54
+              duration: 500ms   # ganzer Durchlauf, also 300 ms je Bild
+              repeat_count: forever
+              auto_start: true
+
+
+    # ========================================================
+    # CONTENT: INFO
+    # ========================================================
+
+    - obj:
+        id: content_info
+        hidden: true
+
+        grid_cell_row_pos: 1
+        grid_cell_column_pos: 1
+
+        bg_image_src: empty_bg
+        bg_color: 0x101318
+        bg_opa: COVER
+
+        border_width: 0
+        radius: 0
+#        pad_all: 18
+
+        widgets:
+          - label:
+              align: TOP_LEFT
+
+              text: "Information"
+              text_font: montserrat_28
+              text_color: 0xFFFFFF
+
+          - label:
+              align: CENTER
+              width: 90%
+
+              text: |-
+                Gerätestatus und
+                Systeminformationen.
+
+              text_align: CENTER
+              text_font: montserrat_20
+              text_color: 0xBFC7D2
+              long_mode: WRAP
+
+
+    # ========================================================
+    # CONTENT: SETUP
+    # ========================================================
+
+    - obj:
+        id: content_setup
+        hidden: true
+
+        grid_cell_row_pos: 1
+        grid_cell_column_pos: 1
+
+        bg_image_src: empty_bg
+        bg_color: 0x101318
+        bg_opa: COVER
+
+        border_width: 0
+        radius: 0
+#        pad_all: 18
+
+        widgets:
+          - label:
+              align: TOP_LEFT
+
+              text: "Einstellungen"
+              text_font: montserrat_28
+              text_color: 0xFFFFFF
+
+          - label:
+              align: CENTER
+              width: 90%
+
+              text: |-
+                Display- und
+                Systemeinstellungen.
+
+              text_align: CENTER
+              text_font: montserrat_20
+              text_color: 0xBFC7D2
+              long_mode: WRAP
+
+
+    # ========================================================
+    # CONTENT: POWER
+    # ========================================================
+
+    - obj:
+        id: content_power
+        hidden: true
+
+        grid_cell_row_pos: 1
+        grid_cell_column_pos: 1
+
+        bg_image_src: empty_bg
+        bg_color: 0x101318
+        bg_opa: COVER
+
+        border_width: 0
+        radius: 0
+#        pad_all: 18
+
+        widgets:
+          - label:
+              align: TOP_LEFT
+
+              text: "Power"
+              text_font: montserrat_28
+              text_color: 0xFFFFFF
+
+          - label:
+              align: CENTER
+              width: 90%
+
+              text: |-
+                Neustart, Display aus
+                oder weitere Systemaktionen.
+
+              text_align: CENTER
+              text_font: montserrat_20
+              text_color: 0xBFC7D2
+              long_mode: WRAP
+
+
+    # ========================================================
+    # RECHTES MENÜ
+    # 80 × 720 px
+    # ========================================================
+
+    - obj:
+        id: right_menu
+
+        grid_cell_row_pos: 0
+        grid_cell_row_span: 2
+        grid_cell_column_pos: 2
+
+        bg_color: 0x181D23
+        bg_opa: COVER
+
+        border_width: 0
+        radius: 0
+        pad_all: 0
+
+#        pad_left: 6
+#        pad_right: 6
+#        pad_top: 8
+#        pad_bottom: 8
+        
+
+        layout:
+          type: FLEX
+          flex_flow: COLUMN
+          flex_align_main: START
+          flex_align_cross: STRETCH
+          flex_align_track: START
+#          pad_row: 8
+
+        widgets:
+
+          # --------------------------------------------------
+          # INFO
+          # --------------------------------------------------
+
+          - button:
+              id: button_info
+              width: 100%
+              height: 180
+
+              text: "\U000F02FC"        # mdi:information
+              text_font: icons_44
+
+              on_click:
+                - lvgl.widget.hide:
+                    - content_home
+                    - content_light
+                    - content_climate
+                    - content_info
+                    - content_setup
+                    - content_power
+
+                - lvgl.widget.show: content_info
+
+                - lvgl.label.update:
+                    id: active_view_label
+                    text: "Info"
+
+          # --------------------------------------------------
+          # SETUP
+          # --------------------------------------------------
+
+          - button:
+              id: button_setup
+              width: 100%
+              height: 180
+
+              text: "\U000F0493"        # mdi:cog
+              text_font: icons_44
+
+              on_click:
+                - lvgl.widget.hide:
+                    - content_home
+                    - content_light
+                    - content_climate
+                    - content_info
+                    - content_setup
+                    - content_power
+
+                - lvgl.widget.show: content_setup
+
+                - lvgl.label.update:
+                    id: active_view_label
+                    text: "Setup"
+
+          # --------------------------------------------------
+          # POWER
+          # --------------------------------------------------
+
+          - button:
+              id: button_power
+              width: 100%
+              height: 180
+
+              text: "\U000F0425"        # mdi:power
+              text_font: icons_44
+
+              bg_color: 0x8A3030
+
+              pressed:
+                bg_color: 0xB84242
+
+              on_click:
+                - lvgl.widget.hide:
+                    - content_home
+                    - content_light
+                    - content_climate
+                    - content_info
+                    - content_setup
+                    - content_power
+
+                - lvgl.widget.show: content_power
+
+                - lvgl.label.update:
+                    id: active_view_label
+                    text: "Power"
+
+
+
+    
+i2s_audio:
+  - id: i2s_bus
+    i2s_lrclk_pin: GPIO10
+    i2s_bclk_pin: GPIO12
+    i2s_mclk_pin: GPIO13
+
