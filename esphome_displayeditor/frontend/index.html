@@ -115,6 +115,12 @@
 
         <aside class="panel properties-panel">
           <div class="panel-heading"><div><small>AUSWAHL</small><h2>Eigenschaften</h2></div></div>
+          <div id="runtime-binding-orphans" class="runtime-binding-warning hidden">
+            <strong>Verwaiste Live-Bindings</strong>
+            <p>Diese Widget-IDs fehlen oder passen nicht mehr zum Zieltyp:</p>
+            <ul id="runtime-binding-orphan-list"></ul>
+            <button id="cleanup-runtime-bindings" type="button" class="button warning compact">Verwaiste Bindings bereinigen</button>
+          </div>
           <div id="empty-properties" class="empty">Wähle ein Widget auf der Zeichenfläche aus.</div>
           <form id="properties" class="properties hidden">
             <label>ID <input id="prop-id" pattern="[A-Za-z_][A-Za-z0-9_]*"></label>
@@ -159,6 +165,45 @@
             </div>
 
             <div id="dynamic-properties"></div>
+
+            <div id="runtime-binding-section" class="hidden">
+              <div class="property-section">Live-Daten im Viewer</div>
+              <p id="runtime-binding-hint" class="hint">Ordnet diesem Widget einen schreibgeschützten ESPHome-Zustand zu.</p>
+              <label>Ziel
+                <select id="runtime-binding-target"></select>
+              </label>
+              <label>Gerät
+                <select id="runtime-binding-device"><option value="">— Gerät wählen —</option></select>
+              </label>
+              <label>Entity
+                <select id="runtime-binding-entity"><option value="">— Entity wählen —</option></select>
+              </label>
+              <output id="runtime-binding-current" class="runtime-binding-status neutral">Noch keine Entity gewählt.</output>
+              <label id="runtime-binding-format-field">Format
+                <input id="runtime-binding-format" maxlength="128" value="{state}" placeholder="z. B. {state:.1f} °C">
+              </label>
+              <label id="runtime-binding-fallback-field">Ersatzwert
+                <input id="runtime-binding-fallback" maxlength="128" placeholder="z. B. --.- °C">
+              </label>
+              <label>Veraltet nach Sekunden
+                <input id="runtime-binding-stale" type="number" min="0" max="86400" value="0">
+              </label>
+              <label>Zusätzlich anwenden auf
+                <select id="runtime-binding-additional-widgets" class="runtime-binding-multi" multiple size="4"></select>
+              </label>
+              <p class="hint">Mehrfachauswahl mit Strg/Cmd. Es werden nur Widgets mit demselben Zieltyp angeboten.</p>
+              <label class="checkbox-field runtime-preview-toggle">Live-Werte auf Zeichenfläche
+                <input id="runtime-live-preview" type="checkbox">
+              </label>
+              <div class="actions runtime-binding-actions">
+                <button id="save-runtime-binding" type="button" class="button primary compact">Binding speichern</button>
+                <button id="remove-runtime-binding" type="button" class="button subtle compact">Entfernen</button>
+              </div>
+              <div class="actions runtime-binding-actions">
+                <button id="copy-runtime-binding" type="button" class="button subtle compact">Kopieren</button>
+                <button id="paste-runtime-binding" type="button" class="button subtle compact">Einfügen</button>
+              </div>
+            </div>
 
             <div id="extra-keys-section" class="hidden">
               <div class="property-section">Unbekannte Schlüssel</div>

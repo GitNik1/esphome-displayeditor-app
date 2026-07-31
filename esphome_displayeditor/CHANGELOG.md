@@ -19,6 +19,35 @@
   preserves page layout, styles, skip/page-wrap settings and layer widgets;
   the Viewer adds page selection and previous/next controls plus safe
   `lvgl.page.show/next/previous` action handling.
+- Added read-only Native API data bindings for Viewer labels, sliders and
+  switches. Bindings are revision-protected add-on sidecars, runtime snapshots
+  and WebSocket events expose only filtered entity/state data, and disconnects
+  or stale values use the configured label fallback without enabling device
+  commands.
+- Improved the binding editor with target-compatible entity filters, current
+  value plus online/offline/stale health, copy/paste and multi-widget apply,
+  orphan detection/cleanup, and an optional DOM-only live preview on the
+  Designer canvas.
+- The canvas can now show an imported config's own local images and fonts,
+  not just http(s) URLs. A new read-only `GET
+  /api/v1/designer/assets/read/{path}` endpoint (`designer.asset_read`
+  capability, available to any viewer, works in the read-only profile)
+  serves a file from anywhere under the config root - confined by the same
+  traversal/symlink checks as every other filesystem read, just not confined
+  to a single flat folder the way the baked-image write endpoint is, since
+  an imported config can put assets anywhere. Images load through this
+  endpoint the same way an http(s) URL already did; fonts are loaded via the
+  `FontFace` API and registered under a deterministic per-font-id family
+  name, so both the visible canvas label and its layout-engine text
+  measurement (previously always a generic sans-serif guess) pick up the
+  real typeface once it loads.
+- Added add-on-only `bar` and `arc` schemas without changing the synchronized
+  desktop core. Both widgets render in Designer and Viewer, round-trip through
+  ESPHome YAML, support numeric Native API bindings and safe local update
+  actions; adjustable arcs also simulate value changes in the Viewer.
+- Added deterministic bar/arc geometry checks and a browser acceptance harness
+  covering visual output and literal-text injection. Frontend responses now
+  include a restrictive Content Security Policy and Permissions Policy.
 
 ## 0.10.0
 

@@ -16,7 +16,14 @@
   materialisiert, bleiben beim YAML-Roundtrip erhalten und können im Viewer
   per Toolbar oder erlaubter Seitenaktion gewechselt werden. Die
   schreibgeschützte Desktop-Grundlage und Projektformat 3 bleiben unverändert.
-- Noch offen aus V3: visuelle Referenztests und ein optionaler RGB565-Schalter.
+- V6 umgesetzt: gespeicherte Projekte können Label-Text, Slider-/Bar-/Arc-Wert
+  und Switch-Zustand revisionsgeschützt an gefilterte Native-API-Laufzeitdaten
+  binden. Snapshot, WebSocket, Reconnect, Stale-/Offline-Fallback und getrennte
+  Add-on-Sidecars verändern weder Projektformat noch YAML-Export.
+- V3-Testgrundlage erweitert: deterministische Bar-/Arc-Geometrieprüfungen und
+  ein Browser-Abnahme-Harness prüfen Darstellung und Text-Injection. Noch
+  offen bleibt der optionale RGB565-Schalter sowie Referenzbilder für alle
+  übrigen Widgettypen.
 
 ## 1. Ziel
 
@@ -290,18 +297,25 @@ Abnahmekriterien:
 - Seitenwechsel funktionieren über Toolbar und erlaubte Aktionen
 - alte `.lvgldesign`-Projekte bleiben ladbar
 
-### V6: Optionale Laufzeitdaten
+### V6: Optionale Laufzeitdaten (Kern umgesetzt)
 
 Nach Fertigstellung des lokalen Viewers können vorhandene Native-API-Zustände
 als schreibgeschützte Testdaten verwendet werden.
 
-Vorgehen:
+Umgesetzt:
 
 - explizite Zuordnung eines Viewer-Felds zu einer vorhandenen Geräteentität
 - Zustände nur über die eigene App-WebSocket-API beziehen
 - Verbindungsstatus im Viewer anzeigen
 - bei Verbindungsabbruch auf den letzten Wert oder einen Platzhalter wechseln
 - keine Gerätesteuerung aus dem Viewer-MVP
+- Binding-Oberfläche mit zieltypgerechter Entity-Filterung und aktuellem
+  Online-/Offline-/Stale-Status
+- Kopieren und Mehrfachzuordnung für kompatible Widgets
+- Warnung und Bereinigung für nach Löschen/Umbenennen verwaiste Bindings
+- optionale, projektmodell-neutrale Live-Vorschau auf der Designer-Zeichenfläche
+- Add-on-only Renderer, YAML-Roundtrip, sichere Update-Actions und numerische
+  Bindings für `bar` und `arc`
 
 Abnahmekriterien:
 
@@ -381,7 +395,9 @@ nicht automatisch als Projekt gespeichert.
 
 - Öffnen, Schließen, Zurücksetzen
 - Zoom, Einpassen und Rotation
-- Button, Switch und Slider
+- Button, Switch, Slider, Bar und Arc
+- feste Browser-Abnahme über `tests/frontend/viewer_acceptance.html` für
+  Bar-/Arc-Geometrie, verstellbare Arcs und literal dargestellte Projekttexte
 - Show/Hide-Navigation mit der vorhandenen P4-Testkonfiguration
 - Seite vor/zurück
 - Mobilansicht
@@ -430,9 +446,9 @@ Der Viewer-MVP ist abgeschlossen, wenn:
 
 1. ein Projekt mit einem Klick im Vollbild-Viewer geöffnet werden kann,
 2. der Viewer keine Editorfunktionen oder Schreibendpunkte auslöst,
-3. alle acht aktuell unterstützten Widgettypen sinnvoll dargestellt werden,
+3. alle zehn aktuell unterstützten Widgettypen sinnvoll dargestellt werden,
 4. Flex- und Grid-Layouts dieselben Positionen wie der Designer verwenden,
-5. Button, Switch, Slider und Animimg lokal funktionieren,
+5. Button, Switch, Slider, Bar, Arc und Animimg lokal funktionieren,
 6. Show/Hide- und Label-Update-Aktionen sicher simuliert werden,
 7. unbekannte Aktionen nur als Warnung erscheinen,
 8. Schließen und Zurücksetzen alle temporären Zustände und Timer entfernen,

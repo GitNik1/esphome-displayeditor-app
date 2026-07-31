@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from .addon_widgets import register_addon_widgets
 from .designer_core.idgen import IdRegistry
 from .designer_core.model import PROJECT_FORMAT, PROJECT_FORMAT_VERSION, Project
 from .designer_core.widgetschema import GRID_CELL_PROPS, STATE_VALUES, WIDGET_SCHEMAS
@@ -20,6 +21,8 @@ from .errors import ApiError
 from .page_support import materialize_surfaces, strip_empty_root_widgets
 
 _ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+register_addon_widgets()
 
 
 def _is_remote_asset(path: str) -> bool:

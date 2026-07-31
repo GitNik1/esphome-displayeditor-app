@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Viewer Bar/Arc Acceptance</title>
+  <link rel="stylesheet" href="../../frontend/styles.css">
+  <style>
+    body { margin: 0; background: #070b10; color: #f4f7fa; font-family: sans-serif; }
+    #viewer-dialog { position: static; display: block; width: 760px; height: 440px; margin: 20px auto; padding: 0; border: 1px solid #33465b; }
+    #viewer-stage { width: 760px; height: 380px; padding: 20px; box-sizing: border-box; }
+    #viewer-event-log, #viewer-page-controls { display: none; }
+    #acceptance-result { width: 760px; margin: 10px auto; font: 14px/1.5 monospace; }
+  </style>
+</head>
+<body>
+  <dialog id="viewer-dialog">
+    <div class="viewer-shell">
+      <div class="viewer-toolbar">
+        <strong id="viewer-title">Acceptance</strong>
+        <span id="viewer-zoom-label"></span>
+        <select id="viewer-rotation"><option value="0">0°</option></select>
+      </div>
+      <div id="viewer-stage" class="viewer-stage">
+        <div id="viewer-frame" class="viewer-frame"><div id="viewer-display" class="viewer-display"></div></div>
+      </div>
+      <div class="viewer-statusline"><span id="viewer-status"></span><span id="viewer-event-count"></span></div>
+    </div>
+  </dialog>
+  <div id="viewer-event-log"></div>
+  <div id="viewer-page-controls"><select id="viewer-page-select"></select><button id="viewer-page-previous"></button><button id="viewer-page-next"></button></div>
+  <pre id="acceptance-result">läuft …</pre>
+  <script type="module">
+    import { ViewerController } from "../../frontend/viewer/viewer.js";
+
+    const byId = (id) => document.getElementById(id);
+    const viewer = new ViewerController({
+      dialog: byId("viewer-dialog"), stage: byId("viewer-stage"), frame: byId("viewer-frame"),
+      display: byId("viewer-display"), title: byId("viewer-title"), status: byId("viewer-status"),
+      zoomLabel: byId("viewer-zoom-label"), rotationControl: byId("viewer-rotation"),
+      eventLog: byId("viewer-event-log"), eventCount: byId("viewer-event-count"),
+      pageControls: byId("viewer-page-controls"), pageSelect: byId("viewer-page-select"),
+      pagePrevious: byId("viewer-page-previous"), pageNext: byId("viewer-page-next"),
+    });
+    const project = {
+      canvas: { width: 600, height: 300 }, styles: [], colors: [], fonts: [], images: [], theme: {},
+      widgets: [
+        { id: "bar_normal", widget_type: "bar", x: 40, y: 50, width: 220, height: 30,
+          properties: { value: 70, min_value: 0, max_value: 100, mode: "NORMAL" },
+          style_tree: { indicator: { bg_color: "20C7B7" } }, children: [] },
+        { id: "bar_vertical", widget_type: "bar", x: 300, y: 30, width: 28, height: 180,
+          properties: { value: 35, min_value: 0, max_value: 100, mode: "NORMAL" },
+          style_tree: { indicator: { bg_color: "FFD166" } }, children: [] },
+        { id: "arc_adjustable", widget_type: "arc", x: 390, y: 30, width: 180, height: 180,
+          properties: { value: 65, min_value: 0, max_value: 100, start_angle: 135, end_angle: 45, adjustable: true },
+          style_tree: { arc_color: "44556A", arc_width: 12,
+            indicator: { arc_color: "20C7B7", arc_width: 14 }, knob: { bg_color: "FFFFFF" } }, children: [] },
+        { id: "plain_text", widget_type: "label", x: 40, y: 120, width: 230, height: 30,
+          properties: { text: "<img src=x onerror=alert(1)>" }, style_tree: { text_color: "FFFFFF" }, children: [] },
+      ],
+    };
+    viewer.open(project, { name: "Bar/Arc-Abnahme" });
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const bar = document.querySelector('[data-widget-id="bar_normal"] .viewer-bar-fill');
+      const vertical = document.querySelector('[data-widget-id="bar_vertical"] .viewer-bar-fill');
+      const arc = document.querySelector('[data-widget-id="arc_adjustable"] .viewer-arc-indicator');
+      const label = document.querySelector('[data-widget-id="plain_text"]');
+      const result = {
+        barWidth: bar?.style.width,
+        verticalHeight: vertical?.style.height,
+        arcPath: arc?.getAttribute("d") || "",
+        unsupportedCount: document.querySelectorAll(".viewer-widget.unsupported").length,
+        injectedImageCount: label?.querySelectorAll("img").length ?? -1,
+        labelText: label?.textContent,
+        consoleErrors: [],
+      };
+      result.passed = result.barWidth === "70%" && result.verticalHeight === "35%"
+        && result.arcPath.startsWith("M ") && result.unsupportedCount === 0
+        && result.injectedImageCount === 0 && result.labelText.includes("<img");
+      window.__viewerAcceptance = result;
+      document.body.dataset.result = result.passed ? "passed" : "failed";
+      byId("acceptance-result").textContent = JSON.stringify(result, null, 2);
+    }));
+  </script>
+</body>
+</html>

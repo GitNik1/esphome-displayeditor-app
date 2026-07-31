@@ -148,6 +148,16 @@ input:focus { border-color: var(--accent); }
 .viewer-slider-fill { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--accent); }
 .viewer-slider-knob { position: absolute; top: 50%; width: max(14px, 12%); aspect-ratio: 1; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px #0008; transform: translate(-50%, -50%); }
 .viewer-slider-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.viewer-widget[data-type="bar"], .viewer-widget[data-type="arc"] { border-color: transparent; background: transparent; }
+.viewer-bar-control { position: relative; display: block; width: 100%; height: 100%; }
+.viewer-bar-track { position: absolute; left: 0; top: 30%; width: 100%; height: 40%; min-height: 4px; overflow: hidden; border-radius: 999px; background: #657386; }
+.viewer-bar-fill { position: absolute; top: 0; height: 100%; border-radius: inherit; background: var(--accent); }
+.viewer-bar-control.vertical .viewer-bar-track { left: 30%; top: 0; width: 40%; min-width: 4px; height: 100%; }
+.viewer-bar-control.vertical .viewer-bar-fill { left: 0; width: 100%; height: auto; }
+.viewer-arc-control { position: relative; display: block; width: 100%; height: 100%; }
+.viewer-arc-svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.viewer-arc-knob[hidden] { display: none; }
+.viewer-arc-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
 .viewer-statusline { min-height: 32px; padding: 7px 14px; display: flex; justify-content: space-between; gap: 16px; color: var(--muted); border-top: 1px solid var(--line); background: #0d1520; font-size: 12px; }
 .viewer-events { position: relative; flex: 0 1 420px; color: var(--text); }
 .viewer-events > summary { cursor: pointer; text-align: center; color: #8fdcff; }
@@ -222,6 +232,24 @@ input:focus { border-color: var(--accent); }
 .background-preview-actions { display: flex; gap: 8px; }
 .hint { flex-basis: 100%; margin: 2px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .warning-hint { color: #ffd57b; }
+
+/* Native-API bindings in the designer */
+.runtime-binding-status { display: block; margin: -3px 0 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: #0c1420; font-size: 11px; line-height: 1.45; }
+.runtime-binding-status.online { border-color: #1c8c80; color: #8ef1e7; }
+.runtime-binding-status.offline, .runtime-binding-status.missing { border-color: #7f3643; color: #ff9cab; }
+.runtime-binding-status.stale, .runtime-binding-status.unavailable { border-color: #ad7d20; color: #ffd57b; }
+.runtime-binding-warning { margin: 12px; padding: 12px; border: 1px solid #ad7d20; border-radius: 8px; color: #ffd57b; background: #372b16; font-size: 12px; line-height: 1.45; }
+.runtime-binding-warning p { margin: 5px 0; }
+.runtime-binding-warning ul { max-height: 110px; margin: 6px 0 10px; padding-left: 18px; overflow: auto; }
+.runtime-binding-multi { min-height: 84px; }
+.runtime-preview-toggle { margin: 12px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); }
+.runtime-binding-actions { flex-wrap: wrap; margin-bottom: 8px; }
+.canvas-widget.runtime-preview { outline: 1px dashed #8ef1e7; outline-offset: -3px; }
+.canvas-value-visual { position: relative; display: block; width: 100%; height: 100%; pointer-events: none; }
+.canvas-bar { overflow: hidden; border-radius: 999px; background: #657386; }
+.canvas-bar-fill { position: absolute; top: 0; height: 100%; border-radius: inherit; background: var(--accent); }
+.canvas-bar.vertical .canvas-bar-fill { left: 0; width: 100%; height: auto; }
+.canvas-arc svg { display: block; width: 100%; height: 100%; overflow: visible; }
 
 /* Style section */
 .style-actions { margin-bottom: 14px; }
