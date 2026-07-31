@@ -7,6 +7,13 @@
   zoom, rotation and reset controls. The viewer renders the eight currently
   supported widget types plus GlowLine layers and cannot mutate the editor
   project or invoke a write API.
+- Added safe Viewer interactions: buttons render pressed/checked/focused
+  states, switches and sliders keep isolated runtime values, and a strict
+  allowlist simulates show/hide and literal widget updates. Unsupported
+  automations are skipped and recorded in the Viewer event log.
+- Viewer styling now applies named plus inline overrides in ESPHome priority,
+  including switch/slider parts, state styles, font sizing, padding, gaps,
+  background/shadow opacity and gradients.
 
 ## 0.10.0
 

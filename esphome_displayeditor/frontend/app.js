@@ -483,6 +483,8 @@ function bindDesigner() {
     status: $("#viewer-status"),
     zoomLabel: $("#viewer-zoom-label"),
     rotationControl: $("#viewer-rotation"),
+    eventLog: $("#viewer-event-log"),
+    eventCount: $("#viewer-event-count"),
   });
   $("#open-viewer").addEventListener("click", () => viewer.open(state.project, {
     name: state.projectName || $("#project-name").value || "Lokales Projekt",

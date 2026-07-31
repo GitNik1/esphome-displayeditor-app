@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -57,10 +61,29 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     assert "ESPHome Display Editor" in response.text
     assert 'id="open-viewer"' in response.text
     assert 'id="viewer-dialog"' in response.text
+    assert 'id="viewer-event-log"' in response.text
     assert client.get("/app.js").status_code == 200
     viewer = client.get("/viewer/viewer.js")
     assert viewer.status_code == 200
     assert "class ViewerController" in viewer.text
+    assert "applyViewerAction" in viewer.text
+    assert "lvgl.widget.show" in viewer.text
+    assert "lvgl.label.update" in viewer.text
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_viewer_runtime_actions_and_style_priority() -> None:
+    root = Path(__file__).resolve().parents[1]
+    subprocess.run(
+        [
+            shutil.which("node") or "node",
+            str(root / "tests" / "frontend" / "viewer_runtime.test.mjs"),
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_designer_project_api_requires_revision_and_ingress_user(tmp_path: Path) -> None:

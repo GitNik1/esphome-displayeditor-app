@@ -1,5 +1,19 @@
 # Umsetzungsplan: Browser-Viewer für den ESPHome Display Editor
 
+## Aktueller Stand (31.07.2026)
+
+- V1/V2 umgesetzt: isolierter Projekt-Clone, eigener Viewer-Renderer,
+  Vollbilddialog, Zoom, Einpassen, Rotation, Reset und GlowLine-Ebenen.
+- V3-Kern umgesetzt: Theme-, benannte und Inline-Stile mit Zuständen,
+  Switch-/Slider-Teile, Farben, Verläufe, Deckkraft, Rahmen, Radius, Schatten,
+  Schriftgröße, Ausrichtung, Padding und Abstände.
+- V4-Kern umgesetzt: interaktive Buttons, Switches und Slider sowie eine feste
+  Action-Allowlist für Widget show/hide/update, Label-/Slider-/Switch-Updates
+  und Animimg start/stop. Unbekannte oder ungültige Aktionen werden nur
+  protokolliert und niemals dynamisch ausgeführt.
+- Noch offen aus V3/V4: visuelle Referenztests, optionaler RGB565-Schalter und
+  Seitenaktionen nach Einführung eines modellierten Seitenkonzepts.
+
 ## 1. Ziel
 
 Der ESPHome Display Editor erhält einen schreibgeschützten Viewer, der ein
