@@ -185,6 +185,12 @@ input:focus { border-color: var(--accent); }
 .editor-toolbar small { margin-top: 4px; }
 #yaml-editor { resize: none; border: 0; border-radius: 0; padding: 20px; background: #080e16; color: #d5e4f3; font: 13px/1.6 "Cascadia Code", Consolas, monospace; outline: none; }
 .output { max-height: 230px; overflow: auto; margin: 0; padding: 15px 20px; border-top: 1px solid var(--line); color: #bdcadd; background: #0e1722; font: 12px/1.5 monospace; white-space: pre-wrap; }
+.builder-jobs { max-height: 240px; overflow: auto; border-top: 1px solid var(--line); padding: 12px 16px; background: var(--surface); }
+.builder-jobs-heading, .builder-job { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.builder-jobs-heading { margin-bottom: 8px; }
+.builder-job { padding: 9px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.builder-job strong, .builder-job small { display: block; }
+.builder-job-output { margin: 6px 0 0; color: #bcd1e4; font: 11px/1.45 monospace; white-space: pre-wrap; }
 
 /* ESPHome Native API devices */
 .devices-view { grid-template-columns: 300px minmax(0, 1fr); }

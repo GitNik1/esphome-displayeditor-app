@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.0
+
+- Added the optional, fail-closed ESPHome Device Builder backend for ESPHome
+  validation, compile/install jobs, cancellation and live job events.
+- Added Device Builder version/handshake compatibility checks and the `full`
+  profile. Unknown versions keep filesystem and Native API features available
+  while all builder operations remain disabled.
+- Added request-size and operation-timeout limits, stricter local-device host
+  validation, consistent backend reporting and extended builder audit fields.
+- Added a repeatable encrypted Native API hardware acceptance tool.
+
 ## 0.9.11
 
 - The hierarchy tree gained three things:

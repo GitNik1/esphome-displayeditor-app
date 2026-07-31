@@ -17,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr
 
 from .audit import AuditStore
+from .builder import BuilderManager
+from .builder.adapter import BuilderAdapterError, sanitize_output
 from .designer import DesignerService
 from .errors import ApiError, capability_unavailable
 from .filesystem import FilesystemBackend
@@ -24,6 +26,7 @@ from .project_store import ProjectStore
 from .runtime import DeviceManager, DeviceRegistry, SecretStore
 from .security import RateLimiter
 from .settings import CAPABILITY_MINIMUM_ROLE, Settings, capabilities
+from .version import APP_VERSION
 
 
 class DraftRequest(BaseModel):
@@ -84,11 +87,19 @@ class DeviceSecretRequest(BaseModel):
     encryption_key: SecretStr
 
 
+class InstallRequest(BaseModel):
+    # The active YAML resolves the target. Arbitrary hosts, serial devices and
+    # generic command arguments are deliberately not exposed by this API.
+    port: str = Field(default="OTA", pattern="^OTA$")
+    confirmed: bool = False
+
+
 def create_app(
     runtime_settings: Settings | None = None,
     *,
     serve_frontend: bool = True,
     runtime_manager: DeviceManager | None = None,
+    builder_manager: BuilderManager | None = None,
 ) -> FastAPI:
     settings = runtime_settings or Settings.load()
     filesystem = FilesystemBackend(settings)
@@ -116,24 +127,27 @@ def create_app(
             secret_store,
             enabled=settings.runtime_provider == "native",
         )
+    if builder_manager is None:
+        builder_manager = BuilderManager(settings)
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
-        await runtime_manager.start()
+        await asyncio.gather(runtime_manager.start(), builder_manager.start())
         try:
             yield
         finally:
-            await runtime_manager.stop()
+            await asyncio.gather(runtime_manager.stop(), builder_manager.stop())
 
     application = FastAPI(
         title="ESPHome Display Editor API",
-        version=os.getenv("APP_VERSION", "0.9.11"),
+        version=os.getenv("APP_VERSION", APP_VERSION),
         docs_url=None,
         redoc_url=None,
         openapi_url="/api/v1/openapi.json",
         lifespan=lifespan,
     )
     application.state.device_manager = runtime_manager
+    application.state.builder_manager = builder_manager
 
     @application.middleware("http")
     async def security_boundary(request: Request, call_next):
@@ -154,6 +168,26 @@ def create_app(
             )
 
         if request.url.path.startswith("/api/v1/"):
+            content_length = request.headers.get("Content-Length")
+            if content_length:
+                try:
+                    request_size = int(content_length)
+                except ValueError:
+                    request_size = settings.request_max_size + 1
+                if request_size < 0 or request_size > settings.request_max_size:
+                    return JSONResponse(
+                        status_code=413,
+                        headers={
+                            "Cache-Control": "no-store",
+                            "Referrer-Policy": "no-referrer",
+                            "X-Content-Type-Options": "nosniff",
+                        },
+                        content={
+                            "error": "request_too_large",
+                            "message": "The API request body is too large.",
+                            "details": {"max_bytes": settings.request_max_size},
+                        },
+                    )
             user_id = request.headers.get("X-Remote-User-Id", "").strip()
             identity = user_id or f"client:{client_host}"
             decision = rate_limiter.check(
@@ -176,7 +210,24 @@ def create_app(
                     },
                 )
 
-        response = await call_next(request)
+        try:
+            response = await asyncio.wait_for(
+                call_next(request), timeout=settings.api_timeout_seconds
+            )
+        except TimeoutError:
+            return JSONResponse(
+                status_code=504,
+                headers={
+                    "Cache-Control": "no-store",
+                    "Referrer-Policy": "no-referrer",
+                    "X-Content-Type-Options": "nosniff",
+                },
+                content={
+                    "error": "request_timeout",
+                    "message": "The API operation timed out.",
+                    "details": {},
+                },
+            )
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         if request.url.path.startswith("/api/v1/"):
@@ -188,6 +239,15 @@ def create_app(
         return JSONResponse(
             status_code=exc.status_code,
             content={"error": exc.error, "message": exc.message, "details": exc.details},
+        )
+
+    @application.exception_handler(BuilderAdapterError)
+    async def builder_error_handler(
+        _request: Request, exc: BuilderAdapterError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=504 if exc.code == "builder_timeout" else 503,
+            content={"error": exc.code, "message": exc.message, "details": {}},
         )
 
     @application.exception_handler(RequestValidationError)
@@ -218,7 +278,9 @@ def create_app(
                 "A Home Assistant Ingress user is required for write operations.",
                 403,
             )
-        if not capabilities(settings, role).get(capability, False):
+        if not capabilities(
+            settings, role, builder_available=builder_manager.available
+        ).get(capability, False):
             audit.record(
                 user_id=user_id,
                 action="authorization.denied",
@@ -240,7 +302,9 @@ def create_app(
         return user_id
 
     def ensure_capability_available(capability: str) -> None:
-        if not capabilities(settings, "administrator").get(capability, False):
+        if not capabilities(
+            settings, "administrator", builder_available=builder_manager.available
+        ).get(capability, False):
             raise capability_unavailable(capability, settings.profile)
 
     @application.get("/api/v1/health")
@@ -260,10 +324,13 @@ def create_app(
                 "role": role,
             },
             "backends": {
-                "configuration": "filesystem",
+                "configuration": (
+                    "disabled" if settings.profile == "native_only" else "filesystem"
+                ),
                 "runtime": settings.runtime_provider,
-                "builder": "disabled",
+                "builder": builder_manager.state,
             },
+            "builder": builder_manager.status(),
         }
 
     @application.get("/api/v1/capabilities")
@@ -272,8 +339,19 @@ def create_app(
         return {
             "profile": settings.profile,
             "role": role,
-            "capabilities": capabilities(settings, role),
+            "capabilities": capabilities(
+                settings, role, builder_available=builder_manager.available
+            ),
         }
+
+    @application.get("/api/v1/builder/status")
+    async def builder_status() -> dict:
+        return builder_manager.status()
+
+    @application.post("/api/v1/builder/probe")
+    async def probe_builder(request: Request) -> dict:
+        require_capability(request, "builder.manage")
+        return await builder_manager.probe()
 
     @application.get("/api/v1/configurations")
     async def list_configurations() -> dict:
@@ -352,6 +430,92 @@ def create_app(
     async def check_yaml(name: str, source: str = Query(default="draft", pattern="^(draft|active)$")) -> dict:
         ensure_capability_available("configuration.validate_yaml")
         return filesystem.check_yaml(name, source=source)
+
+    @application.post("/api/v1/configurations/{name:path}/validate")
+    async def validate_esphome(name: str, request: Request) -> dict:
+        user_id = require_capability(request, "configuration.validate_esphome")
+        active = filesystem.read_config(name)
+        result = await builder_manager.validate(name)
+        audit.record(
+            user_id=user_id,
+            action="configuration.validate.esphome",
+            configuration=name,
+            old_revision=active["revision"],
+            new_revision=active["revision"],
+            result="success" if result["valid"] else "validation_failed",
+            esphome_version=builder_manager.esphome_version,
+        )
+        return {**result, "revision": active["revision"]}
+
+    @application.post("/api/v1/configurations/{name:path}/compile", status_code=202)
+    async def compile_configuration(name: str, request: Request) -> dict:
+        user_id = require_capability(request, "firmware.compile")
+        active = filesystem.read_config(name)
+        job = await builder_manager.compile(name)
+        audit.record(
+            user_id=user_id,
+            action="firmware.compile",
+            configuration=name,
+            old_revision=active["revision"],
+            new_revision=active["revision"],
+            result="accepted",
+            job_id=job["job_id"],
+            esphome_version=builder_manager.esphome_version,
+        )
+        return {"job": job, "revision": active["revision"]}
+
+    @application.post("/api/v1/configurations/{name:path}/install", status_code=202)
+    async def install_configuration(
+        name: str, body: InstallRequest, request: Request
+    ) -> dict:
+        user_id = require_capability(request, "firmware.upload")
+        if not body.confirmed:
+            raise ApiError(
+                "upload_confirmation_required",
+                "Firmware installation requires explicit confirmation.",
+                409,
+            )
+        active = filesystem.read_config(name)
+        job = await builder_manager.install(name, body.port)
+        audit.record(
+            user_id=user_id,
+            action="firmware.install",
+            configuration=name,
+            old_revision=active["revision"],
+            new_revision=active["revision"],
+            result="accepted",
+            job_id=job["job_id"],
+            esphome_version=builder_manager.esphome_version,
+            metadata={"port": "OTA"},
+        )
+        return {"job": job, "revision": active["revision"]}
+
+    @application.get("/api/v1/jobs")
+    async def list_builder_jobs(request: Request) -> dict:
+        require_capability(request, "firmware.compile")
+        return {"jobs": await builder_manager.jobs()}
+
+    @application.get("/api/v1/jobs/{job_id}")
+    async def get_builder_job(job_id: str, request: Request) -> dict:
+        require_capability(request, "firmware.compile")
+        return {"job": await builder_manager.job(job_id)}
+
+    @application.post("/api/v1/jobs/{job_id}/cancel", status_code=204)
+    async def cancel_builder_job(job_id: str, request: Request) -> Response:
+        user_id = require_capability(request, "firmware.compile")
+        job = await builder_manager.job(job_id)
+        await builder_manager.cancel(job_id)
+        audit.record(
+            user_id=user_id,
+            action="firmware.job.cancel",
+            configuration=str(job.get("configuration", "")),
+            old_revision=None,
+            new_revision=None,
+            result="success",
+            job_id=job_id,
+            esphome_version=builder_manager.esphome_version,
+        )
+        return Response(status_code=204)
 
     @application.post("/api/v1/configurations/{name:path}/publish")
     async def publish(name: str, body: PublishRequest, request: Request) -> dict:
@@ -589,6 +753,59 @@ def create_app(
             pass
         finally:
             runtime_manager.unsubscribe(queue)
+
+    @application.websocket("/api/v1/jobs/events")
+    async def builder_job_events(websocket: WebSocket) -> None:
+        client_host = websocket.client.host if websocket.client else "unknown"
+        if not allow_direct_access and client_host not in trusted_ingress_hosts:
+            await websocket.close(code=4403, reason="ingress_required")
+            return
+        user_id = websocket.headers.get("X-Remote-User-Id", "").strip() or None
+        if not user_id and os.getenv("ESPHOME_ALLOW_ANONYMOUS_WRITE") == "1":
+            user_id = "local-development"
+            role = "administrator"
+        else:
+            role = settings.role_for(user_id)
+        allowed = capabilities(
+            settings, role, builder_available=builder_manager.available
+        ).get("firmware.compile", False)
+        if not user_id or not allowed:
+            await websocket.close(code=4403, reason="permission_denied")
+            return
+        decision = rate_limiter.check(user_id, write=False)
+        if not decision.allowed:
+            await websocket.close(code=4429, reason="rate_limit_exceeded")
+            return
+        await websocket.accept()
+        backoff = 1
+
+        async def forward(event: dict[str, Any]) -> None:
+            data = event.get("data")
+            if isinstance(data, dict) and "line" in data:
+                data = {**data, "line": sanitize_output(data["line"])}
+            elif event.get("event") == "output":
+                data = sanitize_output(data)
+            await websocket.send_json({"type": "builder_job", "event": event.get("event"), "data": data})
+
+        try:
+            while True:
+                try:
+                    await websocket.send_json(
+                        {"type": "builder_status", "builder": builder_manager.status()}
+                    )
+                    await builder_manager.follow_jobs(forward)
+                    raise BuilderAdapterError(
+                        "builder_stream_ended", "The Device Builder event stream ended."
+                    )
+                except (BuilderAdapterError, ApiError):
+                    await websocket.send_json(
+                        {"type": "resync_required", "builder": builder_manager.status()}
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30)
+                    await builder_manager.probe()
+        except (WebSocketDisconnect, RuntimeError):
+            pass
 
     @application.get("/api/v1/designer/schemas")
     async def designer_schemas(language: str = Query(default="de", pattern="^(de|en)$")) -> dict:

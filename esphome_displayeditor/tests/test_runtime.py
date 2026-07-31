@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
@@ -15,6 +16,7 @@ from backend.runtime.native_client import AioEsphomeClient
 from backend.runtime.registry import DeviceConfig, DeviceRegistry
 from backend.runtime.secrets import SecretStore
 from backend.settings import Settings
+from backend.errors import ApiError
 
 
 VALID_KEY = base64.b64encode(bytes(range(32))).decode()
@@ -273,3 +275,32 @@ def test_connection_errors_do_not_log_secret(tmp_path: Path, caplog) -> None:
 
     asyncio.run(scenario())
     assert VALID_KEY not in caplog.text
+
+
+def test_registry_rejects_public_and_non_local_targets(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path)
+    base = {
+        "id": "display-1",
+        "name": "Display 1",
+        "port": 6053,
+        "encryption_key_ref": "display-1",
+    }
+    for host in ("8.8.8.8", "example.com", "localhost"):
+        with pytest.raises(ApiError) as exc:
+            registry.upsert({**base, "host": host})
+        assert exc.value.error == "invalid_device_host"
+
+
+def test_registry_accepts_private_and_local_targets(tmp_path: Path) -> None:
+    registry = DeviceRegistry(tmp_path)
+    for index, host in enumerate(("192.168.1.42", "display.local", "display"), 1):
+        device = registry.upsert(
+            {
+                "id": f"display-{index}",
+                "name": f"Display {index}",
+                "host": host,
+                "port": 6053,
+                "encryption_key_ref": f"display-{index}",
+            }
+        )
+        assert device.host == host

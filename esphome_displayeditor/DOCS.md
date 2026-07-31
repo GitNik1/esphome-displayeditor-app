@@ -20,11 +20,41 @@ backups. Active files are changed only by the explicit publish operation.
 `native_filesystem` enables configuration reading, drafts, YAML syntax checks,
 diffs, publishing and the Native API. `native_only` disables every YAML
 filesystem endpoint while retaining the Native API. `read_only` keeps YAML and
-Native API reads but disables all write operations.
+Native API reads but disables all write operations. `full` adds the optional
+Device Builder functions when its handshake and ESPHome version are compatible.
 
 `runtime_provider: native` enables read-only, encrypted ESPHome Native API
 connections. Set it to `disabled` to switch off all device connections and
-device API capabilities. Device Builder jobs remain unavailable.
+device API capabilities.
+
+The repeatable Phase 3 hardware acceptance check reads its encryption key
+only from the environment and never prints state values, log lines or the key:
+
+```sh
+export ESPHOME_ACCEPTANCE_HOST=display.local
+export ESPHOME_ACCEPTANCE_KEY='base64-noise-psk'
+python3 tools/native_api_acceptance.py
+```
+
+For the disconnect/reconnect criterion, leave the app's Devices view open,
+power-cycle the same device, and verify the sequence `disconnected` ->
+`connecting` -> `ready`. A wrong key must produce `auth_failed` without the key
+appearing in the app log.
+
+## Optional Device Builder backend
+
+Builder operations are available only with `profile: full` and
+`builder_provider: device_builder`. `builder_url` must point to a local ESPHome
+Device Builder. The app accepts only ESPHome 2026.6 through 2026.8 and fails
+closed for every unknown version or protocol response. Filesystem and Native
+API functions remain available when the builder is unavailable.
+
+The builder exposes only validation, compile, OTA install, job inspection,
+live job events and cancellation. Arbitrary builder commands and arbitrary
+upload targets are not exposed. Some Home Assistant ESPHome installations do
+not make port 6052 reachable to sibling apps by default; in that case the
+builder status remains `unavailable` until an internal-only reachable endpoint
+is configured.
 
 ## ESPHome devices
 
@@ -66,8 +96,9 @@ The user UUID and effective role are visible on the System page.
 
 - `viewer`: read configurations, projects and generated output
 - `editor`: additionally save drafts and designer projects
-- `publisher`: additionally publish drafts into active ESPHome files
-- `installer`: reserved for future validation, build and upload operations
+- `publisher`: additionally publish drafts and run ESPHome validation
+- `installer`: additionally compile firmware, start confirmed OTA installs,
+  inspect jobs and cancel jobs
 - `administrator`: all available capabilities and audit-log access
 
 Administrators can additionally create, update and remove Native API device
@@ -97,3 +128,6 @@ Ingress proxy (`172.30.32.2`). API requests are rate-limited per authenticated
 user. `api_rate_limit_per_minute` controls all API calls and
 `write_rate_limit_per_minute` provides a stricter additional limit for
 state-changing requests.
+`request_max_size_kib` rejects oversized request bodies before parsing and
+`api_timeout_seconds` bounds HTTP and Device Builder operations. Native API
+and Device Builder targets accept only private addresses and local DNS names.

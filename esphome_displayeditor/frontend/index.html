@@ -285,13 +285,20 @@
             <div><strong id="config-title">Keine Datei gewählt</strong><small id="revision"></small></div>
             <div class="actions">
               <button id="check-yaml" class="button subtle" disabled>Syntax prüfen</button>
+              <button id="validate-esphome" class="button subtle" disabled>ESPHome prüfen</button>
               <button id="show-diff" class="button subtle" disabled>Diff</button>
               <button id="save-draft" class="button primary" disabled>Entwurf speichern</button>
               <button id="publish" class="button warning" disabled>Veröffentlichen</button>
+              <button id="compile-config" class="button subtle" disabled>Kompilieren</button>
+              <button id="install-config" class="button warning" disabled>OTA installieren</button>
             </div>
           </div>
           <textarea id="yaml-editor" spellcheck="false" disabled aria-label="YAML-Editor"></textarea>
           <pre id="config-output" class="output hidden"></pre>
+          <section id="builder-jobs" class="builder-jobs hidden">
+            <div class="builder-jobs-heading"><strong>Firmware-Jobs</strong><button id="refresh-jobs" class="button subtle compact">Aktualisieren</button></div>
+            <div id="builder-job-list">Keine Jobs.</div>
+          </section>
         </section>
       </section>
 

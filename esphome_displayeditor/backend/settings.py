@@ -25,6 +25,7 @@ CAPABILITY_MINIMUM_ROLE = {
     "designer.asset_write": "editor",
     "firmware.compile": "installer",
     "firmware.upload": "installer",
+    "builder.manage": "administrator",
     "device.info": "viewer",
     "device.entities": "viewer",
     "device.states": "viewer",
@@ -56,6 +57,10 @@ class Settings:
     api_rate_limit_per_minute: int = 240
     write_rate_limit_per_minute: int = 60
     runtime_provider: str = "native"
+    request_max_size: int = 12 * 1024 * 1024
+    api_timeout_seconds: int = 300
+    builder_provider: str = "disabled"
+    builder_url: str = "http://5c53de3b-esphome:6052"
 
     @classmethod
     def load(cls) -> "Settings":
@@ -67,7 +72,7 @@ class Settings:
             pass
 
         profile = str(options.get("profile", "native_filesystem"))
-        if profile not in {"native_filesystem", "native_only", "read_only"}:
+        if profile not in {"native_filesystem", "native_only", "read_only", "full"}:
             profile = "read_only"
         read_only = bool(options.get("read_only", False)) or profile == "read_only"
         max_kib = _bounded_int(options, "max_file_size_kib", 1024, 64, 4096)
@@ -87,6 +92,12 @@ class Settings:
         runtime_provider = str(options.get("runtime_provider", "native")).lower()
         if runtime_provider not in {"native", "disabled"}:
             runtime_provider = "disabled"
+        builder_provider = str(options.get("builder_provider", "disabled")).lower()
+        if builder_provider not in {"device_builder", "disabled"}:
+            builder_provider = "disabled"
+        builder_url = str(
+            options.get("builder_url", "http://5c53de3b-esphome:6052")
+        ).strip()
         return cls(
             profile=profile,
             read_only=read_only,
@@ -103,6 +114,15 @@ class Settings:
                 options, "write_rate_limit_per_minute", 60, 5, 500
             ),
             runtime_provider=runtime_provider,
+            request_max_size=_bounded_int(
+                options, "request_max_size_kib", 12288, 256, 16384
+            )
+            * 1024,
+            api_timeout_seconds=_bounded_int(
+                options, "api_timeout_seconds", 300, 10, 900
+            ),
+            builder_provider=builder_provider,
+            builder_url=builder_url,
         )
 
     def role_for(self, user_id: str | None) -> str:
@@ -117,17 +137,23 @@ def role_allows(role: str, required_role: str) -> bool:
     return _ROLE_LEVEL.get(role, -1) >= _ROLE_LEVEL[required_role]
 
 
-def capabilities(settings: Settings, role: str | None = None) -> dict[str, bool]:
+def capabilities(
+    settings: Settings,
+    role: str | None = None,
+    *,
+    builder_available: bool = False,
+) -> dict[str, bool]:
     writable = not settings.read_only
     native_runtime = settings.runtime_provider == "native"
     filesystem = settings.profile != "native_only"
+    builder = settings.profile == "full" and builder_available and writable
     available = {
         "configuration.list": filesystem,
         "configuration.read": filesystem,
         "configuration.write_draft": filesystem and writable,
         "configuration.publish": filesystem and writable,
         "configuration.validate_yaml": filesystem,
-        "configuration.validate_esphome": False,
+        "configuration.validate_esphome": builder,
         "designer.project": True,
         "designer.export_yaml": True,
         # Import only reads a configuration and returns a project; it never
@@ -139,8 +165,11 @@ def capabilities(settings: Settings, role: str | None = None) -> dict[str, bool]
         # write, and is unavailable in the native_only profile exactly like
         # configuration writes are.
         "designer.asset_write": filesystem and writable,
-        "firmware.compile": False,
-        "firmware.upload": False,
+        "firmware.compile": builder,
+        "firmware.upload": builder,
+        "builder.manage": settings.profile == "full"
+        and settings.builder_provider == "device_builder"
+        and writable,
         "device.info": native_runtime,
         "device.entities": native_runtime,
         "device.states": native_runtime,
