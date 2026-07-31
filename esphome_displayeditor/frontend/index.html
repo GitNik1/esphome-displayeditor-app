@@ -25,6 +25,11 @@
 
     <main>
       <section id="designer" class="view active">
+        <nav id="designer-pane-switch" class="designer-pane-switch" aria-label="Bereich">
+          <button class="button subtle compact" data-pane="palette">Bausteine</button>
+          <button class="button subtle compact active" data-pane="canvas">Canvas</button>
+          <button class="button subtle compact" data-pane="properties">Eigenschaften</button>
+        </nav>
         <aside class="panel palette-panel">
           <div class="panel-heading">
             <div><small>BAUSTEINE</small><h2>Widgets</h2></div>
@@ -232,7 +237,7 @@
         </aside>
       </section>
 
-      <section id="devices" class="view devices-view">
+      <section id="devices" class="view devices-view showing-list">
         <aside class="panel device-list-panel">
           <div class="panel-heading">
             <div><small>NATIVE API</small><h2>Geräte</h2></div>
@@ -245,6 +250,7 @@
         </aside>
         <section class="device-detail">
           <div class="device-toolbar">
+            <button id="back-to-devices" class="button subtle compact back-to-list" title="Zurück zur Liste">← Geräte</button>
             <div>
               <strong id="device-title">Kein Gerät gewählt</strong>
               <small id="device-connection">–</small>
@@ -268,7 +274,7 @@
         </section>
       </section>
 
-      <section id="configurations" class="view config-view">
+      <section id="configurations" class="view config-view showing-list">
         <aside class="panel config-list-panel">
           <div class="panel-heading">
             <div><small>ESPHome</small><h2>Konfigurationen</h2></div>
@@ -278,6 +284,7 @@
         </aside>
         <section class="editor-panel">
           <div class="editor-toolbar">
+            <button id="back-to-configs" class="button subtle compact back-to-list" title="Zurück zur Liste">← Konfigurationen</button>
             <div><strong id="config-title">Keine Datei gewählt</strong><small id="revision"></small></div>
             <div class="actions">
               <button id="check-yaml" class="button subtle" disabled>Syntax prüfen</button>

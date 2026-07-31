@@ -176,6 +176,11 @@ function bindDevices() {
     $$(".device-subtab").forEach((item) => item.classList.toggle("active", item === tab));
     $$(".device-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `device-${tab.dataset.devicePanel}`));
   }));
+  // Phone layout only, mirrors #back-to-configs - a no-op above the
+  // breakpoint where list and detail already show side by side.
+  $("#back-to-devices").addEventListener("click", () => {
+    $("#devices").classList.add("showing-list");
+  });
 }
 
 const DEVICE_STATUS = {
@@ -237,6 +242,7 @@ function renderDeviceList() {
     button.append(dot, content);
     button.addEventListener("click", async () => {
       state.selectedDevice = device.id;
+      $("#devices").classList.remove("showing-list");
       renderDeviceList();
       await loadDeviceDetails(device.id);
     });
@@ -419,7 +425,25 @@ function connectDeviceEvents() {
   });
 }
 
+// Phone layout only: which of the three designer panels is the active full-
+// width pane. Irrelevant above the 700px breakpoint, where CSS shows all
+// three as grid columns regardless of this attribute.
+function setDesignerPane(pane) {
+  document.body.dataset.designerPane = pane;
+  $$("#designer-pane-switch .button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.pane === pane);
+  });
+}
+
+function bindDesignerPaneSwitch() {
+  setDesignerPane("canvas");
+  $$("#designer-pane-switch .button").forEach((button) => {
+    button.addEventListener("click", () => setDesignerPane(button.dataset.pane));
+  });
+}
+
 function bindDesigner() {
+  bindDesignerPaneSwitch();
   $("#canvas-width").addEventListener("change", updateCanvasSize);
   $("#canvas-height").addEventListener("change", updateCanvasSize);
   $("#new-project").addEventListener("click", newDesignerProject);
@@ -1869,7 +1893,7 @@ function renderWidget(item) {
   node.style.top = `${top}px`;
   node.style.width = `${Math.max(1, width)}px`;
   node.style.height = `${Math.max(1, height)}px`;
-  node.style.opacity = widget.hidden ? "0.35" : "1";
+  node.style.opacity = widget.hidden ? "0" : "1";
   if (widget.locked) node.classList.add("locked");
   const effectiveStyle = effectiveStyleTree(widget);
   if (effectiveStyle.bg_color) {
@@ -2548,6 +2572,12 @@ function bindConfigurations() {
   $("#check-yaml").addEventListener("click", checkYaml);
   $("#show-diff").addEventListener("click", showDiff);
   $("#publish").addEventListener("click", publishDraft);
+  // Phone layout only: list <-> detail is one pane at a time there, so this
+  // is what "leaving" the detail view means. A no-op above the breakpoint,
+  // where both panels already show side by side regardless of the class.
+  $("#back-to-configs").addEventListener("click", () => {
+    $("#configurations").classList.add("showing-list");
+  });
 }
 
 async function loadConfigurations() {
@@ -2570,7 +2600,10 @@ async function loadConfigurations() {
       meta.textContent = `${Math.ceil(configuration.size / 1024)} KiB${configuration.has_draft ? " · Entwurf" : ""}`;
       if (configuration.has_draft) meta.className = "draft-dot";
       button.append(name, meta);
-      button.addEventListener("click", () => loadConfiguration(configuration));
+      button.addEventListener("click", () => {
+        $("#configurations").classList.remove("showing-list");
+        loadConfiguration(configuration);
+      });
       list.append(button);
     });
   } catch (error) { toast(error.message, true); }

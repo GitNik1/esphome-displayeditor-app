@@ -241,3 +241,46 @@ dialog::backdrop { background: #03070bc7; }
   .project-toolbar { grid-template-columns: minmax(130px, 1fr) minmax(150px, 1fr) auto auto; }
   #delete-server-project { display: none; }
 }
+
+/* Phone layout: the three designer panels stop being grid columns and
+   become full-width panes switched by #designer-pane-switch, since there is
+   no room to show more than one at a time. Placed after the 900px block on
+   purpose - both blocks apply below 700px, and this one must win. */
+.designer-pane-switch { display: none; }
+.back-to-list { display: none; }
+
+@media (max-width: 700px) {
+  #designer { display: flex; flex-direction: column; height: 100%; }
+  #designer > .panel, #designer > .workspace { display: none; flex: 1; min-height: 0; }
+  body[data-designer-pane="palette"] #designer > .palette-panel,
+  body[data-designer-pane="canvas"] #designer > .workspace,
+  body[data-designer-pane="properties"] #designer > .properties-panel {
+    display: flex;
+    flex-direction: column;
+  }
+  /* The palette panel's own internal layout is a grid (palette/tree split);
+     restore that once it is the one visible pane. */
+  body[data-designer-pane="palette"] #designer > .palette-panel { display: grid; }
+
+  .designer-pane-switch { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--surface); }
+  .designer-pane-switch .button { flex: 1; }
+
+  .config-view, .devices-view { grid-template-columns: minmax(0, 1fr); }
+  .config-list-panel, .device-list-panel { display: none; }
+  .config-view.showing-list .config-list-panel,
+  .devices-view.showing-list .device-list-panel { display: block; }
+  .config-view.showing-list .editor-panel,
+  .devices-view.showing-list .device-detail { display: none; }
+  .config-view:not(.showing-list) .back-to-list,
+  .devices-view:not(.showing-list) .back-to-list { display: inline-block; }
+
+  /* Base rule positions this via right:-1px/bottom:-1px with no left/top, so
+     (unlike .glow-handle) the enlarged hit area is centered by adjusting
+     right/bottom directly rather than by a margin trick. */
+  .resize-handle { width: 24px; height: 24px; right: -12px; bottom: -12px; background: transparent; border: none; }
+  .resize-handle::after { content: ""; position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; border: 2px solid #f5f7fa; background: var(--accent-2); }
+  .glow-handle { width: 24px; height: 24px; margin: -12px; background: transparent; border: none; }
+  .glow-handle::after { content: ""; position: absolute; left: 50%; top: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 999px; border: 2px solid #fff; background: var(--accent-2); }
+  .glow-handle.first::after { background: #ffd57b; }
+  .tree-glyph { padding: 6px 8px; }
+}

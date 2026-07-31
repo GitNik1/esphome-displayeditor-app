@@ -1,5 +1,5 @@
 name: ESPHome Display Editor
-version: "0.9.1"
+version: "0.9.2"
 slug: esphome_displayeditor
 description: Visual LVGL designer and safe ESPHome configuration editor
 url: https://github.com/GitNik1/esphome-displayeditor-app

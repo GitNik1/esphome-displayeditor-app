@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.3
+
+- Designer view is now usable on phone-width screens (≤700px): a new
+  three-way pane switcher ("Bausteine" / "Canvas" / "Eigenschaften") stacks
+  the palette, canvas, and properties panels instead of shrinking them into
+  unusable columns. Configurations and Devices views get the same
+  list/detail stacking pattern, with a "back to list" button that only
+  shows once a detail is open. Resize handles, glow-line handles, and tree
+  glyphs also got larger touch targets (~24x24px hit area). The existing
+  900px column-shrink breakpoint is unchanged for tablet-width windows.
+
+## 0.9.2
+
+- Widgets marked "hidden" now render fully invisible on the canvas (opacity
+  0) instead of translucent (opacity 0.35). The dimmed preview made a hidden
+  widget's on-device appearance hard to judge; a hidden widget is still
+  selectable via the hierarchy tree and its eye-glyph.
+
 ## 0.9.1
 
 - Glow lines now appear in the hierarchy tree, in their own "Glow-Linien"
