@@ -33,6 +33,7 @@ def client(tmp_path: Path) -> TestClient:
         protect_sensitive_paths=True,
         config_root=config_root,
         data_root=tmp_path / "data",
+        default_role="administrator",
     )
     return TestClient(create_app(settings, serve_frontend=False))
 

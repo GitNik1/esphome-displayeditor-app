@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0
+
+Phase 4 security and roles:
+
+- Add hierarchical viewer, editor, publisher, installer and administrator
+  roles with per-user assignments from Home Assistant app options.
+- Return user-specific capabilities and enforce every write operation in the
+  backend, independently from disabled frontend controls.
+- Reject traffic that does not originate from the Home Assistant Ingress
+  proxy and stop trusting forwarded client headers in Uvicorn.
+- Add per-user API and write rate limits with stable `429` responses.
+- Restrict audit-log access to administrators and record rejected
+  authorizations plus draft save/delete events.
+- Add `nosniff`, `no-referrer` and API `no-store` response headers.
+
 ## 0.6.0
 
 The constructs an imported config is built from are now editable, not just

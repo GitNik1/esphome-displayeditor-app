@@ -21,6 +21,29 @@ diffs and publishing. `read_only` disables all write operations.
 Native ESPHome device connections and Device Builder jobs are planned for a
 later milestone and are reported as unavailable by the capability endpoint.
 
+## Roles
+
+Every authenticated Ingress user receives either `default_role` or a role
+from `user_roles`. The default is deliberately `viewer`.
+
+```yaml
+default_role: viewer
+user_roles:
+  - user_id: "Home Assistant user UUID"
+    role: publisher
+```
+
+The user UUID and effective role are visible on the System page.
+
+- `viewer`: read configurations, projects and generated output
+- `editor`: additionally save drafts and designer projects
+- `publisher`: additionally publish drafts into active ESPHome files
+- `installer`: reserved for future validation, build and upload operations
+- `administrator`: all available capabilities and audit-log access
+
+Roles are hierarchical. A profile such as `read_only` still disables writes
+even for administrators.
+
 ## Designer projects
 
 Projects can be downloaded as `.lvgldesign` files or stored directly inside
@@ -34,3 +57,9 @@ Only relative `.yaml` and `.yml` paths below the ESPHome directory are
 accepted. Absolute paths, parent traversal, hidden paths and symbolic links
 are rejected. `secrets.yaml`, `packages/` and `external_components/` are
 protected from writes by default.
+
+The HTTP server accepts production traffic only from the Home Assistant
+Ingress proxy (`172.30.32.2`). API requests are rate-limited per authenticated
+user. `api_rate_limit_per_minute` controls all API calls and
+`write_rate_limit_per_minute` provides a stricter additional limit for
+state-changing requests.
