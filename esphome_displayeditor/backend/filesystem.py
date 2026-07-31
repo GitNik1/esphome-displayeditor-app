@@ -65,17 +65,31 @@ def revision_for(content: bytes | str) -> str:
     return f"sha256:{hashlib.sha256(raw).hexdigest()}"
 
 
+#: PNG magic bytes. Checked on every write and on whatever a write would
+#: overwrite - the ``.png`` suffix alone is just a naming convention and
+#: proves nothing about what is actually inside the request body.
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
 class FilesystemBackend:
     _allowed_suffixes = {".yaml", ".yml"}
     _protected_roots = {"packages", "external_components"}
+    #: Image assets are confined to one dedicated subfolder rather than
+    #: anywhere under the config root - the same containment principle as
+    #: drafts living under their own directory, so a coding mistake here has a
+    #: single, small, and predictable blast radius instead of "anywhere in the
+    #: user's ESPHome tree".
+    _assets_subdir = "images"
+    _allowed_asset_suffixes = {".png"}
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.root = settings.config_root
         self.drafts = settings.data_root / "drafts"
         self.drafts.mkdir(parents=True, exist_ok=True)
+        self.assets = self.root / self._assets_subdir
 
-    def _relative(self, name: str) -> PurePosixPath:
+    def _relative(self, name: str, *, suffixes: set[str] | None = None) -> PurePosixPath:
         if not name or "\\" in name or "\x00" in name:
             raise ApiError("invalid_path", "Configuration path is invalid.")
         relative = PurePosixPath(name)
@@ -83,8 +97,9 @@ class FilesystemBackend:
             raise ApiError("invalid_path", "Only normalized relative paths are allowed.")
         if any(part.startswith(".") for part in relative.parts):
             raise ApiError("invalid_path", "Hidden paths are not allowed.")
-        if relative.suffix.lower() not in self._allowed_suffixes:
-            raise ApiError("invalid_path", "Only .yaml and .yml files are allowed.")
+        allowed = suffixes if suffixes is not None else self._allowed_suffixes
+        if relative.suffix.lower() not in allowed:
+            raise ApiError("invalid_path", f"Only {', '.join(sorted(allowed))} files are allowed.")
         return relative
 
     def _resolve(self, base: Path, relative: PurePosixPath) -> Path:
@@ -276,6 +291,52 @@ class FilesystemBackend:
             "revision": new_revision,
         }
 
+    def _relative_asset(self, name: str) -> PurePosixPath:
+        relative = self._relative(name, suffixes=self._allowed_asset_suffixes)
+        # A single flat folder rather than an arbitrary sub-path: nothing in
+        # the caller (a browser-rendered filename) needs a directory
+        # component, and refusing one removes an entire class of traversal
+        # attempt before the generic checks even run.
+        if len(relative.parts) != 1:
+            raise ApiError("invalid_path", "Image names may not contain a directory.")
+        return relative
+
+    def write_image_asset(self, name: str, content: bytes) -> dict:
+        """Write a PNG into the dedicated images/ folder.
+
+        Unlike every other write in this class, this one is not a draft: it
+        lands directly on the host, because a baked animation frame is a
+        finished asset, not a config change awaiting review. The safety
+        margin comes from what it is confined to instead: one flat folder,
+        one file type, verified by content rather than by name, and refusing
+        to clobber a file that was not already a PNG itself.
+        """
+        relative = self._relative_asset(name)
+        if len(content) > self.settings.max_file_size:
+            raise ApiError("file_too_large", "Image exceeds the configured size limit.", 413)
+        if not content.startswith(_PNG_MAGIC):
+            raise ApiError("invalid_image", "Only PNG image data is accepted.")
+
+        self.assets.mkdir(parents=True, exist_ok=True)
+        target = self._resolve(self.assets, relative)
+        if target.exists():
+            if target.is_symlink() or not target.is_file():
+                raise ApiError("invalid_path", "Target path is not a regular file.")
+            with open(target, "rb") as handle:
+                existing_head = handle.read(len(_PNG_MAGIC))
+            if existing_head != _PNG_MAGIC:
+                raise ApiError(
+                    "invalid_path",
+                    "Refusing to overwrite a file that is not itself a PNG.",
+                    409,
+                )
+
+        self._atomic_write_bytes(target, content)
+        return {
+            "path": f"{self._assets_subdir}/{relative.as_posix()}",
+            "size": len(content),
+        }
+
     def _validate_content_size(self, content: str) -> None:
         try:
             encoded = content.encode("utf-8")
@@ -296,6 +357,31 @@ class FilesystemBackend:
                 mark.line + 1 if mark is not None else None,
                 mark.column + 1 if mark is not None else None,
             )
+
+    @staticmethod
+    def _atomic_write_bytes(path: Path, content: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_name: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_name = handle.name
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_name, path)
+            temporary_name = None
+        finally:
+            if temporary_name:
+                try:
+                    Path(temporary_name).unlink()
+                except FileNotFoundError:
+                    pass
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:

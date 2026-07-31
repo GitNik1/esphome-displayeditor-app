@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-mkdir -p /data/drafts /data/history /data/database /data/settings
+mkdir -p /data/drafts /data/history /data/database /data/settings /data/runtime
+chmod 0700 /data/runtime
 
 echo "[info] Starting ESPHome Display Editor"
 

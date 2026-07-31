@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.9.1
+
+- Glow lines now appear in the hierarchy tree, in their own "Glow-Linien"
+  section below the widgets - clicking one switches to line-editing mode and
+  selects it, the same way clicking a widget entry switches back. Previously
+  a line could only be selected by clicking it on the canvas after manually
+  switching modes first.
+
+## 0.9.0
+
+Glow lines: draw animated flow lines directly in the designer instead of
+producing them in the separate GlowLine Editor desktop tool and hand-copying
+the resulting YAML snippet into a config.
+
+- Ported GlowLine Editor's geometry (filleted polylines, Catmull-Rom splines),
+  multi-pass stroke glow, and flow markers (arrows/dashes) from Qt to Canvas
+  2D (`frontend/glowline/`). Measured against the original Qt renderer running
+  headless (`tools/glowline_reference/`): path length within 0.03%, sampled
+  points within 0.033px, tangent angles within 0.6°, and rendered pixels
+  within a mean channel error of 1.43/255.
+- New "Glow-Linien" canvas mode with its own tool (`P` draw / `V` select):
+  place points with Ctrl/Shift angle snapping, close a line into a ring,
+  drag the whole line or a single point, insert a point on double-click,
+  delete one via right-click. Undo/redo now restores line selection, not
+  only widget selection.
+- Line/glow/flow property panel and an RGB565 colour wheel - every pixel of
+  the wheel is quantised, so the picker shows what an RGB565 display actually
+  reproduces, not a continuous desktop colour.
+- "Als Bilder + Widgets anlegen" renders the flow animation into a cropped,
+  seamlessly-looping PNG sequence (quantised to RGB565), uploads it, and adds
+  a matching `image` + `animimg` widget pair - the same shape as the
+  hand-written snippet this replaces (`src:` list, `duration`, `repeat_count:
+  forever`, `auto_start`).
+- New write path, used only for this: `POST /api/v1/designer/assets/images`
+  writes a baked frame straight into the ESPHome config's `images/` folder.
+  Unlike every other write in this add-on, it is not a draft - the safety
+  margin comes from confinement instead: one flat subfolder, `.png` only,
+  content verified by its actual magic bytes rather than trusted by name, and
+  refusing to overwrite a file that is not itself already a PNG. Requires the
+  editor role and is unavailable in the read-only/native-only profiles.
+- Project format version 3 (`Project.glow_strokes`); older builds refuse such
+  a file instead of silently dropping the lines.
+
+Verified end to end in a running container with a real mounted ESPHome
+folder: a drawn three-point line with flow enabled baked into 5 PNGs (1
+static + 4 frames) written to `images/` on the host, an `image` + `animimg`
+widget pair at the cropped position, and an export whose `image:`/`animimg:`
+block matches the shape of the original hand-written GlowLine output.
+
+Known gaps: line-body hit-testing uses the control polygon rather than the
+rendered curve (slightly generous near a large corner radius or a spline
+bulge); the flow preview (`▶`) runs at a fixed speed independent of the
+export timing; and the desktop `esphome-lvgl-designer` gained the same
+`glow_strokes` field on its shared project model but no drawing tool for it -
+it can load, hold and re-save a project containing lines, just not create or
+edit them.
+
+## 0.8.0
+
+Phase 3 ESPHome Native API runtime:
+
+- Add encrypted, read-only Native API connections through `aioesphomeapi`.
+- Add a persistent server-side device allow-list and separate write-only
+  storage for 32-byte Noise encryption keys.
+- Add connection monitoring with bounded exponential reconnect, stable error
+  codes and unavailable marking for cached states after disconnects.
+- Add device information, entity, latest-state and bounded live-log APIs plus
+  an Ingress-compatible WebSocket event stream with backpressure.
+- Include the Uvicorn WebSocket runtime required to serve that event stream
+  from the production container.
+- Add administrator-only device, key and reconnect operations with audit
+  events; entity commands remain unavailable.
+- Add a Geräte view for connection status, configuration, metadata, entities,
+  states and sanitized logs.
+- Allow the UDP traffic required for `.local` mDNS name resolution while
+  retaining the Ingress-only HTTP boundary.
+- Build-test both advertised app architectures (`amd64` and `aarch64`) in CI.
+
 ## 0.7.0
 
 Phase 4 security and roles:

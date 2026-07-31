@@ -49,3 +49,10 @@ def test_app_remains_ingress_only_and_protected() -> None:
     assert config.get("host_network", False) is False
     assert config.get("full_access", False) is False
     assert config["options"]["default_role"] == "viewer"
+
+
+def test_container_includes_native_api_and_websocket_runtimes() -> None:
+    requirements = (APP_ROOT / "requirements.txt").read_text(encoding="utf-8")
+
+    assert "aioesphomeapi" in requirements
+    assert "websockets" in requirements

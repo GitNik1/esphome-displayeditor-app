@@ -7,6 +7,9 @@ profile esphome_displayeditor flags=(attach_disconnected,mediate_deleted) {
 
   network inet stream,
   network inet6 stream,
+  # Hostnames ending in .local are resolved through mDNS/zeroconf.
+  network inet dgram,
+  network inet6 dgram,
 
   # The container runs run.sh directly as PID 1 (no S6 Overlay/Bashio).
   /bin/** ix,

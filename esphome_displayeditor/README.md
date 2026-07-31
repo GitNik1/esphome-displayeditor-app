@@ -1,4 +1,4 @@
 # ESPHome Display Editor
 
-Visual LVGL designer and controlled ESPHome YAML editor for Home Assistant.
-
+Visual LVGL designer, controlled ESPHome YAML editor and encrypted read-only
+Native API monitor for Home Assistant.

@@ -22,12 +22,14 @@ CAPABILITY_MINIMUM_ROLE = {
     "designer.export_yaml": "viewer",
     "designer.import_yaml": "viewer",
     "designer.project_write": "editor",
+    "designer.asset_write": "editor",
     "firmware.compile": "installer",
     "firmware.upload": "installer",
     "device.info": "viewer",
     "device.entities": "viewer",
     "device.states": "viewer",
     "device.logs": "viewer",
+    "device.manage": "administrator",
     "device.control": "administrator",
     "audit.read": "administrator",
 }
@@ -53,6 +55,7 @@ class Settings:
     user_roles: tuple[tuple[str, str], ...] = ()
     api_rate_limit_per_minute: int = 240
     write_rate_limit_per_minute: int = 60
+    runtime_provider: str = "native"
 
     @classmethod
     def load(cls) -> "Settings":
@@ -64,7 +67,7 @@ class Settings:
             pass
 
         profile = str(options.get("profile", "native_filesystem"))
-        if profile not in {"native_filesystem", "read_only"}:
+        if profile not in {"native_filesystem", "native_only", "read_only"}:
             profile = "read_only"
         read_only = bool(options.get("read_only", False)) or profile == "read_only"
         max_kib = _bounded_int(options, "max_file_size_kib", 1024, 64, 4096)
@@ -81,6 +84,9 @@ class Settings:
                 role = str(entry.get("role", "")).lower()
                 if user_id and role in ROLES:
                     assignments[user_id] = role
+        runtime_provider = str(options.get("runtime_provider", "native")).lower()
+        if runtime_provider not in {"native", "disabled"}:
+            runtime_provider = "disabled"
         return cls(
             profile=profile,
             read_only=read_only,
@@ -96,6 +102,7 @@ class Settings:
             write_rate_limit_per_minute=_bounded_int(
                 options, "write_rate_limit_per_minute", 60, 5, 500
             ),
+            runtime_provider=runtime_provider,
         )
 
     def role_for(self, user_id: str | None) -> str:
@@ -112,12 +119,14 @@ def role_allows(role: str, required_role: str) -> bool:
 
 def capabilities(settings: Settings, role: str | None = None) -> dict[str, bool]:
     writable = not settings.read_only
+    native_runtime = settings.runtime_provider == "native"
+    filesystem = settings.profile != "native_only"
     available = {
-        "configuration.list": True,
-        "configuration.read": True,
-        "configuration.write_draft": writable,
-        "configuration.publish": writable,
-        "configuration.validate_yaml": True,
+        "configuration.list": filesystem,
+        "configuration.read": filesystem,
+        "configuration.write_draft": filesystem and writable,
+        "configuration.publish": filesystem and writable,
+        "configuration.validate_yaml": filesystem,
         "configuration.validate_esphome": False,
         "designer.project": True,
         "designer.export_yaml": True,
@@ -125,12 +134,18 @@ def capabilities(settings: Settings, role: str | None = None) -> dict[str, bool]
         # writes anything, so it stays available in the read-only profile.
         "designer.import_yaml": True,
         "designer.project_write": writable,
+        # Writes a baked animation frame straight into the ESPHome config's
+        # images/ folder - needs real filesystem access, same as any other
+        # write, and is unavailable in the native_only profile exactly like
+        # configuration writes are.
+        "designer.asset_write": filesystem and writable,
         "firmware.compile": False,
         "firmware.upload": False,
-        "device.info": False,
-        "device.entities": False,
-        "device.states": False,
-        "device.logs": False,
+        "device.info": native_runtime,
+        "device.entities": native_runtime,
+        "device.states": native_runtime,
+        "device.logs": native_runtime,
+        "device.manage": native_runtime and writable,
         "device.control": False,
         "audit.read": True,
     }
