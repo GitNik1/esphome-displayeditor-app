@@ -145,6 +145,59 @@ def test_state_styles_are_flattened_back_alongside_parts(tmp_path) -> None:
     assert STATES_KEY not in body
 
 
+def test_checkable_button_exports_normal_pressed_and_checked_colours(tmp_path) -> None:
+    project = Project()
+    project.widgets = [_widget(
+        id="color_button",
+        widget_type="button",
+        properties={"text": "Aktivieren", "checkable": True},
+        style_tree={
+            "bg_color": "404040",
+            "text_color": "FFFFFF",
+            STATES_KEY: {
+                "pressed": {"bg_color": "0080FF"},
+                "checked": {"bg_color": "00A000", "text_color": "FFFFFF"},
+            },
+        },
+    )]
+
+    body = _export(project, tmp_path)["lvgl"]["widgets"][0]["button"]
+
+    assert body["checkable"] is True
+    assert body["bg_color"] == 0x404040
+    assert body["pressed"] == {"bg_color": 0x0080FF}
+    assert body["checked"] == {"bg_color": 0x00A000, "text_color": 0xFFFFFF}
+
+
+def test_button_exports_cross_widget_actions_unchanged(tmp_path) -> None:
+    action = {
+        "if": {
+            "condition": {"lambda": "return x;"},
+            "then": [{
+                "lvgl.label.update": {
+                    "id": "status_label",
+                    "text": "Aktiv",
+                    "text_color": "0x00FF00",
+                },
+            }],
+        },
+    }
+    project = Project()
+    project.widgets = [
+        _widget(
+            id="toggle_button",
+            widget_type="button",
+            properties={"checkable": True},
+            events={"on_value": [action]},
+        ),
+        _widget(id="status_label", widget_type="label", properties={"text": "Aus"}),
+    ]
+
+    body = _export(project, tmp_path)["lvgl"]["widgets"][0]["button"]
+
+    assert body["on_value"] == [action]
+
+
 def test_unmodelled_keys_are_written_back_unchanged(tmp_path) -> None:
     project = Project()
     project.widgets = [_widget(extra={"bg_image_tiled": True, "scroll_dir": "VER"})]

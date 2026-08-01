@@ -5,6 +5,7 @@ import { format565, hsvToRgb, quantizeImageData, rgb565to888, rgb888to565 } from
 import {
   ViewerController,
   describeViewerArc,
+  effectiveViewerStyle,
   entityMatchesRuntimeTarget,
   formatRuntimeValue,
   resolveViewerColor,
@@ -684,6 +685,10 @@ function bindDesigner() {
   $("#style-mode").addEventListener("change", changeStyleMode);
   $("#style-ref").addEventListener("change", changeStyleRef);
   $("#save-as-style").addEventListener("click", saveCurrentStyleAsNamed);
+  $("#widget-action-trigger").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
+  $("#widget-action-type").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
+  $("#widget-action-target").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
+  $("#add-widget-action").addEventListener("click", addWidgetAction);
   $("#runtime-binding-target").addEventListener("change", () => renderRuntimeBinding(state.selectedWidget));
   $("#runtime-binding-device").addEventListener("change", () => {
     populateRuntimeEntityChoices();
@@ -2226,11 +2231,17 @@ function renderWidget(item) {
   node.style.height = `${Math.max(1, height)}px`;
   node.style.opacity = widget.hidden ? "0" : "1";
   if (widget.locked) node.classList.add("locked");
-  const effectiveStyle = effectiveStyleTree(widget);
-  if (effectiveStyle.bg_color) {
-    const color = String(effectiveStyle.bg_color).replace("#", "");
-    if (/^[0-9a-f]{6}$/i.test(color)) node.style.backgroundColor = `#${color}`;
-  }
+  // The state selected in the property panel is also the state previewed on
+  // the canvas. This is especially useful for a button's pressed/checked
+  // colours: previously those values were editable but only visible after
+  // opening the separate Viewer.
+  const previewState = state.selectedWidget === widget ? state.activeState : "";
+  const effectiveStyle = effectiveViewerStyle(state.project, widget, previewState);
+  if (previewState) node.dataset.previewState = previewState;
+  const backgroundColor = resolveViewerColor(state.project, effectiveStyle.bg_color);
+  if (backgroundColor) node.style.backgroundColor = backgroundColor;
+  const textColor = resolveViewerColor(state.project, effectiveStyle.text_color);
+  if (textColor) node.style.color = textColor;
   const bgImageSource = displayableImageSource(effectiveStyle.bg_image_src);
   if (bgImageSource) {
     // `cover` is an approximation - LVGL's own bg_image scaling isn't
@@ -2340,9 +2351,9 @@ function effectiveStyleTree(widget) {
   }
   // The theme is this type's default; the widget's own style (inline or
   // named) overrides it key-by-key, same precedence ESPHome's LVGL
-  // component applies. `states` isn't merged deeper than this - the canvas
-  // preview doesn't simulate pressed/checked states at all (only the
-  // Viewer does, separately), so there is nothing here that reads it yet.
+  // component applies. Main widget state previews use effectiveViewerStyle
+  // in renderWidget; this nested tree remains useful for part visuals such
+  // as the bar indicator.
   return { ...theme, ...ownTree };
 }
 
@@ -2430,6 +2441,7 @@ function renderProperties() {
   $("#empty-properties").classList.toggle("hidden", state.canvasMode === "lines" || Boolean(widget));
   $("#properties").classList.toggle("hidden", !widget);
   if (!widget) $("#runtime-binding-section").classList.add("hidden");
+  if (!widget) $("#widget-actions-section").classList.add("hidden");
   if (!widget) return;
   $("#prop-id").value = widget.id;
   $("#prop-x").value = widget.x;
@@ -2443,8 +2455,228 @@ function renderProperties() {
   renderStateChoices();
   renderStyleControls(widget);
   renderDynamicProperties(widget);
+  renderWidgetActions(widget);
   renderRuntimeBinding(widget);
   renderExtraKeys(widget);
+}
+
+const ACTION_TRIGGER_LABELS = {
+  on_click: "Klick",
+  on_press: "Drücken",
+  on_release: "Loslassen",
+  on_value: "Schalterzustand",
+};
+
+function actionObjectEntry(action) {
+  if (!action || typeof action !== "object" || Array.isArray(action)) return null;
+  const entries = Object.entries(action);
+  return entries.length === 1 ? entries[0] : null;
+}
+
+function actionIdsForEditor(payload) {
+  if (typeof payload === "string") return [payload];
+  if (Array.isArray(payload)) return payload.flatMap(actionIdsForEditor);
+  if (payload && typeof payload === "object") return actionIdsForEditor(payload.id);
+  return [];
+}
+
+function generatedActionCondition(action) {
+  const entry = actionObjectEntry(action);
+  if (entry?.[0] !== "if" || !entry[1] || typeof entry[1] !== "object") return null;
+  const expression = String(entry[1].condition?.lambda || "").replace(/\s+/g, "").toLowerCase();
+  const branch = Array.isArray(entry[1].then) && entry[1].then.length === 1 ? entry[1].then[0] : null;
+  if (!branch || !["returnx;", "return!x;"].includes(expression)) return null;
+  return { condition: expression === "returnx;" ? "checked" : "unchecked", action: branch };
+}
+
+function describeWidgetAction(action) {
+  const conditional = generatedActionCondition(action);
+  if (conditional) {
+    const prefix = conditional.condition === "checked" ? "Wenn eingeschaltet: " : "Wenn ausgeschaltet: ";
+    const inner = describeWidgetAction(conditional.action);
+    return { ...inner, text: `${prefix}${inner.text}` };
+  }
+  const entry = actionObjectEntry(action);
+  if (!entry) return { text: "Nicht grafisch unterstützte Aktion", targetIds: [], supported: false };
+  const [name, payload] = entry;
+  const targetIds = actionIdsForEditor(payload);
+  if (["lvgl.widget.show", "lvgl.widget.hide"].includes(name)) {
+    return {
+      text: `${name.endsWith(".show") ? "Anzeigen" : "Ausblenden"}: ${targetIds.join(", ") || "ohne Ziel"}`,
+      targetIds,
+      supported: Boolean(targetIds.length),
+    };
+  }
+  if (name === "lvgl.page.show") {
+    return { text: `Seite öffnen: ${targetIds.join(", ") || "ohne Ziel"}`, targetIds: [], supported: Boolean(targetIds.length) };
+  }
+  if (["lvgl.widget.update", "lvgl.label.update", "lvgl.button.update"].includes(name)
+      && payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const fields = Object.keys(payload).filter((key) => key !== "id");
+    return {
+      text: `Ändern: ${targetIds.join(", ") || "ohne Ziel"}${fields.length ? ` · ${fields.join(", ")}` : ""}`,
+      targetIds,
+      supported: Boolean(targetIds.length && fields.length),
+    };
+  }
+  return { text: `${name} · nur im YAML bearbeitbar`, targetIds, supported: false };
+}
+
+function renderWidgetActions(widget) {
+  const section = $("#widget-actions-section");
+  const visible = widget?.widget_type === "button";
+  section.classList.toggle("hidden", !visible);
+  if (!visible) return;
+
+  widget.events ||= {};
+  const list = $("#widget-action-list");
+  list.replaceChildren();
+  let count = 0;
+  Object.entries(widget.events).forEach(([trigger, raw]) => {
+    const actions = Array.isArray(raw) ? raw : [raw];
+    actions.forEach((action, index) => {
+      count += 1;
+      const description = describeWidgetAction(action);
+      const missing = description.targetIds.filter((id) => !projectWidgetEntries().some((item) => item.id === id));
+      const row = document.createElement("div");
+      row.className = `widget-action-item${!description.supported || missing.length ? " invalid" : ""}`;
+      const label = document.createElement("span");
+      const triggerLabel = ACTION_TRIGGER_LABELS[trigger] || trigger;
+      label.textContent = `${triggerLabel}: ${description.text}${missing.length ? ` · Ziel fehlt: ${missing.join(", ")}` : ""}`;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "button danger compact";
+      remove.textContent = "Entfernen";
+      remove.addEventListener("click", () => removeWidgetAction(widget, trigger, index));
+      row.append(label, remove);
+      list.append(row);
+    });
+  });
+  if (!count) {
+    const empty = document.createElement("p");
+    empty.className = "widget-action-empty";
+    empty.textContent = "Noch keine Aktionen angelegt.";
+    list.append(empty);
+  }
+  renderWidgetActionBuilder(widget);
+}
+
+function renderWidgetActionBuilder(widget) {
+  if (!widget || widget.widget_type !== "button") return;
+  const trigger = $("#widget-action-trigger").value;
+  const type = $("#widget-action-type").value;
+  const conditionField = $("#widget-action-condition-field");
+  conditionField.classList.toggle("hidden", trigger !== "on_value");
+  if (trigger !== "on_value") $("#widget-action-condition").value = "always";
+
+  const target = $("#widget-action-target");
+  const previous = target.value;
+  const choices = type === "page_show"
+    ? (state.project.pages || []).map((page) => ({ value: page.id, label: `${page.id} · Seite` }))
+    : projectWidgetEntries().map((item) => ({ value: item.id, label: `${item.id} · ${item.widget_type}` }));
+  target.replaceChildren();
+  choices.forEach((choice) => target.append(new Option(choice.label, choice.value)));
+  if (choices.some((choice) => choice.value === previous)) target.value = previous;
+
+  const update = type === "update";
+  $("#widget-action-update-fields").classList.toggle("hidden", !update);
+  const targetWidget = projectWidgetEntries().find((item) => item.id === target.value);
+  $("#widget-action-text-field").classList.toggle(
+    "hidden", !update || !["label", "button"].includes(targetWidget?.widget_type),
+  );
+  $("#widget-action-error").classList.add("hidden");
+}
+
+function normaliseActionColor(value) {
+  const raw = String(value || "").trim();
+  const hex = raw.replace(/^#/, "").replace(/^0x/i, "");
+  return /^[0-9a-f]{6}$/i.test(hex) ? `0x${hex.toUpperCase()}` : raw;
+}
+
+function addWidgetAction() {
+  const widget = state.selectedWidget;
+  if (!widget || widget.widget_type !== "button") return;
+  const trigger = $("#widget-action-trigger").value;
+  const type = $("#widget-action-type").value;
+  const targetId = $("#widget-action-target").value;
+  const error = $("#widget-action-error");
+  const fail = (message) => {
+    error.textContent = message;
+    error.classList.remove("hidden");
+  };
+  if (!targetId) {
+    fail(type === "page_show" ? "Das Projekt enthält keine auswählbare Seite." : "Bitte ein Ziel-Widget auswählen.");
+    return;
+  }
+  if (trigger === "on_value" && !widget.properties?.checkable) {
+    fail("Für Schalterzustände zuerst die Einrastfunktion des Buttons aktivieren.");
+    return;
+  }
+
+  let action;
+  if (type === "show" || type === "hide") {
+    action = { [`lvgl.widget.${type}`]: targetId };
+  } else if (type === "page_show") {
+    action = { "lvgl.page.show": targetId };
+  } else {
+    const targetWidget = projectWidgetEntries().find((item) => item.id === targetId);
+    const payload = { id: targetId };
+    const text = $("#widget-action-text").value.trim();
+    if (text && ["label", "button"].includes(targetWidget?.widget_type)) payload.text = text;
+    const styleControls = {
+      bg_color: "#widget-action-bg-color",
+      text_color: "#widget-action-text-color",
+      border_color: "#widget-action-border-color",
+      opa: "#widget-action-opacity",
+    };
+    Object.entries(styleControls).forEach(([key, selector]) => {
+      const value = $(selector).value.trim();
+      if (value) payload[key] = key.endsWith("_color") ? normaliseActionColor(value) : value;
+    });
+    if (Object.keys(payload).length === 1) {
+      fail("Mindestens Text, Farbe, Rahmenfarbe oder Deckkraft angeben.");
+      return;
+    }
+    const actionName = targetWidget?.widget_type === "label"
+      ? "lvgl.label.update"
+      : targetWidget?.widget_type === "button" ? "lvgl.button.update" : "lvgl.widget.update";
+    action = { [actionName]: payload };
+  }
+
+  const condition = $("#widget-action-condition").value;
+  if (trigger === "on_value" && condition !== "always") {
+    action = {
+      if: {
+        condition: { lambda: condition === "checked" ? "return x;" : "return !x;" },
+        then: [action],
+      },
+    };
+  }
+
+  pushUndo();
+  widget.events ||= {};
+  if (!Array.isArray(widget.events[trigger])) {
+    widget.events[trigger] = widget.events[trigger] === undefined ? [] : [widget.events[trigger]];
+  }
+  widget.events[trigger].push(action);
+  markProjectDirty();
+  error.classList.add("hidden");
+  ["#widget-action-text", "#widget-action-bg-color", "#widget-action-text-color",
+    "#widget-action-border-color", "#widget-action-opacity"].forEach((selector) => { $(selector).value = ""; });
+  renderWidgetActions(widget);
+}
+
+function removeWidgetAction(widget, trigger, index) {
+  pushUndo();
+  const raw = widget.events?.[trigger];
+  if (Array.isArray(raw)) {
+    raw.splice(index, 1);
+    if (!raw.length) delete widget.events[trigger];
+  } else {
+    delete widget.events[trigger];
+  }
+  markProjectDirty();
+  renderWidgetActions(widget);
 }
 
 function runtimeTargets(widget) {
@@ -2924,7 +3156,9 @@ function renderLayoutSection(widget) {
 
 function propertyField(widget, property, index, targetKind) {
   const label = document.createElement("label");
-  label.textContent = property.label;
+  label.textContent = widget.widget_type === "button" && property.key === "checkable"
+    ? "Einrastfunktion (Schalter)"
+    : property.label;
   const target = propertyTarget(widget, property, false, targetKind);
   const value = target?.[property.key];
   const control = propertyControl(property, value, index);
@@ -2963,12 +3197,36 @@ function propertyTarget(widget, property, create, kind = property.category) {
 function renderStateChoices() {
   const select = $("#style-state");
   select.replaceChildren(new Option("Normal", ""));
-  state.states.forEach((name) => select.append(new Option(name, name)));
+  const labels = {
+    checked: "Eingerastet (checked)",
+    pressed: "Gedrückt (pressed)",
+    disabled: "Deaktiviert (disabled)",
+    focused: "Fokussiert (focused)",
+    edited: "Bearbeitet (edited)",
+    scrolled: "Gescrollt (scrolled)",
+  };
+  state.states.forEach((name) => select.append(new Option(labels[name] || name, name)));
   select.value = state.activeState;
+
+  const hint = $("#style-state-hint");
+  const widget = state.selectedWidget;
+  if (!hint) return;
+  if (widget?.widget_type !== "button") {
+    hint.textContent = "Der gewählte LVGL-Zustand wird direkt auf der Zeichenfläche angezeigt.";
+  } else if (state.activeState === "pressed") {
+    hint.textContent = "Dieser Stil gilt nur, solange der Button gedrückt wird.";
+  } else if (state.activeState === "checked") {
+    hint.textContent = widget.properties?.checkable
+      ? "Dieser Stil gilt, wenn der Button eingerastet ist. Ein weiterer Klick schaltet zurück."
+      : "Für diesen Stil zusätzlich „Einrastfunktion (Schalter)“ aktivieren.";
+  } else {
+    hint.textContent = "Normal ist der Grundstil. Für eine Tastfarbe „Gedrückt“, für eine Schaltfarbe „Eingerastet“ wählen.";
+  }
 }
 
 function changeActiveState() {
   state.activeState = $("#style-state").value;
+  renderCanvas();
   renderProperties();
 }
 
@@ -3336,7 +3594,10 @@ function updateSelectedWidget(event) {
   if (!widget) return;
   const key = event.target.id.replace("prop-", "");
   if (key === "id") {
-    widget.id = event.target.value;
+    const previousId = widget.id;
+    const nextId = event.target.value;
+    if (previousId !== nextId) replaceProjectWidgetReferences(previousId, nextId);
+    widget.id = nextId;
   } else if (["width", "height"].includes(key)) {
     widget[key] = Math.max(1, Number(event.target.value));
   } else if (key === "x" || key === "y") {
@@ -3362,7 +3623,55 @@ function updateSelectedWidget(event) {
   if (key === "id") {
     renderRuntimeBindingOrphans();
     renderRuntimeBinding(widget);
+    renderWidgetActions(widget);
   }
+}
+
+function replaceActionTargetReference(action, previousId, nextId) {
+  const entry = actionObjectEntry(action);
+  if (!entry) return;
+  const [name, payload] = entry;
+  if (name === "if" && payload && typeof payload === "object") {
+    [payload.then, payload.else].forEach((branch) => {
+      const actions = Array.isArray(branch) ? branch : branch ? [branch] : [];
+      actions.forEach((nested) => replaceActionTargetReference(nested, previousId, nextId));
+    });
+    return;
+  }
+  if (["lvgl.widget.show", "lvgl.widget.hide", "lvgl.page.show"].includes(name)) {
+    if (payload === previousId) action[name] = nextId;
+    else if (Array.isArray(payload)) {
+      action[name] = payload.map((item) => item === previousId ? nextId : item);
+    } else if (payload && typeof payload === "object") {
+      if (payload.id === previousId) payload.id = nextId;
+      else if (Array.isArray(payload.id)) {
+        payload.id = payload.id.map((item) => item === previousId ? nextId : item);
+      }
+    }
+    return;
+  }
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    if (payload.id === previousId) payload.id = nextId;
+    else if (Array.isArray(payload.id)) {
+      payload.id = payload.id.map((item) => item === previousId ? nextId : item);
+    }
+  }
+}
+
+function replaceProjectWidgetReferences(previousId, nextId) {
+  projectWidgetEntries().forEach((item) => {
+    if (item.align_to === previousId) item.align_to = nextId;
+    Object.values(item.events || {}).forEach((raw) => {
+      const actions = Array.isArray(raw) ? raw : [raw];
+      actions.forEach((action) => replaceActionTargetReference(action, previousId, nextId));
+    });
+  });
+  (state.project.glow_strokes || []).forEach((stroke) => {
+    if (stroke.parent_id === previousId) stroke.parent_id = nextId;
+  });
+  state.viewerBindings.forEach((binding) => {
+    if (binding.widget_id === previousId) binding.widget_id = nextId;
+  });
 }
 
 function deleteSelectedWidget() {

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Buttons besitzen jetzt einen grafischen Aktionseditor für Klick, Drücken,
+  Loslassen und Schalterzustände. Zielwidgets lassen sich damit im Editor
+  anzeigen, ausblenden oder zur Laufzeit in Text, Farbe, Rahmen und Deckkraft
+  verändern; der Browser-Viewer simuliert dieselben Aktionen und sicheren
+  Ein/Aus-Bedingungen.
+
+- Button-Zustandsfarben sind jetzt im Designer unmittelbar sichtbar: Die
+  Zustände `pressed` und `checked` haben verständliche deutsche Bezeichnungen
+  und Hilfetexte, die ausgewählte Zustandsfarbe wird direkt auf der
+  Zeichenfläche dargestellt und der Viewer kennzeichnet einrastende Buttons
+  barrierefrei mit `aria-pressed`.
+
 - Gap-closing pass against the real `p4_86_panel.yaml` fixture (a hand-written
   device config with a `theme:` block, an icon webfont, grid backgrounds and
   a time-literal animation duration - everything the importer/canvas had no

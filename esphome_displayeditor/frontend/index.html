@@ -168,6 +168,7 @@
             <label>Zustand
               <select id="style-state"><option value="">Normal</option></select>
             </label>
+            <p id="style-state-hint" class="hint">Der gewählte LVGL-Zustand wird direkt auf der Zeichenfläche angezeigt.</p>
             <label>Modus
               <select id="style-mode">
                 <option value="inline">Eigener Stil (inline)</option>
@@ -182,6 +183,59 @@
             </div>
 
             <div id="dynamic-properties"></div>
+
+            <div id="widget-actions-section" class="hidden">
+              <div class="property-section">Aktionen</div>
+              <p class="hint">Ändert andere Widgets beim Drücken, Loslassen oder Umschalten dieses Buttons.</p>
+              <div id="widget-action-list" class="widget-action-list"></div>
+              <div class="widget-action-builder">
+                <label>Auslöser
+                  <select id="widget-action-trigger">
+                    <option value="on_click">Klick</option>
+                    <option value="on_press">Drücken</option>
+                    <option value="on_release">Loslassen</option>
+                    <option value="on_value">Schalterzustand geändert</option>
+                  </select>
+                </label>
+                <label id="widget-action-condition-field" class="hidden">Bedingung
+                  <select id="widget-action-condition">
+                    <option value="always">Immer</option>
+                    <option value="checked">Wenn eingeschaltet</option>
+                    <option value="unchecked">Wenn ausgeschaltet</option>
+                  </select>
+                </label>
+                <label>Aktion
+                  <select id="widget-action-type">
+                    <option value="update">Stil oder Inhalt ändern</option>
+                    <option value="show">Widget anzeigen</option>
+                    <option value="hide">Widget ausblenden</option>
+                    <option value="page_show">Seite öffnen</option>
+                  </select>
+                </label>
+                <label>Ziel
+                  <select id="widget-action-target"></select>
+                </label>
+                <div id="widget-action-update-fields">
+                  <label id="widget-action-text-field">Text
+                    <input id="widget-action-text" maxlength="256" placeholder="unverändert">
+                  </label>
+                  <label>Hintergrundfarbe
+                    <input id="widget-action-bg-color" maxlength="32" placeholder="z. B. 00A000 oder color_id">
+                  </label>
+                  <label>Textfarbe
+                    <input id="widget-action-text-color" maxlength="32" placeholder="z. B. FFFFFF oder color_id">
+                  </label>
+                  <label>Rahmenfarbe
+                    <input id="widget-action-border-color" maxlength="32" placeholder="unverändert">
+                  </label>
+                  <label>Deckkraft
+                    <input id="widget-action-opacity" maxlength="16" placeholder="z. B. 50% oder COVER">
+                  </label>
+                </div>
+                <p id="widget-action-error" class="widget-action-error hidden"></p>
+                <button id="add-widget-action" type="button" class="button primary compact">Aktion hinzufügen</button>
+              </div>
+            </div>
 
             <div id="runtime-binding-section" class="hidden">
               <div class="property-section">Live-Daten im Viewer</div>
