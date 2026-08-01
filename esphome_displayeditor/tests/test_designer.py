@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from backend.designer import DesignerService
 from backend.errors import ApiError
@@ -89,6 +90,36 @@ def test_project_exports_esphome_yaml(tmp_path: Path) -> None:
     assert "lvgl:" in result["yaml"]
     assert "button_1" in result["yaml"]
     assert "0x20C7B7" in result["yaml"]
+
+
+def test_legacy_button_text_with_children_is_exported_as_child_label(tmp_path: Path) -> None:
+    project = project_with_button()
+    project["widgets"][0]["properties"]["checkable"] = True
+    project["widgets"][0]["children"] = [{
+        "id": "picture",
+        "widget_type": "image",
+        "width": 64,
+        "height": 64,
+        "properties": {"src": "button_normal"},
+        "children": [],
+    }]
+
+    result = DesignerService(tmp_path).export_yaml(project)
+
+    button = yaml.safe_load(result["yaml"])["lvgl"]["widgets"][0]["button"]
+    assert "text" not in button
+    assert button["widgets"] == [
+        {"image": {"id": "picture", "width": 64, "height": 64, "src": "button_normal"}},
+        {"label": {"align": "CENTER", "text": "Light"}},
+    ]
+    assert any(
+        issue["severity"] == "C"
+        and issue["widget_id"] == "button_1"
+        and "child label" in issue["message"]
+        for issue in result["issues"]
+    )
+    # The compatibility guard must not mutate the saved project payload.
+    assert project["widgets"][0]["properties"]["text"] == "Light"
 
 
 def test_font_glyphs_are_auto_collected_from_widget_text(tmp_path: Path) -> None:

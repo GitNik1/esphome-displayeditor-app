@@ -2,10 +2,21 @@
 
 ## Unreleased
 
-## 0.13.0
+## 0.14.0
 
-- Began the next feature cycle for an ESPHome-compatible LVGL image button
-  built from an official `button` with child `image`/`label` widgets.
+- Added an ESPHome-compatible Bild-Button palette preset built from the
+  officially supported `button` with child `image` and `label` widgets. Its
+  focused property editor configures normal, pressed and checked images and
+  emits literal `lvgl.image.update` actions; checked images enable the
+  button's `checkable` state.
+- Added graphical `src` updates for image targets to the generic button action
+  editor and browser Viewer, including live press/release/toggle simulation.
+  Image and label children pass Viewer pointer hit-testing through to their
+  parent button so its interaction is not hidden by its own content.
+- Prevented invalid ESPHome output containing both button `text:` and
+  `widgets:`. Adding or reparenting a child migrates shorthand text to an
+  explicit label child, while the exporter also repairs older saved projects
+  defensively without losing their text.
 
 ## 0.12.0
 

@@ -114,6 +114,29 @@ assert.deepEqual(effectiveViewerStyle(colorButtonProject, colorButton, "checked"
   bg_color: "00A000", text_color: "FFFFFF",
 });
 
+const imageButtonProject = {
+  images: [
+    { id: "button_normal", file_path: "normal.png" },
+    { id: "button_pressed", file_path: "pressed.png" },
+  ],
+  widgets: [{
+    id: "image_button", widget_type: "button", properties: { checkable: false },
+    children: [{
+      id: "image_button_image", widget_type: "image",
+      properties: { src: "button_normal" }, children: [],
+    }],
+  }],
+};
+assert.equal(applyViewerAction(imageButtonProject, {
+  "lvgl.image.update": { id: "image_button_image", src: "button_pressed" },
+}).changed, true);
+assert.equal(imageButtonProject.widgets[0].children[0].properties.src, "button_pressed");
+const wrongImageUpdate = applyViewerAction(imageButtonProject, {
+  "lvgl.image.update": { id: "image_button", src: "button_normal" },
+});
+assert.equal(wrongImageUpdate.changed, false);
+assert.equal(wrongImageUpdate.warning, true);
+
 assert.equal(applyViewerAction(project, { "lvgl.widget.hide": ["panel"] }).changed, true);
 assert.equal(project.widgets[0].hidden, true);
 assert.equal(applyViewerAction(project, { "lvgl.widget.show": "panel" }).changed, true);

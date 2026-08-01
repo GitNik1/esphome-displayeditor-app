@@ -20,3 +20,32 @@ runtime project. Only a fixed set of literal LVGL show/hide/update actions is
 accepted; every unsupported automation is skipped and shown in its event log.
 ESPHome `pages`, `page_wrap`, `skip`, `top_layer` and `bottom_layer` are
 preserved structurally and can be navigated without leaving the Viewer.
+
+The Designer palette also provides an ESPHome-compatible **Bild-Button**
+preset. It creates the official LVGL composition of a `button` with child
+`image` and `label` widgets; it never exports a non-existent `imagebutton`
+YAML type. Its property section selects the normal, pressed and checked image
+and generates literal `lvgl.image.update` actions for `on_press`, `on_release`
+and `on_value`. A checked image automatically enables `checkable`. Existing
+button shorthand text is migrated to a label child as soon as the button gets
+children, because ESPHome does not allow `text:` together with `widgets:`.
+
+```yaml
+- button:
+    id: image_button_1
+    checkable: true
+    widgets:
+      - image:
+          id: image_button_1_image
+          src: button_off
+      - label:
+          text: Licht
+    on_value:
+      - if:
+          condition:
+            lambda: return x;
+          then:
+            - lvgl.image.update:
+                id: image_button_1_image
+                src: button_on
+```
