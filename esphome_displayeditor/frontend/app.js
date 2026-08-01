@@ -2107,7 +2107,7 @@ function ensureImageEntry(id, filePath) {
   let entry = state.project.images.find((img) => img.id === id);
   if (!entry) {
     entry = { id, file_path: filePath, resize: "", dither: "", transparency: "opaque",
-             external: true, extra: {} };
+             img_type: "", external: true, extra: {} };
     state.project.images.push(entry);
   } else {
     entry.file_path = filePath;
@@ -3392,7 +3392,47 @@ function propertyField(widget, property, index, targetKind) {
   return label;
 }
 
+// ESPHome's `image: type:` values - the colour format a PNG gets converted
+// to. There is no per-image-entry editor anywhere else in the app (resize/
+// dither/transparency aren't editable either), so this rides along with
+// whatever control already lets you pick the image itself.
+const IMAGE_TYPE_OPTIONS = [
+  ["", "— Standard —"],
+  ["BINARY", "BINARY"],
+  ["TRANSPARENT_BINARY", "TRANSPARENT_BINARY"],
+  ["GRAYSCALE", "GRAYSCALE"],
+  ["RGB565", "RGB565"],
+  ["RGB", "RGB"],
+  ["RGBA", "RGBA"],
+];
+
 function appendPropertyControl(label, control, property) {
+  if (property.kind === "image_ref") {
+    const row = document.createElement("div");
+    row.className = "image-ref-row";
+    row.append(control);
+    const format = document.createElement("select");
+    format.className = "image-ref-format";
+    format.title = "Bildformat (type:)";
+    IMAGE_TYPE_OPTIONS.forEach(([value, text]) => format.append(new Option(text, value)));
+    const syncFormat = () => {
+      const entry = imageEntry(control.value);
+      format.disabled = !entry;
+      format.value = entry ? (entry.img_type || "") : "";
+    };
+    syncFormat();
+    control.addEventListener("change", syncFormat);
+    format.addEventListener("change", () => {
+      const entry = imageEntry(control.value);
+      if (!entry) return;
+      pushUndo();
+      entry.img_type = format.value;
+      markProjectDirty();
+    });
+    row.append(format);
+    label.append(row);
+    return;
+  }
   if (property.kind !== "color") {
     label.append(control);
     return;
@@ -3716,7 +3756,7 @@ function addImageSource() {
   let id = `img_${slug}`;
   let counter = 2;
   while (imageEntry(id)) id = `img_${slug}_${counter++}`;
-  imageLibrary().push({ id, file_path: url, resize: "", dither: "", transparency: "opaque" });
+  imageLibrary().push({ id, file_path: url, resize: "", dither: "", transparency: "opaque", img_type: "" });
   return id;
 }
 

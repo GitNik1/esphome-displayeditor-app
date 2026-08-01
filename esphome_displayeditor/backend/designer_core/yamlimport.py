@@ -352,10 +352,11 @@ def _import_images(doc: dict[str, Any], issues: list[ImportIssue]) -> list[Image
         entry.resize = str(raw.get("resize", ""))
         entry.dither = str(raw.get("dither", ""))
         entry.transparency = str(raw.get("transparency", "opaque"))
+        entry.img_type = str(raw.get("type", ""))
         entry.external = True
         entry.extra = {k: v for k, v in raw.items()
                        if k not in {"id", "file", "resize", "dither", "transparency",
-                                    "platform"}}
+                                    "type", "platform"}}
         if entry.extra:
             issues.append(ImportIssue(
                 "C", f"Image '{entry.id}': keys {sorted(entry.extra)} preserved verbatim.",
@@ -397,16 +398,53 @@ def _import_fonts(doc: dict[str, Any], issues: list[ImportIssue]) -> list[FontLi
     return entries
 
 
-def _import_colors(doc: dict[str, Any]) -> list[ColorLibraryEntry]:
+def _parse_color_channel(value: Any) -> int:
+    """ESPHome's ``PERCENTAGE`` type for red/green/blue/white: a ``"83%"``
+    string, or a bare fraction like ``0.83``."""
+    if isinstance(value, str) and value.strip().endswith("%"):
+        try:
+            return round(clamp01(float(value.strip()[:-1]) / 100) * 255)
+        except ValueError:
+            return 0
+    try:
+        fraction = float(value)
+    except (TypeError, ValueError):
+        return 0
+    return round(clamp01(fraction) * 255)
+
+
+def clamp01(value: float) -> float:
+    return min(1.0, max(0.0, value))
+
+
+def _import_colors(doc: dict[str, Any], issues: list[ImportIssue]) -> list[ColorLibraryEntry]:
     entries = []
-    for raw in doc.get("color") or []:
+    for index, raw in enumerate(doc.get("color") or []):
         if not isinstance(raw, dict):
             continue
-        value = raw.get("hex", "FFFFFF")
-        # An unquoted six-digit hex reads back as an int, exactly like a colour.
-        if isinstance(value, int):
+        color_id = str(raw.get("id", ""))
+        value = raw.get("hex")
+        if value is None and any(key in raw for key in ("red", "green", "blue", "white")):
+            # ESPHome's `color:` also accepts red/green/blue(/white) instead
+            # of `hex:`. The model only stores a plain RGB hex, so this is
+            # converted rather than lost outright (the old behaviour: no
+            # `hex:` key meant a silent fallback to white, "FFFFFF"). `white`
+            # has no RGB-hex equivalent and is dropped - that loss is real,
+            # just far better than losing the whole colour.
+            red = _parse_color_channel(raw.get("red", 0))
+            green = _parse_color_channel(raw.get("green", 0))
+            blue = _parse_color_channel(raw.get("blue", 0))
+            value = f"{red:02X}{green:02X}{blue:02X}"
+            if "white" in raw:
+                issues.append(ImportIssue(
+                    "C", f"Color '{color_id}': white channel has no RGB-hex "
+                    "equivalent here and was dropped.", f"color[{index}]", color_id))
+        elif isinstance(value, int):
+            # An unquoted six-digit hex reads back as an int, exactly like a colour.
             value = f"{value:06X}"
-        entries.append(ColorLibraryEntry(id=str(raw.get("id", "")), hex=str(value).upper()))
+        elif value is None:
+            value = "FFFFFF"
+        entries.append(ColorLibraryEntry(id=color_id, hex=str(value).upper()))
     return entries
 
 
@@ -507,7 +545,7 @@ def import_esphome_yaml(text: str, *, source_name: str = "",
 
     project.images = _import_images(doc, issues)
     project.fonts = _import_fonts(doc, issues)
-    project.colors = _import_colors(doc)
+    project.colors = _import_colors(doc, issues)
     project.styles = _import_styles(lvgl, issues)
     for entry in [*project.styles, *project.fonts, *project.images, *project.colors]:
         if entry.id:

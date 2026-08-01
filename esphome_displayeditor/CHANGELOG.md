@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Fixed: a `color:` entry defined via `red`/`green`/`blue` percentages
+  instead of `hex:` (both are valid ESPHome syntax) used to import as plain
+  white - `_import_colors` only ever read `hex:` and silently defaulted to
+  `FFFFFF` otherwise, losing the colour entirely. RGB components are now
+  converted to an equivalent hex value. A `white` channel has no RGB-hex
+  equivalent in this model and is still dropped, but now with an import
+  notice instead of silently.
+
+- Image entries' `type:` (ESPHome's colour format - `RGB565`, `RGBA`, ...)
+  is now a modeled, editable field instead of an opaque preserved key. A
+  "Bildformat" dropdown appears next to any image picker in the properties
+  panel; picking an image and setting its format edits the shared library
+  entry directly, so it applies everywhere that image is referenced. Fixes
+  the last remaining "preserved but not editable" gap for images from
+  `p4_86_panel.yaml`-style imports - all 13 of that fixture's images used
+  to be flagged as having an unmodeled key.
+
 - Horizontale und vertikale LVGL-Farbverläufe werden jetzt auch auf der
   Designer-Zeichenfläche dargestellt, einschließlich Farb-IDs und Deckkraft.
 

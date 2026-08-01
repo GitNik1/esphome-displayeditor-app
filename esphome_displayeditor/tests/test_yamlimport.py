@@ -198,6 +198,53 @@ def test_colors_are_converted_back_from_integers(imported) -> None:
     assert imported.project.find_widget("left_menu").style_tree["bg_color"] == "181D23"
 
 
+@pytest.mark.parametrize("channel_value, expected", [
+    ("100%", 255),
+    ("50%", 128),
+    ("0%", 0),
+    (1.0, 255),
+    (0.5, 128),
+    (0, 0),
+    ("not_a_number%", 0),
+])
+def test_parse_color_channel(channel_value, expected) -> None:
+    from backend.designer_core.yamlimport import _parse_color_channel
+    assert _parse_color_channel(channel_value) == expected
+
+
+def test_import_colors_prefers_hex_when_present() -> None:
+    from backend.designer_core.yamlimport import _import_colors
+    doc = {"color": [{"id": "status_green", "hex": "55DD88", "red": "0%"}]}
+    colors = _import_colors(doc, [])
+    assert colors[0].hex == "55DD88"
+
+
+def test_import_colors_converts_rgb_components_to_hex() -> None:
+    """ESPHome's `color:` also accepts red/green/blue instead of `hex:` - the
+    model only stores a plain RGB hex, so this used to silently fall back to
+    "FFFFFF" (losing the colour entirely) whenever `hex:` was absent."""
+    from backend.designer_core.yamlimport import _import_colors
+    doc = {"color": [{"id": "status_green", "red": "0%", "green": "87%", "blue": "53%"}]}
+    colors = _import_colors(doc, [])
+    assert colors[0].id == "status_green"
+    assert colors[0].hex == "00DE87"
+
+
+def test_import_colors_flags_dropped_white_channel() -> None:
+    from backend.designer_core.yamlimport import _import_colors
+    doc = {"color": [{"id": "warm_white", "red": "100%", "green": "100%",
+                       "blue": "100%", "white": "100%"}]}
+    issues = []
+    _import_colors(doc, issues)
+    assert any("white" in issue.message and issue.widget_id == "warm_white" for issue in issues)
+
+
+def test_import_colors_without_hex_or_components_defaults_to_white() -> None:
+    from backend.designer_core.yamlimport import _import_colors
+    colors = _import_colors({"color": [{"id": "mystery"}]}, [])
+    assert colors[0].hex == "FFFFFF"
+
+
 def test_percentage_sizes_stay_strings(imported) -> None:
     node = imported.project.find_widget("button_home")
 
@@ -224,8 +271,8 @@ def test_assets_are_marked_external_and_keep_their_paths(imported) -> None:
     assert len(images) == 13
     assert images["top_bg"].file_path == "images/topbg.png"
     assert all(i.external for i in images.values())
-    # `type: RGB565` has no model field; it must survive anyway.
-    assert images["top_bg"].extra == {"type": "RGB565"}
+    assert images["top_bg"].img_type == "RGB565"
+    assert images["top_bg"].extra == {}
 
     font = imported.project.fonts[0]
     assert font.id == "icons_44"

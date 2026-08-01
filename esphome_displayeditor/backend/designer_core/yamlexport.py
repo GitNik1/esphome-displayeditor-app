@@ -350,6 +350,8 @@ def build_image_block(project: Project, assets_dir: str,
             entry["dither"] = img.dither
         if img.transparency and img.transparency != "opaque":
             entry["transparency"] = img.transparency
+        if img.img_type:
+            entry["type"] = img.img_type
         entry.update({k: v for k, v in img.extra.items() if k not in entry})
         entries.append(entry)
 
