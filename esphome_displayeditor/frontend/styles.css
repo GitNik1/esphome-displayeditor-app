@@ -230,6 +230,13 @@ input:focus { border-color: var(--accent); }
 .background-bar { border-bottom: 1px solid var(--line); background: #0e1722; }
 .background-bar > summary { padding: 8px 14px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
 .background-bar > summary:hover { color: var(--text); }
+
+.theme-editor-details { margin-top: 10px; border-top: 1px solid var(--line); }
+.theme-editor-details > summary { padding: 8px 9px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
+.theme-editor-details > summary:hover { color: var(--text); }
+.theme-editor { display: flex; flex-direction: column; gap: 8px; padding: 0 9px 12px; }
+.theme-editor label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+.theme-editor .property-section { margin-top: 4px; color: var(--muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
 .background-fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 0 14px 12px; }
 .background-fields label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
 .background-fields label.grow { flex: 1 1 240px; }

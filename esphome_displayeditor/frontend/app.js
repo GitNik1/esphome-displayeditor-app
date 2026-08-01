@@ -16,6 +16,10 @@ import {
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
+// Mirrors backend/designer_core/model.py's STATES_KEY - both sides need
+// the exact same key name for a widget/theme's per-state style overrides.
+const STATES_KEY = "states";
+
 // Maps each widget to its live canvas DOM node, so a drag/resize can update
 // descendant boxes (children, layout-dependent siblings) without recreating
 // any node - recreating the dragged/resized node mid-gesture would drop its
@@ -55,6 +59,11 @@ const state = {
   states: [],
   // Which LVGL state the style controls currently edit. "" is the base style.
   activeState: "",
+  // Theme editor: which widget type/state it's currently showing. Separate
+  // from activeState above, which belongs to the per-widget style editor -
+  // both panels can be visible at once and must not fight over one state.
+  themeType: "",
+  themeState: "",
   devices: [],
   selectedDevice: null,
   editingDevice: null,
@@ -615,6 +624,7 @@ function bindDesignerPaneSwitch() {
 
 function bindDesigner() {
   bindDesignerPaneSwitch();
+  bindThemeEditor();
   viewer = new ViewerController({
     dialog: $("#viewer-dialog"),
     stage: $("#viewer-stage"),
@@ -1348,6 +1358,7 @@ function renderDesigner() {
   renderProperties();
   renderLineProperties();
   renderTree();
+  renderThemeEditor();
   renderDesignerStatus();
   updateUndoButtons();
 }
@@ -2220,6 +2231,16 @@ function renderWidget(item) {
     const color = String(effectiveStyle.bg_color).replace("#", "");
     if (/^[0-9a-f]{6}$/i.test(color)) node.style.backgroundColor = `#${color}`;
   }
+  const bgImageSource = displayableImageSource(effectiveStyle.bg_image_src);
+  if (bgImageSource) {
+    // `cover` is an approximation - LVGL's own bg_image scaling isn't
+    // modeled here, same "plausible, not pixel-exact" spirit as the rest
+    // of the layout engine. Falls back to bg_color alone if the URL 404s;
+    // a CSS background-image has no onerror hook to fall back further.
+    node.style.backgroundImage = `url("${bgImageSource}")`;
+    node.style.backgroundSize = "cover";
+    node.style.backgroundPosition = "center";
+  }
   node.style.fontFamily = resolvedFontFamily(effectiveStyle.text_font || state.project.default_font);
   const imageSource = widget.widget_type === "image"
     ? displayableImageSource(widget.properties.src)
@@ -2306,13 +2327,23 @@ function renderCanvasValueVisual(widget) {
 }
 
 function effectiveStyleTree(widget) {
-  if (widget.style_mode !== "named") return widget.style_tree || {};
-  const merged = {};
-  (widget.style_refs || []).forEach((ref) => {
-    const entry = styleLibrary().find((item) => item.id === ref);
-    if (entry) Object.assign(merged, entry.style_tree || {});
-  });
-  return merged;
+  const theme = (state.project.theme || {})[widget.widget_type] || {};
+  let ownTree;
+  if (widget.style_mode !== "named") {
+    ownTree = widget.style_tree || {};
+  } else {
+    ownTree = {};
+    (widget.style_refs || []).forEach((ref) => {
+      const entry = styleLibrary().find((item) => item.id === ref);
+      if (entry) Object.assign(ownTree, entry.style_tree || {});
+    });
+  }
+  // The theme is this type's default; the widget's own style (inline or
+  // named) overrides it key-by-key, same precedence ESPHome's LVGL
+  // component applies. `states` isn't merged deeper than this - the canvas
+  // preview doesn't simulate pressed/checked states at all (only the
+  // Viewer does, separately), so there is nothing here that reads it yet.
+  return { ...theme, ...ownTree };
 }
 
 function beginDrag(event, widget, node, box) {
@@ -2941,6 +2972,131 @@ function changeActiveState() {
   renderProperties();
 }
 
+// --- Theme editor -------------------------------------------------------
+//
+// `lvgl.theme:` sets a default style per widget TYPE (optionally per state),
+// applied to every widget of that type that doesn't override it - unlike
+// everything else in the properties panel, it isn't about the selected
+// widget at all, so it gets its own small, independent editor rather than
+// being squeezed into the per-widget style form.
+
+function themeLibrary() {
+  if (!state.project.theme || typeof state.project.theme !== "object") state.project.theme = {};
+  return state.project.theme;
+}
+
+function bindThemeEditor() {
+  $("#theme-type").addEventListener("change", () => {
+    state.themeType = $("#theme-type").value;
+    renderThemeEditor();
+  });
+  $("#theme-state").addEventListener("change", () => {
+    state.themeState = $("#theme-state").value;
+    renderThemeEditor();
+  });
+  $("#delete-theme-entry").addEventListener("click", () => {
+    const type = state.themeType;
+    if (!type || !themeLibrary()[type]) return;
+    pushUndo();
+    delete themeLibrary()[type];
+    markProjectDirty();
+    renderThemeEditor();
+  });
+}
+
+function renderThemeEditor() {
+  const typeSelect = $("#theme-type");
+  typeSelect.replaceChildren();
+  state.schemas.forEach((schema) => typeSelect.append(new Option(schema.label, schema.type_key)));
+  if (!state.themeType && state.schemas.length) state.themeType = state.schemas[0].type_key;
+  typeSelect.value = state.themeType;
+
+  const stateSelect = $("#theme-state");
+  stateSelect.replaceChildren(new Option("Normal", ""));
+  state.states.forEach((name) => stateSelect.append(new Option(name, name)));
+  stateSelect.value = state.themeState;
+
+  const schema = state.schemas.find((item) => item.type_key === state.themeType);
+  const entry = themeLibrary()[state.themeType];
+  $("#delete-theme-entry").disabled = !entry;
+  $("#theme-empty").classList.toggle("hidden", Boolean(entry));
+
+  const container = $("#theme-properties");
+  container.replaceChildren();
+  if (!schema) return;
+  const properties = schema.properties.filter((property) => property.category === "style");
+  let previousPart = null;
+  properties.forEach((property, index) => {
+    if (property.part !== previousPart) {
+      const heading = document.createElement("div");
+      heading.className = "property-section";
+      heading.textContent = property.part === "main" ? "Stil" : property.part;
+      container.append(heading);
+      previousPart = property.part;
+    }
+    const label = document.createElement("label");
+    label.textContent = property.label;
+    const target = themePropertyTarget(state.themeType, property, false);
+    const value = target?.[property.key];
+    const control = propertyControl(property, value, `theme-${index}`);
+    control.addEventListener("focus", pushUndo);
+    control.addEventListener("change", () => updateThemeProperty(property, control));
+    control.addEventListener("input", () => updateThemeProperty(property, control));
+    if (property.kind === "bool") label.className = "checkbox-field";
+    label.append(control);
+    container.append(label);
+  });
+}
+
+// Mirrors propertyTarget()'s state-routing (root.states[<state>]), but keyed
+// by widget TYPE against project.theme instead of by widget instance against
+// widget.style_tree.
+function themePropertyTarget(typeKey, property, create) {
+  if (!typeKey) return undefined;
+  const lib = themeLibrary();
+  if (!lib[typeKey] && create) lib[typeKey] = {};
+  let root = lib[typeKey];
+  if (!root) return undefined;
+  if (state.themeState) {
+    if (!root[STATES_KEY] && create) root[STATES_KEY] = {};
+    if (!root[STATES_KEY]?.[state.themeState] && create) root[STATES_KEY][state.themeState] = {};
+    root = root[STATES_KEY]?.[state.themeState];
+  }
+  if (!root) return undefined;
+  if (property.part === "main") return root;
+  if (!root[property.part] && create) root[property.part] = {};
+  return root[property.part];
+}
+
+function updateThemeProperty(property, control) {
+  const target = themePropertyTarget(state.themeType, property, true);
+  if (property.kind === "image_ref" && control.value === ADD_IMAGE_OPTION) {
+    pushUndo();
+    const id = addImageSource();
+    control.value = id || target[property.key] || "";
+    if (!id) return;
+    target[property.key] = id;
+    markProjectDirty();
+    renderDesigner();
+    return;
+  }
+
+  let value;
+  if (property.kind === "bool") value = control.checked;
+  else if (LIST_KINDS.includes(property.kind)) value = parseListValue(property, control.value);
+  else if (["int", "float"].includes(property.kind)) value = control.value === "" ? null : Number(control.value);
+  else value = control.value;
+
+  const clears = value === "" || value === null
+    || (Array.isArray(value) && value.length === 0);
+  if (clears) delete target[property.key];
+  else target[property.key] = value;
+
+  markProjectDirty();
+  renderCanvas();
+  renderThemeEditor();
+}
+
 function renderGridCellSection(widget) {
   const section = $("#grid-cell-section");
   const parent = findParent(state.project.widgets, widget);
@@ -3003,9 +3159,13 @@ const fontLoadState = new Map();
 function ensureFontLoaded(fontId) {
   if (!fontId || fontLoadState.has(fontId)) return;
   const entry = fontLibrary().find((font) => font.id === fontId);
-  if (!entry || !entry.file_path) return;
+  // A `font: file: {type: web, url: ...}` entry keeps its URL in web_url,
+  // not file_path (which stays empty for that source kind) - web_url is
+  // already a full http(s) URL, so it needs no assetUrl() resolution.
+  const source = entry?.file_path || entry?.web_url;
+  if (!source) return;
   fontLoadState.set(fontId, "loading");
-  const face = new FontFace(fontFamilyId(fontId), `url("${assetUrl(entry.file_path)}")`);
+  const face = new FontFace(fontFamilyId(fontId), `url("${assetUrl(source)}")`);
   face.load().then((loaded) => {
     document.fonts.add(loaded);
     fontLoadState.set(fontId, "loaded");

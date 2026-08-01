@@ -290,6 +290,15 @@ def build_font_block(project: Project) -> list[dict[str, Any]] | None:
             entry["file"] = f.file_path
         elif f.source_kind == "web":
             entry["file"] = {"type": "web", "url": f.web_url}
+            # yamlimport stashes any other file:-level keys (refresh:, etc.)
+            # in extra["file"] since they have no modeled field - merge them
+            # back in here. The generic top-level extra merge below would
+            # skip this entirely, since "file" is already a key of entry.
+            extra_file = f.extra.get("file")
+            if isinstance(extra_file, dict):
+                entry["file"].update(
+                    {k: v for k, v in extra_file.items() if k not in entry["file"]}
+                )
         if f.glyphs:
             entry["glyphs"] = f.glyphs
         if f.glyphsets:

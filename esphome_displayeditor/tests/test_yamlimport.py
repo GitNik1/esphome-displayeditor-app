@@ -18,7 +18,7 @@ import pytest
 import yaml
 
 from backend.designer_core.model import STATES_KEY, Project
-from backend.designer_core.yamlexport import export_project
+from backend.designer_core.yamlexport import build_font_block, export_project
 from backend.designer_core.yamlimport import (
     LvglImportError,
     import_esphome_yaml,
@@ -136,6 +136,51 @@ def test_theme_block_is_imported(imported) -> None:
 
     assert theme["button"]["radius"] == 8
     assert theme["button"][STATES_KEY]["pressed"]["bg_color"] == "3A4552"
+
+
+@pytest.mark.parametrize("literal, expected", [
+    ("500ms", 500),
+    ("1s", 1000),
+    ("2min", 120_000),
+    ("1h", 3_600_000),
+    ("1.5s", 1500),
+])
+def test_normalise_duration_parses_time_literals(literal: str, expected) -> None:
+    from backend.designer_core.yamlimport import _normalise_duration
+    assert _normalise_duration(literal) == expected
+
+
+@pytest.mark.parametrize("value", [500, "forever", "not_a_duration", None])
+def test_normalise_duration_leaves_non_time_literals_alone(value) -> None:
+    from backend.designer_core.yamlimport import _normalise_duration
+    assert _normalise_duration(value) == value
+
+
+def test_duration_time_literal_is_converted_to_milliseconds(imported) -> None:
+    """``duration: 500ms`` is a plain string to any YAML parser - ESPHome's
+    own time-literal shorthand, not a bare number. Left as a string, anything
+    expecting a number (a numeric property-panel input, a future validator)
+    would misbehave."""
+    node = imported.project.find_widget("sprinterbg_linie1_anim")
+
+    assert node.properties["duration"] == 500
+
+
+def test_web_font_reexports_its_preserved_file_level_keys(imported) -> None:
+    """`icons_44`'s `file: {type: web, url: ..., refresh: never}` has one
+    key (`refresh`) with no modeled field - it's stashed in extra["file"] on
+    import specifically so export can restore it, per model.py's own "kept
+    verbatim" comment. build_font_block's dict-merge used to skip it: `file`
+    was already a top-level key of the built entry, so the generic
+    extra-merge (`k not in entry`) never looked inside it."""
+    block = build_font_block(imported.project)
+    icons = next(entry for entry in block if entry["id"] == "icons_44")
+
+    assert icons["file"] == {
+        "type": "web",
+        "url": "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf",
+        "refresh": "never",
+    }
 
 
 def test_colors_are_converted_back_from_integers(imported) -> None:
@@ -302,8 +347,11 @@ def test_probe_reports_what_an_import_would_do(source_text: str) -> None:
 
 #: Differences the exporter introduces on purpose. ``align: TOP_LEFT`` is
 #: LVGL's default placement, so omitting it is semantically identical.
+#: ``duration: 500ms -> 500`` is the time-literal normalisation - a bare
+#: int is milliseconds to ESPHome, so `500` and `500ms` compile identically.
 ACCEPTED_DIFFS = {
     ".widgets[content_climate].obj.widgets[sprinterbg_linie1_anim].animimg.align",
+    ".widgets[content_climate].obj.widgets[sprinterbg_linie1_anim].animimg.duration: '500ms' -> 500",
 }
 
 

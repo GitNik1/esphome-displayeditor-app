@@ -37,6 +37,23 @@
           <div id="palette" class="palette"></div>
           <div class="tree-heading"><small>HIERARCHIE</small></div>
           <div id="widget-tree" class="widget-tree empty">Noch keine Widgets</div>
+
+          <details class="theme-editor-details">
+            <summary>Theme (Standardstil je Widget-Typ)</summary>
+            <div class="theme-editor">
+              <label>Widget-Typ
+                <select id="theme-type"></select>
+              </label>
+              <label>Zustand
+                <select id="theme-state"><option value="">Normal</option></select>
+              </label>
+              <div id="theme-properties"></div>
+              <p id="theme-empty" class="hint">Für diesen Widget-Typ ist noch kein Theme-Eintrag vorhanden.</p>
+              <div class="actions">
+                <button id="delete-theme-entry" type="button" class="button danger compact">Theme für diesen Typ löschen</button>
+              </div>
+            </div>
+          </details>
         </aside>
 
         <section class="workspace">

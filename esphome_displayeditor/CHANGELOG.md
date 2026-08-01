@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- Gap-closing pass against the real `p4_86_panel.yaml` fixture (a hand-written
+  device config with a `theme:` block, an icon webfont, grid backgrounds and
+  a time-literal animation duration - everything the importer/canvas had no
+  coverage for yet):
+  - Fixed: a `font:` entry with `file: {type: web, url: ...}` stores its URL
+    in `web_url`, not `file_path` (which stays empty for that source kind).
+    `ensureFontLoaded()` only ever checked `file_path`, so a webfont icon
+    button's custom glyphs silently never loaded - now `web_url` is accepted
+    too.
+  - Fixed: `bg_image_src` had a schema entry and a properties-panel field but
+    was never actually drawn - `renderWidget()` only ever applied
+    `bg_color`. Containers with a background image now show it (`cover`,
+    centered - an approximation, not pixel-exact LVGL scaling).
+  - Fixed: `lvgl.theme:` (a per-widget-type default style, optionally with
+    per-state overrides) imported/exported correctly already but had no
+    editor and, more importantly, was never applied to the canvas - a
+    themed widget with no style of its own rendered as if it had none at
+    all. New collapsible "Theme" panel (palette sidebar) edits a theme entry
+    per widget type/state; `effectiveStyleTree()` now merges the type's
+    theme under the widget's own style (own style wins key-by-key).
+  - Fixed: `duration: 500ms` (ESPHome's time-literal shorthand, also `1s`/
+    `2min`/`1h`) was stored as the literal string `"500ms"` instead of a
+    number of milliseconds. A small parser now converts known
+    duration-like keys (`duration`, `anim_time`, `anim_duration`) at import.
+  - Fixed: re-exporting an imported web font dropped its preserved
+    `refresh:` (and any other `file:`-level extra key) - `build_font_block`'s
+    dict-merge skipped it because `"file"` was already a top-level key of
+    the built entry, so the generic extra-merge never looked inside it.
+
 ## 0.11.0
 
 - Fixed the configuration sidebar so long file lists remain inside the

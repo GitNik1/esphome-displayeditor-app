@@ -138,6 +138,30 @@ def _normalise_color(value: Any) -> Any:
     return value
 
 
+#: Keys ESPHome accepts as a time literal (``500ms``, ``1s``, ``2min``) rather
+#: than a bare number of milliseconds - a handful of animation-timing fields,
+#: not every numeric key (``anim_speed`` is a px/sec rate, not a duration).
+_DURATION_KEYS = {"duration", "anim_time", "anim_duration"}
+_TIME_LITERAL = re.compile(r"^(\d+(?:\.\d+)?)\s*(ms|s|min|h)$", re.IGNORECASE)
+_TIME_UNIT_TO_MS = {"ms": 1, "s": 1000, "min": 60_000, "h": 3_600_000}
+
+
+def _normalise_duration(value: Any) -> Any:
+    """``duration: 500ms`` is a plain string to any YAML parser - ESPHome's
+    own time-literal shorthand, not a bare number. Converted to milliseconds
+    so a numeric UI control and re-export both see an int, the same way
+    ``_normalise_color`` turns a bare YAML int back into hex text."""
+    if not isinstance(value, str):
+        return value
+    match = _TIME_LITERAL.match(value.strip())
+    if not match:
+        return value
+    amount = float(match.group(1))
+    unit = match.group(2).lower()
+    milliseconds = amount * _TIME_UNIT_TO_MS[unit]
+    return int(milliseconds) if milliseconds.is_integer() else milliseconds
+
+
 def _normalise_style_values(tree: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in tree.items():
@@ -240,11 +264,21 @@ def _classify_widget_body(node: WidgetNode, body: dict[str, Any],
             continue
 
         if key in content_keys:
-            node.properties[key] = _normalise_color(value) if key.endswith("_color") else value
+            if key.endswith("_color"):
+                node.properties[key] = _normalise_color(value)
+            elif key in _DURATION_KEYS:
+                node.properties[key] = _normalise_duration(value)
+            else:
+                node.properties[key] = value
             continue
 
         if key in LVGL_STYLE_KEYS:
-            node.style_tree[key] = _normalise_color(value) if key.endswith("_color") else value
+            if key.endswith("_color"):
+                node.style_tree[key] = _normalise_color(value)
+            elif key in _DURATION_KEYS:
+                node.style_tree[key] = _normalise_duration(value)
+            else:
+                node.style_tree[key] = value
             continue
 
         issues.append(ImportIssue(
