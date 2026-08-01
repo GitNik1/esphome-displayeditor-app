@@ -8,6 +8,11 @@
   available desktop/mobile viewport and scroll independently below the fixed
   heading. The narrow layout no longer keeps the inactive Designer in the
   document flow or pushes the configuration view below the viewport.
+- Fixed the Designer grid row so wrapped toolbars no longer enlarge the
+  workspace beyond a short browser or Home Assistant Ingress viewport and
+  cut off its lower controls.
+- Frontend assets are revalidated and carry the app version in their entry
+  URLs so an update cannot leave an obsolete layout in the browser cache.
 - Added the first read-only browser Viewer: projects open in a full-screen,
   isolated preview using the same layout engine as the designer, with fit,
   zoom, rotation and reset controls. The viewer renders the eight currently

@@ -34,7 +34,13 @@ main { height: calc(100% - 109px); }
 .view { display: none; height: 100%; }
 .view.active { display: grid; }
 
-#designer { grid-template-columns: 220px minmax(420px, 1fr) 280px; }
+#designer {
+  min-height: 0;
+  grid-template-columns: 220px minmax(420px, 1fr) 280px;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+#designer > .panel, #designer > .workspace { min-height: 0; }
 .panel { min-width: 0; background: var(--surface); }
 /* Palette and hierarchy share the left column (as in the desktop app, where
    both are docked left). Each scrolls on its own so the hierarchy stays

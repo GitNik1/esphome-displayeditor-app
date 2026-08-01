@@ -247,6 +247,8 @@ def create_app(
         )
         if request.url.path.startswith("/api/v1/"):
             response.headers["Cache-Control"] = "no-store"
+        elif request.method == "GET":
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     @application.exception_handler(ApiError)
