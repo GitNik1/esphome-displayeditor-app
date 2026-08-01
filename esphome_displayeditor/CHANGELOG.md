@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Pages and LVGL top/bottom layers are now fully editable designer surfaces,
+  not Viewer-only structures. The workspace selector supports creating,
+  renaming, reordering and deleting pages, editing `skip`/`page_wrap`, page
+  layout/style/passthrough mappings, and using the normal canvas, hierarchy,
+  property, duplicate, delete and drag/drop tools for every surface. Edited
+  surfaces are folded back into `extra_lvgl` before validation, storage,
+  project download and YAML export while the synchronized desktop core stays
+  unchanged.
+
 ## 0.11.1
 
 - Reworked icon handling end to end:

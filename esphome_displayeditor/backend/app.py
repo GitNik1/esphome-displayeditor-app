@@ -1014,7 +1014,7 @@ def create_app(
         return {
             "valid": not any(issue["severity"] == "error" for issue in issues),
             "issues": issues,
-            "project": project.to_dict(),
+            "project": designer.project_payload(project),
         }
 
     @application.post("/api/v1/designer/projects/export-yaml")

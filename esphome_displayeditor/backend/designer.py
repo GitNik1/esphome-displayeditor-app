@@ -18,7 +18,7 @@ from .designer_core.yamlimport import (
     import_esphome_yaml,
 )
 from .errors import ApiError
-from .page_support import materialize_surfaces, strip_empty_root_widgets
+from .page_support import apply_surface_payload, materialize_surfaces, strip_empty_root_widgets
 
 _ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -92,7 +92,7 @@ class DesignerService:
                 {"project_version": version, "supported_version": PROJECT_FORMAT_VERSION},
             )
         try:
-            project = Project.from_dict(payload)
+            project = Project.from_dict(apply_surface_payload(payload))
         except (TypeError, ValueError, KeyError) as exc:
             raise ApiError("invalid_project", "Project data is malformed.") from exc
         if not (1 <= project.canvas_width <= 4096 and 1 <= project.canvas_height <= 4096):

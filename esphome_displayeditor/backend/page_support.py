@@ -9,11 +9,13 @@ changing the shared core or the saved/exported source representation.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from .designer_core.idgen import IdRegistry
-from .designer_core.model import STYLE_PARTS, Project
+from .designer_core.model import STYLE_PARTS, Project, WidgetNode
 from .designer_core.widgetschema import LVGL_STYLE_KEYS, STATE_VALUES
+from .designer_core.yamlexport import ExportIssue, _merge_passthrough, _widget_dict, clean_style_dict
 from .designer_core.yamlimport import ImportIssue, _classify_style_dict, _import_widget
 
 _SURFACE_STRUCTURAL_KEYS = {"id", "widgets", "layout", "skip"}
@@ -83,6 +85,7 @@ def materialize_surfaces(project: Project,
         if surface is not None:
             pages.append({
                 "id": page_id,
+                "synthetic_id": not bool(page_raw.get("id")),
                 "skip": bool(page_raw.get("skip", False)),
                 **surface,
             })
@@ -116,6 +119,81 @@ def materialize_surfaces(project: Project,
         "has_top_layer": top_layer is not None,
         "has_bottom_layer": bottom_layer is not None,
     }
+
+
+def apply_surface_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fold editable add-on surfaces back into the core passthrough shape.
+
+    ``Project`` deliberately stays byte-compatible with the desktop project
+    and therefore does not own pages/layers.  The browser sends normalized
+    surfaces alongside the core payload; before ``Project.from_dict`` this
+    adapter serializes their widgets and styles back into ``extra_lvgl``.
+    Stored projects and exported YAML consequently contain the edited source
+    of truth instead of a browser-only sidecar.
+    """
+    if not any(key in payload for key in ("pages", "top_layer", "bottom_layer", "page_wrap")):
+        return payload
+
+    normalized = copy.deepcopy(payload)
+    extra_lvgl = dict(normalized.get("extra_lvgl") or {})
+    registry = IdRegistry()
+    export_issues: list[ExportIssue] = []
+
+    def widget_entries(nodes: Any) -> list[dict[str, Any]]:
+        result = []
+        for raw in nodes if isinstance(nodes, list) else []:
+            if not isinstance(raw, dict):
+                continue
+            node = WidgetNode.from_dict(raw)
+            result.append({node.widget_type: _widget_dict(node, registry, export_issues)})
+        return result
+
+    def surface_dict(surface: Any, *, page: bool = False) -> dict[str, Any] | None:
+        if not isinstance(surface, dict):
+            return None
+        result: dict[str, Any] = {}
+        if page and not surface.get("synthetic_id"):
+            result["id"] = str(surface.get("id", ""))
+        if page and surface.get("skip"):
+            result["skip"] = True
+        layout = surface.get("layout")
+        if isinstance(layout, dict) and layout:
+            result["layout"] = copy.deepcopy(layout)
+        style_tree = surface.get("style_tree")
+        if isinstance(style_tree, dict) and style_tree:
+            result.update(clean_style_dict(style_tree))
+        preserved = surface.get("extra")
+        if isinstance(preserved, dict):
+            _merge_passthrough(result, preserved, export_issues, str(surface.get("id", "surface")))
+        widgets = widget_entries(surface.get("widgets"))
+        if widgets:
+            result["widgets"] = widgets
+        else:
+            result["widgets"] = []
+        return result
+
+    raw_pages = normalized.get("pages")
+    pages = []
+    for entry in raw_pages if isinstance(raw_pages, list) else []:
+        converted = surface_dict(entry, page=True)
+        if converted is not None:
+            pages.append(converted)
+    if pages:
+        extra_lvgl["pages"] = pages
+        extra_lvgl["page_wrap"] = bool(normalized.get("page_wrap", True))
+    else:
+        extra_lvgl.pop("pages", None)
+        extra_lvgl.pop("page_wrap", None)
+
+    for payload_key, lvgl_key in (("bottom_layer", "bottom_layer"), ("top_layer", "top_layer")):
+        converted = surface_dict(normalized.get(payload_key))
+        if converted is None:
+            extra_lvgl.pop(lvgl_key, None)
+        else:
+            extra_lvgl[lvgl_key] = converted
+
+    normalized["extra_lvgl"] = extra_lvgl
+    return normalized
 
 
 def _walk_widget_dicts(widgets: list[dict[str, Any]]):

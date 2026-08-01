@@ -31,7 +31,7 @@ const STATES_KEY = "states";
 const canvasNodeByWidget = new Map();
 
 function syncCanvasLayout() {
-  const boxes = computeLayout(state.project);
+  const boxes = computeLayout(activeSurfaceProject());
   boxes.forEach((box, widget) => {
     const node = canvasNodeByWidget.get(widget);
     if (!node) return;
@@ -52,6 +52,7 @@ const state = {
   configurations: [],
   hasDraft: false,
   project: freshProject(),
+  activeSurface: "root",
   projectName: null,
   projectRevision: null,
   projectDirty: false,
@@ -129,6 +130,97 @@ function freshProject() {
     import_source: {},
     glow_strokes: [],
   };
+}
+
+function ensureProjectSurfaces() {
+  if (!Array.isArray(state.project.widgets)) state.project.widgets = [];
+  if (!Array.isArray(state.project.pages)) state.project.pages = [];
+  if (typeof state.project.page_wrap !== "boolean") state.project.page_wrap = true;
+  [state.project.top_layer, state.project.bottom_layer, ...state.project.pages].filter(Boolean).forEach((surface) => {
+    if (!Array.isArray(surface.widgets)) surface.widgets = [];
+    if (!surface.layout || typeof surface.layout !== "object" || Array.isArray(surface.layout)) surface.layout = {};
+    if (!surface.style_tree || typeof surface.style_tree !== "object" || Array.isArray(surface.style_tree)) surface.style_tree = {};
+    if (!surface.extra || typeof surface.extra !== "object" || Array.isArray(surface.extra)) surface.extra = {};
+  });
+}
+
+function surfaceEntries() {
+  ensureProjectSurfaces();
+  const entries = [];
+  const pages = state.project.pages;
+  if (!pages.length || state.project.widgets.length) {
+    entries.push({ key: "root", kind: "root", label: "Stammfläche", surface: state.project });
+  }
+  if (state.project.bottom_layer) {
+    entries.push({ key: "bottom", kind: "bottom", label: "Bottom-Layer", surface: state.project.bottom_layer });
+  }
+  pages.forEach((page, index) => entries.push({
+    key: `page:${page.id}`,
+    kind: "page",
+    label: `Seite ${index + 1}: ${page.id}${page.skip ? " (übersprungen)" : ""}`,
+    surface: page,
+    index,
+  }));
+  if (state.project.top_layer) {
+    entries.push({ key: "top", kind: "top", label: "Top-Layer", surface: state.project.top_layer });
+  }
+  return entries;
+}
+
+function normaliseActiveSurface() {
+  const entries = surfaceEntries();
+  if (!entries.some((entry) => entry.key === state.activeSurface)) {
+    state.activeSurface = entries.find((entry) => entry.kind === "page")?.key || entries[0]?.key || "root";
+  }
+  return entries.find((entry) => entry.key === state.activeSurface)
+    || { key: "root", kind: "root", label: "Stammfläche", surface: state.project };
+}
+
+function activeSurfaceEntry() {
+  return normaliseActiveSurface();
+}
+
+function activeWidgetRoots() {
+  return activeSurfaceEntry().surface.widgets;
+}
+
+function activeSurfaceProject() {
+  const entry = activeSurfaceEntry();
+  if (entry.kind === "root") return state.project;
+  return {
+    ...state.project,
+    widgets: entry.surface.widgets,
+    extra_lvgl: {
+      ...(state.project.extra_lvgl || {}),
+      ...(entry.surface.style_tree || {}),
+      layout: entry.surface.layout || {},
+    },
+  };
+}
+
+function allProjectWidgets() {
+  ensureProjectSurfaces();
+  const result = [];
+  const visit = (nodes) => (nodes || []).forEach((widget) => {
+    result.push(widget);
+    visit(widget.children || []);
+  });
+  visit(state.project.widgets);
+  state.project.pages.forEach((page) => visit(page.widgets));
+  visit(state.project.bottom_layer?.widgets);
+  visit(state.project.top_layer?.widgets);
+  return result;
+}
+
+function selectSurface(key) {
+  if (!surfaceEntries().some((entry) => entry.key === key)) return;
+  stopFlowPreview();
+  state.activeSurface = key;
+  state.selectedWidget = null;
+  state.selectedStroke = null;
+  state.drawingStroke = null;
+  state.canvasMode = "widgets";
+  renderDesigner();
 }
 
 function freshGlowStroke(id) {
@@ -725,6 +817,7 @@ function bindDesigner() {
     applyDesignerRuntimePreview();
   }, 1000);
   bindGlowTools();
+  bindSurfaceTools();
 
   $("#zoom-in").addEventListener("click", () => setZoom(state.zoom * 1.25));
   $("#zoom-out").addEventListener("click", () => setZoom(state.zoom / 1.25));
@@ -858,6 +951,7 @@ function newDesignerProject() {
   if (state.projectDirty && !confirm("Ungespeicherte Änderungen verwerfen?")) return;
   stopFlowPreview();
   state.project = freshProject();
+  state.activeSurface = "root";
   state.projectName = null;
   clearViewerBindings();
   state.projectRevision = null;
@@ -888,6 +982,7 @@ async function openDesignerProject(event) {
     if (!result.valid) throw new Error(result.issues.map((issue) => issue.message).join("\n"));
     stopFlowPreview();
     state.project = result.project;
+    state.activeSurface = result.project.pages?.[0] ? `page:${result.project.pages[0].id}` : "root";
     state.projectName = null;
     clearViewerBindings();
     state.projectRevision = null;
@@ -904,15 +999,23 @@ async function openDesignerProject(event) {
   }
 }
 
-function downloadDesignerProject() {
-  const blob = new Blob([JSON.stringify(state.project, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = normalizeProjectName($("#project-name").value);
-  link.click();
-  URL.revokeObjectURL(url);
-  toast("Projektdatei heruntergeladen.");
+async function downloadDesignerProject() {
+  try {
+    const result = await api("designer/projects/validate", {
+      method: "POST", body: JSON.stringify({ project: state.project }),
+    });
+    if (!result.valid) throw new Error(result.issues.map((issue) => issue.message).join("\n"));
+    const blob = new Blob([JSON.stringify(result.project, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = normalizeProjectName($("#project-name").value);
+    link.click();
+    URL.revokeObjectURL(url);
+    toast("Projektdatei heruntergeladen.");
+  } catch (error) {
+    toast(`Projekt konnte nicht heruntergeladen werden: ${error.message}`, true);
+  }
 }
 
 // --- Import an existing ESPHome configuration -------------------------------
@@ -1060,6 +1163,7 @@ async function runImport() {
     }
     stopFlowPreview();
     state.project = result.project;
+    state.activeSurface = result.project.pages?.[0] ? `page:${result.project.pages[0].id}` : "root";
     // An import is not "the saved project under this name" - it is a new,
     // unsaved document derived from a config we must never write back to.
     state.projectName = null;
@@ -1119,6 +1223,7 @@ async function loadSelectedServerProject() {
     const result = await api(`designer/projects/${encodeURIComponent(name)}`);
     stopFlowPreview();
     state.project = result.project;
+    state.activeSurface = result.project.pages?.[0] ? `page:${result.project.pages[0].id}` : "root";
     state.projectName = result.name;
     state.projectRevision = result.revision;
     await loadViewerBindings(result.name);
@@ -1215,6 +1320,7 @@ function undoDesignerChange() {
   const strokeId = state.selectedStroke?.id;
   state.redo.push(JSON.stringify(state.project));
   state.project = JSON.parse(state.undo.pop());
+  normaliseActiveSurface();
   reselectAfterHistoryChange(widgetId, strokeId);
   markProjectDirty();
   renderDesigner();
@@ -1226,6 +1332,7 @@ function redoDesignerChange() {
   const strokeId = state.selectedStroke?.id;
   state.undo.push(JSON.stringify(state.project));
   state.project = JSON.parse(state.redo.pop());
+  normaliseActiveSurface();
   reselectAfterHistoryChange(widgetId, strokeId);
   markProjectDirty();
   renderDesigner();
@@ -1282,7 +1389,7 @@ function renderPalette() {
   palette.append(glowButton);
 }
 
-function allWidgets(nodes = state.project.widgets) {
+function allWidgets(nodes = activeWidgetRoots()) {
   const result = [];
   const visit = (items) => items.forEach((widget) => {
     result.push(widget);
@@ -1297,7 +1404,7 @@ function addWidget(schema) {
   pushUndo();
   const idBase = schema.type_key === "container" ? "container" : schema.type_key;
   let number = 1;
-  const ids = new Set(allWidgets().map((widget) => widget.id));
+  const ids = new Set(allProjectWidgets().map((widget) => widget.id));
   while (ids.has(`${idBase}_${number}`)) number += 1;
   const properties = {};
   for (const property of schema.properties) {
@@ -1307,7 +1414,7 @@ function addWidget(schema) {
     ? state.schemas.find((item) => item.type_key === state.selectedWidget.widget_type)
     : null;
   const parent = parentSchema?.allows_children ? state.selectedWidget : null;
-  const target = parent ? parent.children : state.project.widgets;
+  const target = parent ? parent.children : activeWidgetRoots();
   const widget = {
     id: `${idBase}_${number}`,
     widget_type: schema.type_key,
@@ -1346,7 +1453,7 @@ function visualWidgets() {
   // The layout engine resolves grid/flex/align placement; a widget with no
   // computed box (an unknown parent arrangement) falls back to its raw
   // coordinates so it stays reachable rather than vanishing.
-  const boxes = computeLayout(state.project);
+  const boxes = computeLayout(activeSurfaceProject());
   return allWidgets().map((widget) => {
     const box = boxes.get(widget);
     return box
@@ -1364,7 +1471,197 @@ function visualWidgets() {
   });
 }
 
+function blankSurface() {
+  return { widgets: [], layout: {}, style_tree: {}, extra: {} };
+}
+
+function uniquePageId() {
+  const used = new Set([
+    ...allProjectWidgets().map((widget) => widget.id),
+    ...(state.project.pages || []).map((page) => page.id),
+    ...(state.project.colors || []).map((item) => item.id),
+    ...(state.project.fonts || []).map((item) => item.id),
+    ...(state.project.images || []).map((item) => item.id),
+    ...(state.project.styles || []).map((item) => item.id),
+  ]);
+  let number = 1;
+  while (used.has(`page_${number}`)) number += 1;
+  return `page_${number}`;
+}
+
+function addPage() {
+  ensureProjectSurfaces();
+  pushUndo();
+  const page = {
+    id: uniquePageId(),
+    synthetic_id: false,
+    skip: false,
+    ...blankSurface(),
+  };
+  if (!state.project.pages.length && state.project.widgets.length) {
+    page.widgets = state.project.widgets;
+    state.project.widgets = [];
+    toast("Widgets der Stammfläche wurden auf die erste Seite verschoben.");
+  }
+  state.project.pages.push(page);
+  state.activeSurface = `page:${page.id}`;
+  state.selectedWidget = null;
+  markProjectDirty();
+  renderDesigner();
+}
+
+function addLayer(kind) {
+  const property = kind === "top" ? "top_layer" : "bottom_layer";
+  if (!state.project[property]) {
+    pushUndo();
+    state.project[property] = blankSurface();
+    markProjectDirty();
+  }
+  selectSurface(kind);
+}
+
+function moveActivePage(delta) {
+  const entry = activeSurfaceEntry();
+  if (entry.kind !== "page") return;
+  const nextIndex = entry.index + delta;
+  if (nextIndex < 0 || nextIndex >= state.project.pages.length) return;
+  pushUndo();
+  const [page] = state.project.pages.splice(entry.index, 1);
+  state.project.pages.splice(nextIndex, 0, page);
+  markProjectDirty();
+  renderDesigner();
+}
+
+function deleteActiveSurface() {
+  const entry = activeSurfaceEntry();
+  if (entry.kind === "root") return;
+  const widgetCount = allWidgets(entry.surface.widgets).length;
+  if (!confirm(`${entry.label} entfernen?${widgetCount ? ` ${widgetCount} Widget(s) werden dabei entfernt.` : ""}`)) return;
+  pushUndo();
+  if (entry.kind === "page") {
+    const [removed] = state.project.pages.splice(entry.index, 1);
+    if (!state.project.pages.length && removed.widgets.length) {
+      state.project.widgets.push(...removed.widgets);
+      toast("Die letzte Seite wurde entfernt; ihre Widgets liegen wieder auf der Stammfläche.");
+    }
+  } else {
+    state.project[entry.kind === "top" ? "top_layer" : "bottom_layer"] = null;
+  }
+  state.activeSurface = state.project.pages[0] ? `page:${state.project.pages[0].id}` : "root";
+  state.selectedWidget = null;
+  markProjectDirty();
+  renderDesigner();
+}
+
+function parseSurfaceObject(control, label) {
+  let value;
+  try {
+    value = JSON.parse(control.value || "{}");
+  } catch (error) {
+    throw new Error(`${label}: ${error.message}`);
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} muss ein JSON-Objekt sein.`);
+  }
+  return value;
+}
+
+function pageIdIsUsed(id, currentPage) {
+  return (state.project.pages || []).some((page) => page !== currentPage && page.id === id)
+    || allProjectWidgets().some((widget) => widget.id === id)
+    || ["colors", "fonts", "images", "styles"].some((key) =>
+      (state.project[key] || []).some((item) => item.id === id));
+}
+
+function applySurfaceSettings() {
+  const entry = activeSurfaceEntry();
+  const errorNode = $("#surface-error");
+  try {
+    const layout = parseSurfaceObject($("#surface-layout-json"), "Layout");
+    const styleTree = parseSurfaceObject($("#surface-style-json"), "Stil");
+    const extra = parseSurfaceObject($("#surface-extra-json"), "Zusätzliche Schlüssel");
+    let nextId = "";
+    if (entry.kind === "page") {
+      nextId = $("#surface-id").value.trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(nextId)) {
+        throw new Error("Die Seiten-ID muss eine gültige ESPHome-ID sein.");
+      }
+      if (pageIdIsUsed(nextId, entry.surface)) throw new Error(`Die ID „${nextId}“ wird bereits verwendet.`);
+    }
+    pushUndo();
+    const previousId = entry.surface.id;
+    entry.surface.layout = layout;
+    entry.surface.style_tree = styleTree;
+    entry.surface.extra = extra;
+    if (entry.kind === "page" && nextId !== previousId) {
+      entry.surface.id = nextId;
+      entry.surface.synthetic_id = false;
+      replaceProjectWidgetReferences(previousId, nextId);
+      state.activeSurface = `page:${nextId}`;
+    }
+    errorNode.classList.add("hidden");
+    markProjectDirty();
+    renderDesigner();
+    toast("Seiten-/Layer-Einstellungen übernommen.");
+  } catch (error) {
+    errorNode.textContent = error.message;
+    errorNode.classList.remove("hidden");
+  }
+}
+
+function bindSurfaceTools() {
+  $("#surface-select").addEventListener("change", (event) => selectSurface(event.target.value));
+  $("#add-page").addEventListener("click", addPage);
+  $("#add-bottom-layer").addEventListener("click", () => addLayer("bottom"));
+  $("#add-top-layer").addEventListener("click", () => addLayer("top"));
+  $("#surface-up").addEventListener("click", () => moveActivePage(-1));
+  $("#surface-down").addEventListener("click", () => moveActivePage(1));
+  $("#delete-surface").addEventListener("click", deleteActiveSurface);
+  $("#page-wrap").addEventListener("change", (event) => {
+    pushUndo();
+    state.project.page_wrap = event.target.checked;
+    markProjectDirty();
+    renderDesigner();
+  });
+  $("#surface-skip").addEventListener("change", (event) => {
+    const entry = activeSurfaceEntry();
+    if (entry.kind !== "page") return;
+    pushUndo();
+    entry.surface.skip = event.target.checked;
+    markProjectDirty();
+    renderDesigner();
+  });
+  $("#apply-surface").addEventListener("click", applySurfaceSettings);
+}
+
+function renderSurfaceToolbar() {
+  const entries = surfaceEntries();
+  const entry = activeSurfaceEntry();
+  const select = $("#surface-select");
+  select.replaceChildren(...entries.map((item) => new Option(item.label, item.key)));
+  select.value = entry.key;
+  $("#add-bottom-layer").disabled = Boolean(state.project.bottom_layer);
+  $("#add-top-layer").disabled = Boolean(state.project.top_layer);
+  $("#surface-up").disabled = entry.kind !== "page" || entry.index === 0;
+  $("#surface-down").disabled = entry.kind !== "page" || entry.index === state.project.pages.length - 1;
+  $("#delete-surface").disabled = entry.kind === "root";
+  $("#surface-skip-field").classList.toggle("hidden", entry.kind !== "page");
+  $("#surface-skip").checked = Boolean(entry.surface.skip);
+  $("#page-wrap-field").classList.toggle("hidden", state.project.pages.length < 2);
+  $("#page-wrap").checked = state.project.page_wrap !== false;
+  $("#surface-id-field").classList.toggle("hidden", entry.kind !== "page");
+  $("#surface-settings").classList.toggle("hidden", entry.kind === "root");
+  $("#surface-id").value = entry.kind === "page" ? entry.surface.id : "";
+  $("#surface-layout-json").value = JSON.stringify(entry.surface.layout || {}, null, 2);
+  $("#surface-style-json").value = JSON.stringify(entry.surface.style_tree || {}, null, 2);
+  $("#surface-extra-json").value = JSON.stringify(entry.surface.extra || {}, null, 2);
+  $("#surface-error").classList.add("hidden");
+  $("#line-tool-group").classList.toggle("hidden", state.canvasMode !== "lines" || entry.kind !== "root");
+}
+
 function renderDesigner() {
+  normaliseActiveSurface();
+  renderSurfaceToolbar();
   renderCanvas();
   renderBackgroundFields();
   renderProperties();
@@ -1413,11 +1710,7 @@ function renderCanvas() {
 
   fontLibrary().forEach((font) => ensureFontLoaded(font.id));
 
-  const pageWidgetCount = (state.project.pages || [])
-    .reduce((count, page) => count + allWidgets(page.widgets || []).length, 0);
-  const layerWidgetCount = allWidgets(state.project.top_layer?.widgets || []).length
-    + allWidgets(state.project.bottom_layer?.widgets || []).length;
-  const totalWidgetCount = allWidgets().length + pageWidgetCount + layerWidgetCount;
+  const totalWidgetCount = allProjectWidgets().length;
   $("#widget-count").textContent = (state.project.pages || []).length
     ? `${state.project.pages.length} Seiten · ${totalWidgetCount} Widgets`
     : `${totalWidgetCount} Widgets`;
@@ -1444,6 +1737,13 @@ function renderCanvasBackground() {
     layer.style.backgroundImage = `url("${escaped}")`;
     layer.style.opacity = String(clamp(Number(background.opacity_in_editor ?? 40), 0, 100) / 100);
   }
+  const surfaceStyle = activeSurfaceEntry().kind === "root"
+    ? (state.project.extra_lvgl || {})
+    : (activeSurfaceEntry().surface.style_tree || {});
+  const surfaceColor = resolveViewerColor(state.project, surfaceStyle.bg_color);
+  const surfaceGradient = viewerGradientBackground(state.project, surfaceStyle);
+  if (surfaceColor) layer.style.backgroundColor = surfaceColor;
+  if (surfaceGradient) layer.style.backgroundImage = surfaceGradient;
   return layer;
 }
 
@@ -1575,6 +1875,10 @@ function uniqueStrokeId() {
 }
 
 function startNewLine() {
+  if (activeSurfaceEntry().kind !== "root") {
+    toast("Glow-Linien sind projektweit und können auf Seiten/Layern nicht bearbeitet werden.", true);
+    return;
+  }
   // Capture the intended parent before switching modes - entering lines mode
   // clears state.selectedWidget, the same way addWidget() reads it before
   // any mode change to decide which container a new widget nests under.
@@ -1791,6 +2095,11 @@ function renderGlowCanvas() {
     canvas.width = state.project.canvas.width;
     canvas.height = state.project.canvas.height;
   });
+  if (activeSurfaceEntry().kind !== "root") {
+    back.getContext("2d").clearRect(0, 0, back.width, back.height);
+    front.getContext("2d").clearRect(0, 0, front.width, front.height);
+    return;
+  }
   drawGlowFrame(0);
 }
 
@@ -3087,6 +3396,7 @@ function colorReferenceLocations(id, replacement = null) {
 
 function projectIdIsUsed(id, ignoredColorId = null) {
   if (projectWidgetEntries().some((entry) => entry.id === id)) return true;
+  if ((state.project.pages || []).some((page) => page.id === id)) return true;
   const libraries = [state.project.styles, state.project.fonts, state.project.images];
   if (libraries.some((entries) => (entries || []).some((entry) => entry.id === id))) return true;
   return colorLibrary().some((entry) => entry.id === id && entry.id !== ignoredColorId);
@@ -4435,8 +4745,11 @@ function updateThemeProperty(property, control) {
 
 function renderGridCellSection(widget) {
   const section = $("#grid-cell-section");
-  const parent = findParent(state.project.widgets, widget);
-  const parentLayout = parent ? parent.layout : (state.project.extra_lvgl || {}).layout;
+  const parent = findParent(activeWidgetRoots(), widget);
+  const entry = activeSurfaceEntry();
+  const parentLayout = parent
+    ? parent.layout
+    : entry.kind === "root" ? (state.project.extra_lvgl || {}).layout : entry.surface.layout;
   const isGridChild = String(parentLayout?.type || "").toUpperCase() === "GRID";
   section.classList.toggle("hidden", !isGridChild);
   if (!isGridChild) return;
@@ -4762,7 +5075,7 @@ function deleteSelectedWidget() {
   (state.project.glow_strokes || []).forEach((stroke) => {
     if (removedIds.has(stroke.parent_id)) stroke.parent_id = "";
   });
-  removeWidget(state.project.widgets, state.selectedWidget);
+  removeWidget(activeWidgetRoots(), state.selectedWidget);
   state.selectedWidget = null;
   markProjectDirty();
   renderDesigner();
@@ -4807,7 +5120,7 @@ function widgetAllowsChildren(widget) {
 }
 
 function cloneWidgetSubtree(widget) {
-  const usedIds = new Set(allWidgets().map((w) => w.id));
+  const usedIds = new Set(allProjectWidgets().map((w) => w.id));
   const assignIds = (node) => {
     let n = 1;
     let candidate = `${node.widget_type}_${n}`;
@@ -4823,7 +5136,7 @@ function cloneWidgetSubtree(widget) {
 
 function duplicateWidget(widget) {
   pushUndo();
-  const location = findWidgetLocation(state.project.widgets, widget);
+  const location = findWidgetLocation(activeWidgetRoots(), widget);
   if (!location) return;
   const clone = cloneWidgetSubtree(widget);
   location.array.splice(location.index + 1, 0, clone);
@@ -4911,23 +5224,24 @@ function performTreeDrop(dragged, target) {
   if (dragged.kind === "widget") {
     const draggedWidget = dragged.widget;
     if (target.kind === "widget" && allWidgets([draggedWidget]).includes(target.widget)) return; // no cycles
-    const from = findWidgetLocation(state.project.widgets, draggedWidget);
+    const roots = activeWidgetRoots();
+    const from = findWidgetLocation(roots, draggedWidget);
     if (!from) return;
     from.array.splice(from.index, 1);
 
     if (target.kind === "widget" && target.position === "into" && widgetAllowsChildren(target.widget)) {
       target.widget.children.push(draggedWidget);
     } else if (target.kind === "widget") {
-      const to = findWidgetLocation(state.project.widgets, target.widget);
-      const destArray = to ? to.array : state.project.widgets;
+      const to = findWidgetLocation(roots, target.widget);
+      const destArray = to ? to.array : roots;
       const destIndex = to ? (target.position === "before" ? to.index : to.index + 1) : destArray.length;
       destArray.splice(destIndex, 0, draggedWidget);
     } else if (target.kind === "stroke") {
       const containerId = target.stroke.parent_id;
       const container = containerId ? allWidgets().find((w) => w.id === containerId) : null;
-      (container ? container.children : state.project.widgets).push(draggedWidget);
+      (container ? container.children : roots).push(draggedWidget);
     } else {
-      state.project.widgets.push(draggedWidget);
+      roots.push(draggedWidget);
     }
     if (state.canvasMode !== "widgets") setCanvasMode("widgets");
     state.selectedWidget = draggedWidget;
@@ -4942,7 +5256,7 @@ function performTreeDrop(dragged, target) {
       draggedStroke.parent_id = target.widget.id;
       list.push(draggedStroke);
     } else if (target.kind === "widget") {
-      draggedStroke.parent_id = findParentContainerId(state.project.widgets, target.widget) || "";
+      draggedStroke.parent_id = findParentContainerId(activeWidgetRoots(), target.widget) || "";
       list.push(draggedStroke);
     } else if (target.kind === "stroke") {
       draggedStroke.parent_id = target.stroke.parent_id;
@@ -4972,7 +5286,7 @@ function renderTree() {
   const tree = $("#widget-tree");
   tree.replaceChildren();
   const widgets = allWidgets();
-  const strokes = state.project.glow_strokes || [];
+  const strokes = activeSurfaceEntry().kind === "root" ? (state.project.glow_strokes || []) : [];
   const hasSurfaces = Boolean(
     state.project.pages?.length || state.project.top_layer || state.project.bottom_layer,
   );
@@ -5055,8 +5369,6 @@ function renderTree() {
     appendNodes(widget.children || [], depth + 1);
     strokes.filter((stroke) => stroke.parent_id === widget.id).forEach((stroke) => appendStroke(stroke, depth + 1));
   });
-  appendNodes(state.project.widgets);
-
   const appendReadOnlyNodes = (nodes, depth = 1) => (nodes || []).forEach((widget) => {
     const item = document.createElement("div");
     item.className = "tree-item tree-readonly";
@@ -5064,29 +5376,39 @@ function renderTree() {
     const label = document.createElement("span");
     label.className = "tree-label";
     label.textContent = `${widget.id} · ${widget.widget_type}`;
-    label.title = "Seiten- und Layer-Widgets werden derzeit im Viewer dargestellt.";
+    label.title = "Arbeitsfläche auswählen, um dieses Widget zu bearbeiten.";
     item.append(label);
     tree.append(item);
     appendReadOnlyNodes(widget.children, depth + 1);
   });
-  const appendSurface = (title, surface, { skipped = false } = {}) => {
+  const appendSurface = (key, title, surface, { skipped = false } = {}) => {
     const header = document.createElement("div");
-    header.className = "tree-item tree-surface";
+    const active = state.activeSurface === key;
+    header.className = `tree-item tree-surface${active ? " active" : ""}`;
     const label = document.createElement("span");
     label.className = "tree-label";
     label.textContent = `${title}${skipped ? " · überspringen" : ""}`;
-    label.title = "Diese Struktur ist im Viewer verfügbar.";
+    label.title = active ? "Aktive Arbeitsfläche" : "Diese Arbeitsfläche bearbeiten";
+    label.addEventListener("click", () => selectSurface(key));
     header.append(label);
     tree.append(header);
-    appendReadOnlyNodes(surface?.widgets || []);
+    if (active) appendNodes(surface?.widgets || [], 1);
+    else appendReadOnlyNodes(surface?.widgets || []);
   };
-  if (state.project.bottom_layer) appendSurface("Bottom-Layer", state.project.bottom_layer);
-  (state.project.pages || []).forEach((page) => {
-    appendSurface(`Seite: ${page.id}`, page, { skipped: page.skip });
-  });
-  if (state.project.top_layer) appendSurface("Top-Layer", state.project.top_layer);
+  if (!hasSurfaces) {
+    appendNodes(state.project.widgets);
+  } else {
+    if (state.project.widgets.length) appendSurface("root", "Stammfläche", state.project);
+    if (state.project.bottom_layer) appendSurface("bottom", "Bottom-Layer", state.project.bottom_layer);
+    (state.project.pages || []).forEach((page) => {
+      appendSurface(`page:${page.id}`, `Seite: ${page.id}`, page, { skipped: page.skip });
+    });
+    if (state.project.top_layer) appendSurface("top", "Top-Layer", state.project.top_layer);
+  }
 
-  strokes.filter((stroke) => !stroke.parent_id).forEach((stroke) => appendStroke(stroke, 0));
+  if (activeSurfaceEntry().kind === "root") {
+    strokes.filter((stroke) => !stroke.parent_id).forEach((stroke) => appendStroke(stroke, 0));
+  }
 }
 
 function treeGlyph(widget, flag, iconHtml, title) {
