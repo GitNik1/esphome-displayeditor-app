@@ -45,7 +45,7 @@ main { height: calc(100% - 109px); }
 /* Palette and hierarchy share the left column (as in the desktop app, where
    both are docked left). Each scrolls on its own so the hierarchy stays
    reachable no matter how long the widget list gets. */
-.palette-panel { border-right: 1px solid var(--line); display: grid; grid-template-rows: auto auto auto minmax(80px, 1fr); min-height: 0; }
+.palette-panel { border-right: 1px solid var(--line); display: grid; grid-template-rows: auto auto auto minmax(80px, 1fr) auto auto; min-height: 0; overflow-y: auto; }
 .palette-panel .palette { overflow-y: auto; min-height: 0; }
 .palette-panel .widget-tree { overflow-y: auto; min-height: 0; }
 .properties-panel { border-left: 1px solid var(--line); overflow-y: auto; }
@@ -81,8 +81,9 @@ input:focus { border-color: var(--accent); }
 .canvas-widget[data-type="image"] { background: transparent; border-style: dashed; padding: 0; }
 .widget-image { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; }
 .canvas-widget { position: absolute; display: grid; place-items: center; min-width: 8px; min-height: 8px; border: 1px solid #44556a; border-radius: 4px; color: #f4f7fa; background: #263345; cursor: move; user-select: none; overflow: hidden; font-size: 13px; }
+.canvas-widget-text { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: pre-wrap; }
 .canvas-widget.selected { outline: 2px solid var(--accent-2); outline-offset: 2px; }
-.canvas-widget[data-type="label"] { color: #17202b; border-color: transparent; background: transparent !important; justify-content: start; }
+.canvas-widget[data-type="label"] { color: #17202b; border-color: transparent; background-color: transparent; justify-content: stretch; justify-items: stretch; }
 .canvas-widget[data-type="switch"] { border-radius: 999px; }
 .canvas-widget[data-type="slider"] { border-radius: 999px; height: 20px; }
 .resize-handle { position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; border: 2px solid #f5f7fa; background: var(--accent-2); cursor: nwse-resize; }
@@ -237,6 +238,22 @@ input:focus { border-color: var(--accent); }
 .theme-editor { display: flex; flex-direction: column; gap: 8px; padding: 0 9px 12px; }
 .theme-editor label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
 .theme-editor .property-section { margin-top: 4px; color: var(--muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+.color-library-details { border-top: 1px solid var(--line); }
+.color-library-details > summary { padding: 8px 9px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
+.color-library-details > summary:hover { color: var(--text); }
+.color-library { padding: 0 9px 12px; }
+.color-library-list { display: grid; gap: 6px; margin-bottom: 9px; }
+.color-library-empty { margin: 0; color: var(--muted); font-size: 11px; }
+.color-library-item { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto; gap: 6px; align-items: center; padding: 6px; border: 1px solid var(--line); border-radius: 7px; background: #0c1420; }
+.color-library-swatch { width: 22px; height: 22px; border: 1px solid #ffffff55; border-radius: 5px; }
+.color-library-name { min-width: 0; overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.color-library-name small { display: block; margin-top: 1px; letter-spacing: 0; }
+.color-library-form { padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #101a28; }
+.color-library-form label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 11px; }
+.color-library-form input { margin-top: 4px; }
+.color-input-row { display: grid; grid-template-columns: minmax(0, 1fr) 38px; gap: 6px; align-items: center; }
+.color-input-row input[type="color"] { width: 38px; height: 36px; margin-top: 5px; padding: 3px; cursor: pointer; }
+.color-library-form .color-input-row input[type="color"] { margin-top: 4px; }
 .background-fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 0 14px 12px; }
 .background-fields label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
 .background-fields label.grow { flex: 1 1 240px; }

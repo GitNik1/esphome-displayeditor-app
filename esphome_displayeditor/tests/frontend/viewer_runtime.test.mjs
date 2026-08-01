@@ -9,8 +9,11 @@ import {
   effectiveViewerStyle,
   entityMatchesRuntimeTarget,
   formatRuntimeValue,
+  resolveViewerColor,
   runtimeBindingHealth,
   viewerBarGeometry,
+  viewerGradientBackground,
+  viewerTextAlign,
 } from "../../frontend/viewer/viewer.js";
 
 const project = {
@@ -49,6 +52,29 @@ const clone = cloneViewerProject(project);
 clone.widgets[0].hidden = true;
 assert.equal(project.widgets[0].hidden, false, "Viewer clone must not mutate the editor project");
 
+assert.equal(viewerTextAlign("LEFT"), "left");
+assert.equal(viewerTextAlign("CENTER"), "center");
+assert.equal(viewerTextAlign("RIGHT"), "right");
+assert.equal(viewerTextAlign("AUTO"), "start");
+assert.equal(viewerTextAlign(""), "");
+assert.equal(
+  viewerGradientBackground(
+    { colors: [{ id: "gradient_end", hex: "0080FF" }] },
+    { bg_color: "102030", bg_grad_color: "gradient_end", bg_grad_dir: "HOR" },
+  ),
+  "linear-gradient(to right, #102030, #0080FF)",
+);
+assert.equal(
+  viewerGradientBackground({}, {
+    bg_color: "000000", bg_grad_color: "FFFFFF", bg_grad_dir: "VER", bg_opa: "50%",
+  }),
+  "linear-gradient(to bottom, rgba(0, 0, 0, 0.5), rgba(255, 255, 255, 0.5))",
+);
+assert.equal(
+  viewerGradientBackground({}, { bg_color: "000000", bg_grad_color: "FFFFFF", bg_grad_dir: "NONE" }),
+  "",
+);
+
 const toggle = project.widgets[0].children[2];
 assert.deepEqual(effectiveViewerStyle(project, toggle, "checked"), {
   bg_color: "555555",
@@ -76,6 +102,8 @@ const colorButtonProject = {
   }],
 };
 const colorButton = colorButtonProject.widgets[0];
+colorButtonProject.colors = [{ id: "status_green", hex: "00FF00" }];
+assert.equal(resolveViewerColor(colorButtonProject, "status_green"), "#00FF00");
 assert.deepEqual(effectiveViewerStyle(colorButtonProject, colorButton), {
   bg_color: "404040", text_color: "FFFFFF",
 });

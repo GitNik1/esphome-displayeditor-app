@@ -54,6 +54,30 @@
               </div>
             </div>
           </details>
+
+          <details class="color-library-details">
+            <summary>Farbbibliothek</summary>
+            <div class="color-library">
+              <div id="color-library-list" class="color-library-list"></div>
+              <form id="color-library-form" class="color-library-form">
+                <label>ID
+                  <input id="color-library-id" maxlength="63" pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="z. B. status_gruen">
+                </label>
+                <label>Farbe
+                  <div class="color-input-row">
+                    <input id="color-library-hex" maxlength="8" placeholder="RRGGBB">
+                    <input id="color-library-picker" type="color" value="#00a000" aria-label="Farbe auswählen">
+                  </div>
+                </label>
+                <p id="color-library-error" class="widget-action-error hidden"></p>
+                <div class="actions">
+                  <button id="save-color-library-entry" type="submit" class="button primary compact">Farbe hinzufügen</button>
+                  <button id="cancel-color-library-edit" type="button" class="button subtle compact hidden">Abbrechen</button>
+                </div>
+              </form>
+              <p id="color-library-export-hint" class="hint hidden">Importiertes Projekt: Neue Farb-IDs zusätzlich im <code>color:</code>-Block der Quellkonfiguration definieren.</p>
+            </div>
+          </details>
         </aside>
 
         <section class="workspace">
@@ -220,13 +244,22 @@
                     <input id="widget-action-text" maxlength="256" placeholder="unverändert">
                   </label>
                   <label>Hintergrundfarbe
-                    <input id="widget-action-bg-color" maxlength="32" placeholder="z. B. 00A000 oder color_id">
+                    <div class="color-input-row">
+                      <input id="widget-action-bg-color" list="project-color-options" maxlength="32" placeholder="z. B. 00A000 oder color_id">
+                      <input type="color" class="linked-color-picker" data-color-target="widget-action-bg-color" value="#00a000" aria-label="Hintergrundfarbe auswählen">
+                    </div>
                   </label>
                   <label>Textfarbe
-                    <input id="widget-action-text-color" maxlength="32" placeholder="z. B. FFFFFF oder color_id">
+                    <div class="color-input-row">
+                      <input id="widget-action-text-color" list="project-color-options" maxlength="32" placeholder="z. B. FFFFFF oder color_id">
+                      <input type="color" class="linked-color-picker" data-color-target="widget-action-text-color" value="#ffffff" aria-label="Textfarbe auswählen">
+                    </div>
                   </label>
                   <label>Rahmenfarbe
-                    <input id="widget-action-border-color" maxlength="32" placeholder="unverändert">
+                    <div class="color-input-row">
+                      <input id="widget-action-border-color" list="project-color-options" maxlength="32" placeholder="unverändert">
+                      <input type="color" class="linked-color-picker" data-color-target="widget-action-border-color" value="#ffffff" aria-label="Rahmenfarbe auswählen">
+                    </div>
                   </label>
                   <label>Deckkraft
                     <input id="widget-action-opacity" maxlength="16" placeholder="z. B. 50% oder COVER">
@@ -423,6 +456,8 @@
         <div class="system-card"><small>STATUS</small><h2>System und Fähigkeiten</h2><pre id="system-json">Wird geladen …</pre></div>
       </section>
     </main>
+
+    <datalist id="project-color-options"></datalist>
 
     <dialog id="import-dialog">
       <div class="dialog-heading"><h2>ESPHome-YAML importieren</h2><button id="close-import" class="icon-button">×</button></div>

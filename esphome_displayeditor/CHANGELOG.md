@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Horizontale und vertikale LVGL-Farbverläufe werden jetzt auch auf der
+  Designer-Zeichenfläche dargestellt, einschließlich Farb-IDs und Deckkraft.
+
+- Die Textausrichtung LEFT, CENTER, RIGHT und AUTO wird für Labels und
+  andere Textwidgets jetzt auch auf der Designer-Zeichenfläche korrekt über
+  die gesamte Widgetbreite dargestellt.
+
+- Der Designer besitzt jetzt eine Farbbibliothek mit ESPHome-ID, Hexfeld,
+  Farbwähler, Bearbeiten und Löschen. Alle dynamischen Farbfelder sowie die
+  Button-Aktionen bieten diese IDs zur Auswahl an; Umbenennen aktualisiert
+  Verwendungen und Löschen kann sie sicher durch den bisherigen Hexwert
+  ersetzen.
+
 - Buttons besitzen jetzt einen grafischen Aktionseditor für Klick, Drücken,
   Loslassen und Schalterzustände. Zielwidgets lassen sich damit im Editor
   anzeigen, ausblenden oder zur Laufzeit in Text, Farbe, Rahmen und Deckkraft

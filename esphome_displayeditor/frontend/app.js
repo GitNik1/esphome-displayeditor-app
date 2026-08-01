@@ -12,6 +12,8 @@ import {
   runtimeBindingHealth,
   runtimeBoolean,
   viewerBarGeometry,
+  viewerGradientBackground,
+  viewerTextAlign,
 } from "./viewer/viewer.js";
 
 const $ = (selector) => document.querySelector(selector);
@@ -65,6 +67,7 @@ const state = {
   // both panels can be visible at once and must not fight over one state.
   themeType: "",
   themeState: "",
+  editingColorId: null,
   devices: [],
   selectedDevice: null,
   editingDevice: null,
@@ -626,6 +629,7 @@ function bindDesignerPaneSwitch() {
 function bindDesigner() {
   bindDesignerPaneSwitch();
   bindThemeEditor();
+  bindColorLibrary();
   viewer = new ViewerController({
     dialog: $("#viewer-dialog"),
     stage: $("#viewer-stage"),
@@ -1364,6 +1368,7 @@ function renderDesigner() {
   renderLineProperties();
   renderTree();
   renderThemeEditor();
+  renderColorLibrary();
   renderDesignerStatus();
   updateUndoButtons();
 }
@@ -2240,8 +2245,12 @@ function renderWidget(item) {
   if (previewState) node.dataset.previewState = previewState;
   const backgroundColor = resolveViewerColor(state.project, effectiveStyle.bg_color);
   if (backgroundColor) node.style.backgroundColor = backgroundColor;
+  const gradientBackground = viewerGradientBackground(state.project, effectiveStyle);
+  if (gradientBackground) node.style.backgroundImage = gradientBackground;
   const textColor = resolveViewerColor(state.project, effectiveStyle.text_color);
   if (textColor) node.style.color = textColor;
+  const textAlign = viewerTextAlign(effectiveStyle.text_align);
+  if (textAlign) node.style.textAlign = textAlign;
   const bgImageSource = displayableImageSource(effectiveStyle.bg_image_src);
   if (bgImageSource) {
     // `cover` is an approximation - LVGL's own bg_image scaling isn't
@@ -2274,7 +2283,10 @@ function renderWidget(item) {
     });
     node.append(picture);
   } else {
-    node.textContent = widget.properties.text || widget.id;
+    const text = document.createElement("span");
+    text.className = "canvas-widget-text";
+    text.textContent = widget.properties.text || widget.id;
+    node.append(text);
   }
   node.addEventListener("pointerdown", (event) => beginDrag(event, widget, node, item));
   if (state.selectedWidget === widget && !widget.locked && !managed) {
@@ -2663,6 +2675,7 @@ function addWidgetAction() {
   error.classList.add("hidden");
   ["#widget-action-text", "#widget-action-bg-color", "#widget-action-text-color",
     "#widget-action-border-color", "#widget-action-opacity"].forEach((selector) => { $(selector).value = ""; });
+  syncLinkedColorPickers();
   renderWidgetActions(widget);
 }
 
@@ -2979,9 +2992,10 @@ async function cleanupRuntimeBindings() {
 }
 
 function setCanvasRuntimeText(node, text) {
-  let textNode = [...node.childNodes].find((child) => child.nodeType === Node.TEXT_NODE);
+  let textNode = node.querySelector(".canvas-widget-text");
   if (!textNode) {
-    textNode = document.createTextNode("");
+    textNode = document.createElement("span");
+    textNode.className = "canvas-widget-text";
     node.prepend(textNode);
   }
   textNode.textContent = text;
@@ -3029,6 +3043,214 @@ function toggleWidgetFlag(flag) {
   markProjectDirty();
   renderCanvas();
   renderTree();
+}
+
+// --- Project colour library ------------------------------------------
+
+function colorLibrary() {
+  if (!Array.isArray(state.project.colors)) state.project.colors = [];
+  return state.project.colors;
+}
+
+function normaliseLibraryHex(value) {
+  const raw = String(value || "").trim().replace(/^#/, "").replace(/^0x/i, "");
+  if (/^[0-9a-f]{3}$/i.test(raw)) {
+    return raw.split("").map((character) => character + character).join("").toUpperCase();
+  }
+  return /^[0-9a-f]{6}$/i.test(raw) ? raw.toUpperCase() : null;
+}
+
+function colorReferenceLocations(id, replacement = null) {
+  const matches = [];
+  const visit = (value, path, key = "", parent = null) => {
+    if (typeof value === "string") {
+      if (/color$/i.test(key) && value === id) {
+        matches.push(path);
+        if (replacement !== null) parent[key] = replacement;
+      }
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    Object.entries(value).forEach(([childKey, child]) => {
+      visit(child, path ? `${path}.${childKey}` : childKey, childKey, value);
+    });
+  };
+  Object.entries(state.project).forEach(([key, value]) => {
+    if (key !== "colors") visit(value, key);
+  });
+  return matches;
+}
+
+function projectIdIsUsed(id, ignoredColorId = null) {
+  if (projectWidgetEntries().some((entry) => entry.id === id)) return true;
+  const libraries = [state.project.styles, state.project.fonts, state.project.images];
+  if (libraries.some((entries) => (entries || []).some((entry) => entry.id === id))) return true;
+  return colorLibrary().some((entry) => entry.id === id && entry.id !== ignoredColorId);
+}
+
+function resetColorLibraryForm() {
+  state.editingColorId = null;
+  $("#color-library-id").value = "";
+  $("#color-library-hex").value = "";
+  $("#color-library-picker").value = "#00a000";
+  $("#color-library-error").classList.add("hidden");
+  $("#save-color-library-entry").textContent = "Farbe hinzufügen";
+  $("#cancel-color-library-edit").classList.add("hidden");
+}
+
+function editColorLibraryEntry(id) {
+  const entry = colorLibrary().find((item) => item.id === id);
+  if (!entry) return;
+  state.editingColorId = id;
+  $("#color-library-id").value = entry.id;
+  $("#color-library-hex").value = normaliseLibraryHex(entry.hex) || "FFFFFF";
+  $("#color-library-picker").value = `#${normaliseLibraryHex(entry.hex) || "FFFFFF"}`;
+  $("#color-library-error").classList.add("hidden");
+  $("#save-color-library-entry").textContent = "Änderungen speichern";
+  $("#cancel-color-library-edit").classList.remove("hidden");
+  $("#color-library-id").focus();
+}
+
+function saveColorLibraryEntry(event) {
+  event.preventDefault();
+  const id = $("#color-library-id").value.trim();
+  const hex = normaliseLibraryHex($("#color-library-hex").value);
+  const error = $("#color-library-error");
+  const fail = (message) => {
+    error.textContent = message;
+    error.classList.remove("hidden");
+  };
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
+    fail("Die ID muss mit einem Buchstaben oder _ beginnen und darf nur Buchstaben, Zahlen und _ enthalten.");
+    return;
+  }
+  if (!hex) {
+    fail("Bitte eine Farbe als drei- oder sechsstelligen Hexwert angeben.");
+    return;
+  }
+  if (projectIdIsUsed(id, state.editingColorId)) {
+    fail(`Die ID ${id} wird bereits im Projekt verwendet.`);
+    return;
+  }
+
+  pushUndo();
+  if (state.editingColorId) {
+    const entry = colorLibrary().find((item) => item.id === state.editingColorId);
+    if (!entry) return resetColorLibraryForm();
+    const previousId = entry.id;
+    entry.id = id;
+    entry.hex = hex;
+    if (previousId !== id) colorReferenceLocations(previousId, id);
+  } else {
+    colorLibrary().push({ id, hex });
+  }
+  markProjectDirty();
+  resetColorLibraryForm();
+  renderDesigner();
+  toast(`Farbe ${id} gespeichert.`);
+}
+
+function deleteColorLibraryEntry(id) {
+  const entry = colorLibrary().find((item) => item.id === id);
+  if (!entry) return;
+  const references = colorReferenceLocations(id);
+  if (references.length && !confirm(
+    `${id} wird ${references.length}-mal verwendet. Verwendungen durch ${entry.hex} ersetzen und Farbe löschen?`,
+  )) return;
+  pushUndo();
+  if (references.length) colorReferenceLocations(id, normaliseLibraryHex(entry.hex) || entry.hex);
+  state.project.colors = colorLibrary().filter((item) => item !== entry);
+  if (state.editingColorId === id) resetColorLibraryForm();
+  markProjectDirty();
+  renderDesigner();
+  toast(references.length
+    ? `Farbe ${id} gelöscht; ${references.length} Verwendung(en) wurden durch den Hexwert ersetzt.`
+    : `Farbe ${id} gelöscht.`);
+}
+
+function renderColorLibrary() {
+  const list = $("#color-library-list");
+  list.replaceChildren();
+  colorLibrary().forEach((entry) => {
+    const hex = normaliseLibraryHex(entry.hex) || "FFFFFF";
+    const row = document.createElement("div");
+    row.className = "color-library-item";
+    const swatch = document.createElement("span");
+    swatch.className = "color-library-swatch";
+    swatch.style.backgroundColor = `#${hex}`;
+    const name = document.createElement("span");
+    name.className = "color-library-name";
+    name.textContent = entry.id;
+    const value = document.createElement("small");
+    value.textContent = `#${hex}`;
+    name.append(value);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "icon-button";
+    edit.title = `${entry.id} bearbeiten`;
+    edit.textContent = "✎";
+    edit.addEventListener("click", () => editColorLibraryEntry(entry.id));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-button";
+    remove.title = `${entry.id} löschen`;
+    remove.textContent = "×";
+    remove.addEventListener("click", () => deleteColorLibraryEntry(entry.id));
+    row.append(swatch, name, edit, remove);
+    list.append(row);
+  });
+  if (!colorLibrary().length) {
+    const empty = document.createElement("p");
+    empty.className = "color-library-empty";
+    empty.textContent = "Noch keine Projektfarben angelegt.";
+    list.append(empty);
+  }
+
+  const options = $("#project-color-options");
+  options.replaceChildren();
+  colorLibrary().forEach((entry) => {
+    const option = document.createElement("option");
+    option.value = entry.id;
+    option.label = `#${normaliseLibraryHex(entry.hex) || entry.hex}`;
+    options.append(option);
+  });
+  $("#color-library-export-hint").classList.toggle(
+    "hidden", (state.project.export_sections || []).includes("color"),
+  );
+  if (state.editingColorId && !colorLibrary().some((entry) => entry.id === state.editingColorId)) {
+    resetColorLibraryForm();
+  }
+  syncLinkedColorPickers();
+}
+
+function syncLinkedColorPickers() {
+  $$(".linked-color-picker").forEach((picker) => {
+    const target = picker.dataset.colorTarget
+      ? document.getElementById(picker.dataset.colorTarget)
+      : picker.previousElementSibling;
+    const resolved = target ? resolveViewerColor(state.project, target.value) : null;
+    picker.value = resolved && /^#[0-9a-f]{6}$/i.test(resolved) ? resolved : "#000000";
+  });
+}
+
+function bindColorLibrary() {
+  $("#color-library-form").addEventListener("submit", saveColorLibraryEntry);
+  $("#cancel-color-library-edit").addEventListener("click", resetColorLibraryForm);
+  $("#color-library-picker").addEventListener("input", (event) => {
+    $("#color-library-hex").value = event.target.value.slice(1).toUpperCase();
+  });
+  $("#color-library-hex").addEventListener("input", (event) => {
+    const hex = normaliseLibraryHex(event.target.value);
+    if (hex) $("#color-library-picker").value = `#${hex}`;
+  });
+  $$(".linked-color-picker").forEach((picker) => {
+    const target = $(`#${picker.dataset.colorTarget}`);
+    picker.addEventListener("input", () => {
+      target.value = picker.value.slice(1).toUpperCase();
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    target.addEventListener("input", syncLinkedColorPickers);
+  });
 }
 
 // --- Named styles -----------------------------------------------------
@@ -3166,8 +3388,31 @@ function propertyField(widget, property, index, targetKind) {
   control.addEventListener("change", () => updateDynamicProperty(widget, property, control, targetKind));
   control.addEventListener("input", () => updateDynamicProperty(widget, property, control, targetKind));
   if (property.kind === "bool") label.className = "checkbox-field";
-  label.append(control);
+  appendPropertyControl(label, control, property);
   return label;
+}
+
+function appendPropertyControl(label, control, property) {
+  if (property.kind !== "color") {
+    label.append(control);
+    return;
+  }
+  control.setAttribute("list", "project-color-options");
+  const row = document.createElement("div");
+  row.className = "color-input-row";
+  const picker = document.createElement("input");
+  picker.type = "color";
+  picker.className = "linked-color-picker";
+  picker.setAttribute("aria-label", `${property.label} auswählen`);
+  const resolved = resolveViewerColor(state.project, control.value);
+  picker.value = resolved && /^#[0-9a-f]{6}$/i.test(resolved) ? resolved : "#000000";
+  picker.addEventListener("input", () => {
+    control.value = picker.value.slice(1).toUpperCase();
+    control.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  control.addEventListener("input", syncLinkedColorPickers);
+  row.append(control, picker);
+  label.append(row);
 }
 
 function propertyTarget(widget, property, create, kind = property.category) {
@@ -3301,7 +3546,7 @@ function renderThemeEditor() {
     control.addEventListener("change", () => updateThemeProperty(property, control));
     control.addEventListener("input", () => updateThemeProperty(property, control));
     if (property.kind === "bool") label.className = "checkbox-field";
-    label.append(control);
+    appendPropertyControl(label, control, property);
     container.append(label);
   });
 }

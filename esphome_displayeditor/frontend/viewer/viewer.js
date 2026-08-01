@@ -19,6 +19,11 @@ export function cloneViewerProject(project) {
   return JSON.parse(JSON.stringify(project || {}));
 }
 
+export function viewerTextAlign(value) {
+  const align = String(value || "").trim().toUpperCase();
+  return ({ LEFT: "left", CENTER: "center", RIGHT: "right", AUTO: "start" })[align] || "";
+}
+
 function mergeStyle(target, source) {
   if (!source || typeof source !== "object" || Array.isArray(source)) return target;
   Object.entries(source).forEach(([key, value]) => {
@@ -112,6 +117,16 @@ function colorWithOpacity(color, opacity) {
   return `rgba(${red}, ${green}, ${blue}, ${clamp(opacity, 0, 1)})`;
 }
 
+export function viewerGradientBackground(project, style) {
+  const background = resolveViewerColor(project, style?.bg_color);
+  const gradient = resolveViewerColor(project, style?.bg_grad_color);
+  const direction = String(style?.bg_grad_dir || "").toUpperCase();
+  if (!background || !gradient || !["HOR", "VER"].includes(direction)) return "";
+  const cssDirection = direction === "HOR" ? "to right" : "to bottom";
+  const opacity = viewerOpacity(style?.bg_opa);
+  return `linear-gradient(${cssDirection}, ${colorWithOpacity(background, opacity)}, ${colorWithOpacity(gradient, opacity)})`;
+}
+
 function viewerFont(project, reference) {
   if (!reference) return null;
   const raw = String(reference);
@@ -193,7 +208,6 @@ function viewerSurfaces(project, activePageId) {
 
 function applyStyleObject(node, project, style) {
   const background = resolveViewerColor(project, style.bg_color);
-  const gradient = resolveViewerColor(project, style.bg_grad_color);
   const border = resolveViewerColor(project, style.border_color);
   const shadow = resolveViewerColor(project, style.shadow_color);
   const text = resolveViewerColor(project, style.text_color);
@@ -202,15 +216,14 @@ function applyStyleObject(node, project, style) {
   const shadowOpacity = viewerOpacity(style.shadow_opa);
 
   if (background) node.style.backgroundColor = colorWithOpacity(background, backgroundOpacity);
-  if (background && gradient && ["HOR", "VER"].includes(String(style.bg_grad_dir).toUpperCase())) {
-    const direction = String(style.bg_grad_dir).toUpperCase() === "HOR" ? "to right" : "to bottom";
-    node.style.backgroundImage = `linear-gradient(${direction}, ${colorWithOpacity(background, backgroundOpacity)}, ${colorWithOpacity(gradient, backgroundOpacity)})`;
-  }
+  const gradientBackground = viewerGradientBackground(project, style);
+  if (gradientBackground) node.style.backgroundImage = gradientBackground;
   if (border) node.style.borderColor = border;
   if (style.border_width !== undefined) node.style.borderWidth = `${Math.max(0, Number(style.border_width) || 0)}px`;
   if (style.radius !== undefined) node.style.borderRadius = `${Math.max(0, Number(style.radius) || 0)}px`;
   if (text) node.style.color = text;
-  if (style.text_align) node.style.textAlign = String(style.text_align).toLowerCase();
+  const textAlign = viewerTextAlign(style.text_align);
+  if (textAlign) node.style.textAlign = textAlign;
   const font = viewerFont(project, style.text_font);
   if (font?.family) node.style.fontFamily = JSON.stringify(font.family);
   if (font?.size) node.style.fontSize = `${font.size}px`;
