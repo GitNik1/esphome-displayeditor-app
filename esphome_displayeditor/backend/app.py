@@ -70,6 +70,16 @@ class AssetImageRequest(BaseModel):
     content_base64: str = Field(min_length=1, max_length=8 * 1024 * 1024)
 
 
+class AssetFontRequest(BaseModel):
+    """A TrueType/OpenType font file to place in fonts/, uploaded from the
+    Font Library's "Datei" source. Same base64-over-JSON shape as
+    AssetImageRequest; a bigger ceiling since a full glyph-set TTF can run
+    well past a typical animation frame's size."""
+
+    name: str = Field(min_length=1, max_length=128)
+    content_base64: str = Field(min_length=1, max_length=24 * 1024 * 1024)
+
+
 class SaveDesignerProjectRequest(DesignerProjectRequest):
     expected_revision: str | None = Field(
         default=None, pattern=r"^sha256:[0-9a-f]{64}$"
@@ -1027,6 +1037,35 @@ def create_app(
             raise ApiError("invalid_request", "content_base64 is not valid base64.", 422) from exc
         try:
             result = filesystem.write_image_asset(body.name, content)
+        except ApiError as exc:
+            audit.record(
+                user_id=user_id,
+                action="designer.asset.write",
+                configuration=body.name,
+                old_revision=None,
+                new_revision=None,
+                result=exc.error,
+            )
+            raise
+        audit.record(
+            user_id=user_id,
+            action="designer.asset.write",
+            configuration=body.name,
+            old_revision=None,
+            new_revision=result["path"],
+            result="success",
+        )
+        return result
+
+    @application.post("/api/v1/designer/assets/fonts")
+    async def upload_font_asset(body: AssetFontRequest, request: Request) -> dict:
+        user_id = require_capability(request, "designer.asset_write")
+        try:
+            content = base64.b64decode(body.content_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ApiError("invalid_request", "content_base64 is not valid base64.", 422) from exc
+        try:
+            result = filesystem.write_font_asset(body.name, content)
         except ApiError as exc:
             audit.record(
                 user_id=user_id,

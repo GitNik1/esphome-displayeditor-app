@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Added a Font Library (Schriftbibliothek), mirroring the existing Color
+  Library: add/edit/delete a project font (builtin LVGL bitmap font, Google
+  Fonts, local file path, or web URL), with size/bpp/glyphs. Google Fonts
+  gets a real dropdown of ~100 curated families plus a manual fallback for
+  anything not listed (fetching the full live catalog would need a new
+  outbound API call this add-on doesn't otherwise make). The "Datei" source
+  can upload a `.ttf`/`.otf` directly instead of only typing a path - a new
+  `POST /api/v1/designer/assets/fonts` endpoint (`designer.asset_write`,
+  same capability as the existing baked-image upload) writes it into a
+  dedicated `fonts/` folder, content verified by the font's own sfnt magic
+  bytes rather than trusting the filename, mirroring `write_image_asset`'s
+  containment exactly. `text_font`
+  fields across the properties panel (and a new project-wide "Standardschrift"
+  picker) get a datalist of library font ids for autocomplete - still a free
+  text field, since a builtin LVGL font name (`montserrat_16`) is valid
+  without ever being declared in the library, the same trade-off the color
+  datalist already makes. Deleting a font that's still referenced clears
+  those references (there's no literal-value fallback for a font id the way
+  there is for a color's hex value) after a confirmation showing the
+  reference count.
+
 - Fixed: a `color:` entry defined via `red`/`green`/`blue` percentages
   instead of `hex:` (both are valid ESPHome syntax) used to import as plain
   white - `_import_colors` only ever read `hex:` and silently defaulted to

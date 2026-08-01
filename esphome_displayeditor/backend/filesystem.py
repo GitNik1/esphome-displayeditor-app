@@ -70,6 +70,11 @@ def revision_for(content: bytes | str) -> str:
 #: proves nothing about what is actually inside the request body.
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
+#: sfnt version tags for the two font container formats worth accepting here
+#: (TrueType, and OpenType with CFF outlines) - same content-not-name
+#: principle as _PNG_MAGIC.
+_FONT_MAGICS = (b"\x00\x01\x00\x00", b"OTTO")
+
 #: Content-Type for each asset suffix the browser is allowed to read back -
 #: images and fonts an imported config already references by a local path
 #: (e.g. ``images/panel_bg.png``, ``fonts/OpenSans-Regular.ttf``), so the
@@ -95,6 +100,10 @@ class FilesystemBackend:
     #: user's ESPHome tree".
     _assets_subdir = "images"
     _allowed_asset_suffixes = {".png"}
+    #: Same containment principle as images, one flat folder for uploaded
+    #: font files instead of anywhere under the config root.
+    _font_assets_subdir = "fonts"
+    _allowed_font_asset_suffixes = {".ttf", ".otf"}
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -102,6 +111,7 @@ class FilesystemBackend:
         self.drafts = settings.data_root / "drafts"
         self.drafts.mkdir(parents=True, exist_ok=True)
         self.assets = self.root / self._assets_subdir
+        self.font_assets = self.root / self._font_assets_subdir
 
     def _relative(self, name: str, *, suffixes: set[str] | None = None) -> PurePosixPath:
         if not name or "\\" in name or "\x00" in name:
@@ -384,6 +394,45 @@ class FilesystemBackend:
         self._atomic_write_bytes(target, content)
         return {
             "path": f"{self._assets_subdir}/{relative.as_posix()}",
+            "size": len(content),
+        }
+
+    def _relative_font_asset(self, name: str) -> PurePosixPath:
+        relative = self._relative(name, suffixes=self._allowed_font_asset_suffixes)
+        if len(relative.parts) != 1:
+            raise ApiError("invalid_path", "Font names may not contain a directory.")
+        return relative
+
+    def write_font_asset(self, name: str, content: bytes) -> dict:
+        """Write a TrueType/OpenType font into the dedicated fonts/ folder.
+
+        Same shape as write_image_asset: lands directly on the host (not a
+        draft), confined to one flat folder, one pair of file types,
+        verified by content rather than by name.
+        """
+        relative = self._relative_font_asset(name)
+        if len(content) > self.settings.max_file_size:
+            raise ApiError("file_too_large", "Font exceeds the configured size limit.", 413)
+        if not content.startswith(_FONT_MAGICS):
+            raise ApiError("invalid_font", "Only TrueType/OpenType font data is accepted.")
+
+        self.font_assets.mkdir(parents=True, exist_ok=True)
+        target = self._resolve(self.font_assets, relative)
+        if target.exists():
+            if target.is_symlink() or not target.is_file():
+                raise ApiError("invalid_path", "Target path is not a regular file.")
+            with open(target, "rb") as handle:
+                existing_head = handle.read(4)
+            if not existing_head.startswith(_FONT_MAGICS):
+                raise ApiError(
+                    "invalid_path",
+                    "Refusing to overwrite a file that is not itself a font.",
+                    409,
+                )
+
+        self._atomic_write_bytes(target, content)
+        return {
+            "path": f"{self._font_assets_subdir}/{relative.as_posix()}",
             "size": len(content),
         }
 

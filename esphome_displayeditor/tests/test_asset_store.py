@@ -25,6 +25,11 @@ PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
 
+#: Just the sfnt version tag (TrueType) plus filler - write_font_asset only
+#: ever checks the magic prefix, not a full font parse.
+TTF_HEADER = b"\x00\x01\x00\x00" + b"\x00" * 32
+OTF_HEADER = b"OTTO" + b"\x00" * 32
+
 
 def _settings(tmp_path: Path, **overrides) -> Settings:
     config_root = tmp_path / "esphome"
@@ -330,3 +335,137 @@ def test_the_uploaded_file_can_be_referenced_from_a_saved_project(tmp_path: Path
     response = client.post("/api/v1/designer/projects/export-yaml", json={"project": project})
     assert response.status_code == 200
     assert path in response.json()["yaml"]
+
+
+# --- font uploads --------------------------------------------------------------
+#
+# Same shape as the image asset tests above: one flat folder, content
+# verified by magic bytes rather than filename, no draft/review step.
+
+def _upload_font(client: TestClient, name: str, content: bytes, **headers):
+    return client.post(
+        "/api/v1/designer/assets/fonts",
+        headers={"X-Remote-User-Id": "tester", **headers},
+        json={"name": name, "content_base64": base64.b64encode(content).decode()},
+    )
+
+
+def test_write_font_asset_creates_the_file(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    result = fs.write_font_asset("Custom.ttf", TTF_HEADER)
+
+    assert result["path"] == "fonts/Custom.ttf"
+    assert (fs.root / "fonts" / "Custom.ttf").read_bytes() == TTF_HEADER
+
+
+def test_write_font_asset_accepts_otf_magic_too(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    result = fs.write_font_asset("Custom.otf", OTF_HEADER)
+    assert result["path"] == "fonts/Custom.otf"
+
+
+def test_write_font_asset_rejects_non_font_content(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    with pytest.raises(ApiError) as raised:
+        fs.write_font_asset("font.ttf", b"not a font at all")
+    assert raised.value.error == "invalid_font"
+
+
+def test_write_font_asset_rejects_wrong_suffix(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    with pytest.raises(ApiError) as raised:
+        fs.write_font_asset("font.yaml", TTF_HEADER)
+    assert raised.value.error == "invalid_path"
+
+
+def test_write_font_asset_rejects_a_directory_component(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    with pytest.raises(ApiError) as raised:
+        fs.write_font_asset("sub/font.ttf", TTF_HEADER)
+    assert raised.value.error == "invalid_path"
+
+
+@pytest.mark.parametrize("name", [
+    "../secrets.ttf",
+    "../../etc/whatever.ttf",
+    "..%2fescape.ttf",
+])
+def test_write_font_asset_rejects_traversal_attempts(tmp_path: Path, name: str) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    with pytest.raises(ApiError) as raised:
+        fs.write_font_asset(name, TTF_HEADER)
+    assert raised.value.error == "invalid_path"
+
+
+def test_write_font_asset_rejects_oversized_content(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path, max_file_size=8))
+    with pytest.raises(ApiError) as raised:
+        fs.write_font_asset("big.ttf", TTF_HEADER)
+    assert raised.value.error == "file_too_large"
+
+
+def test_write_font_asset_refuses_to_clobber_a_non_font_file(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    (fs.root / "fonts").mkdir(parents=True)
+    trap = fs.root / "fonts" / "notes.ttf"
+    trap.write_text("this is actually a text file someone named .ttf")
+
+    with pytest.raises(ApiError) as raised:
+        fs.write_font_asset("notes.ttf", TTF_HEADER)
+    assert raised.value.error == "invalid_path"
+    assert trap.read_text() == "this is actually a text file someone named .ttf"
+
+
+def test_write_font_asset_allows_overwriting_a_real_font(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    fs.write_font_asset("Custom.ttf", TTF_HEADER)
+    fs.write_font_asset("Custom.ttf", TTF_HEADER + b"\x01")
+    assert (fs.root / "fonts" / "Custom.ttf").read_bytes() == TTF_HEADER + b"\x01"
+
+
+def test_write_font_asset_refuses_symlinked_target(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    (fs.root / "fonts").mkdir(parents=True)
+    outside = tmp_path / "outside.ttf"
+    outside.write_bytes(TTF_HEADER)
+    try:
+        (fs.root / "fonts" / "link.ttf").symlink_to(outside)
+    except OSError:
+        pytest.skip("Symbolic links are unavailable on this platform")
+
+    with pytest.raises(ApiError) as raised:
+        fs.write_font_asset("link.ttf", TTF_HEADER)
+    assert raised.value.error == "invalid_path"
+
+
+def test_font_upload_requires_a_user(tmp_path: Path) -> None:
+    client = TestClient(create_app(_settings(tmp_path), serve_frontend=False))
+    response = client.post(
+        "/api/v1/designer/assets/fonts",
+        json={"name": "a.ttf", "content_base64": base64.b64encode(TTF_HEADER).decode()},
+    )
+    assert response.status_code == 403
+
+
+def test_font_upload_succeeds_for_an_editor(tmp_path: Path) -> None:
+    client = _client(tmp_path, default_role="editor")
+    response = _upload_font(client, "a.ttf", TTF_HEADER)
+    assert response.status_code == 200
+    assert response.json()["path"] == "fonts/a.ttf"
+
+
+def test_font_upload_is_denied_for_a_viewer(tmp_path: Path) -> None:
+    client = _client(tmp_path, default_role="viewer")
+    response = _upload_font(client, "a.ttf", TTF_HEADER)
+    assert response.status_code == 403
+    assert response.json()["error"] == "permission_denied"
+
+
+def test_font_upload_rejects_invalid_base64(tmp_path: Path) -> None:
+    client = _client(tmp_path, default_role="editor")
+    response = client.post(
+        "/api/v1/designer/assets/fonts",
+        headers={"X-Remote-User-Id": "tester"},
+        json={"name": "a.ttf", "content_base64": "not-base64!!!"},
+    )
+    assert response.status_code == 422

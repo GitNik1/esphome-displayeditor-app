@@ -78,6 +78,72 @@
               <p id="color-library-export-hint" class="hint hidden">Importiertes Projekt: Neue Farb-IDs zusätzlich im <code>color:</code>-Block der Quellkonfiguration definieren.</p>
             </div>
           </details>
+
+          <details class="font-library-details">
+            <summary>Schriftbibliothek</summary>
+            <div class="font-library">
+              <label>Standardschrift (Projekt)
+                <select id="default-font"><option value="">— keine —</option></select>
+              </label>
+              <div id="font-library-list" class="font-library-list"></div>
+              <form id="font-library-form" class="font-library-form">
+                <label>ID
+                  <input id="font-library-id" maxlength="63" pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="z. B. ueberschrift_28">
+                </label>
+                <label>Quelle
+                  <select id="font-library-source">
+                    <option value="builtin">LVGL-Bitmap-Schrift (eingebaut)</option>
+                    <option value="gfonts">Google Fonts</option>
+                    <option value="file">Datei (lokaler Pfad)</option>
+                    <option value="web">Web-URL</option>
+                  </select>
+                </label>
+                <label id="font-library-builtin-field">Eingebauter Name
+                  <input id="font-library-builtin-name" placeholder="z. B. montserrat_16">
+                </label>
+                <label id="font-library-gfonts-field">Google-Fonts-Familie
+                  <select id="font-library-gfonts-family"></select>
+                </label>
+                <label id="font-library-gfonts-custom-field" class="hidden">Familie (manuell)
+                  <input id="font-library-gfonts-custom" placeholder="z. B. Meine Schrift">
+                </label>
+                <div id="font-library-gfonts-extra" class="field-row">
+                  <label>Schnittstärke <input id="font-library-gfonts-weight" type="number" min="100" max="900" step="100" value="400"></label>
+                  <label class="checkbox-field">Kursiv <input id="font-library-gfonts-italic" type="checkbox"></label>
+                </div>
+                <label id="font-library-file-field">Datei-Pfad
+                  <input id="font-library-file-path" placeholder="z. B. fonts/Custom.ttf">
+                </label>
+                <div id="font-library-file-upload" class="actions">
+                  <button id="font-library-file-pick" type="button" class="button subtle compact">TTF/OTF hochladen …</button>
+                  <input id="font-library-file-input" class="hidden" type="file" accept=".ttf,.otf">
+                </div>
+                <label id="font-library-web-field">Web-URL
+                  <input id="font-library-web-url" placeholder="https://…/schrift.ttf">
+                </label>
+                <div class="field-row">
+                  <label>Größe <input id="font-library-size" type="number" min="1" max="255" value="16"></label>
+                  <label>Bpp
+                    <select id="font-library-bpp">
+                      <option value="1">1</option>
+                      <option value="2">2</option>
+                      <option value="4" selected>4</option>
+                      <option value="8">8</option>
+                    </select>
+                  </label>
+                </div>
+                <label>Glyphen (optional, kommagetrennt)
+                  <input id="font-library-glyphs" placeholder="z. B. ABCabc123">
+                </label>
+                <p id="font-library-error" class="widget-action-error hidden"></p>
+                <div class="actions">
+                  <button id="save-font-library-entry" type="submit" class="button primary compact">Schrift hinzufügen</button>
+                  <button id="cancel-font-library-edit" type="button" class="button subtle compact hidden">Abbrechen</button>
+                </div>
+              </form>
+              <p id="font-library-export-hint" class="hint hidden">Importiertes Projekt: Neue Font-IDs zusätzlich im <code>font:</code>-Block der Quellkonfiguration definieren.</p>
+            </div>
+          </details>
         </aside>
 
         <section class="workspace">
@@ -458,6 +524,7 @@
     </main>
 
     <datalist id="project-color-options"></datalist>
+    <datalist id="project-font-options"></datalist>
 
     <dialog id="import-dialog">
       <div class="dialog-heading"><h2>ESPHome-YAML importieren</h2><button id="close-import" class="icon-button">×</button></div>

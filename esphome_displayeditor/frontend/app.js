@@ -68,6 +68,7 @@ const state = {
   themeType: "",
   themeState: "",
   editingColorId: null,
+  editingFontId: null,
   devices: [],
   selectedDevice: null,
   editingDevice: null,
@@ -630,6 +631,7 @@ function bindDesigner() {
   bindDesignerPaneSwitch();
   bindThemeEditor();
   bindColorLibrary();
+  bindFontLibrary();
   viewer = new ViewerController({
     dialog: $("#viewer-dialog"),
     stage: $("#viewer-stage"),
@@ -1369,6 +1371,7 @@ function renderDesigner() {
   renderTree();
   renderThemeEditor();
   renderColorLibrary();
+  renderFontLibrary();
   renderDesignerStatus();
   updateUndoButtons();
 }
@@ -3253,6 +3256,323 @@ function bindColorLibrary() {
   });
 }
 
+// A curated subset of Google Fonts - the full catalog runs into the
+// thousands and would need a live API call (this add-on makes none at
+// runtime beyond what the user explicitly points it at). "Andere (manuell)"
+// falls back to a free-text field for anything not listed here.
+const GOOGLE_FONTS_CUSTOM = "__custom__";
+const GOOGLE_FONTS = [
+  "Abel", "Alegreya", "Anton", "Archivo", "Arimo", "Arvo", "Asap",
+  "Bangers", "Barlow", "Bebas Neue", "BenchNine", "Bitter", "Bree Serif",
+  "Cabin", "Cairo", "Caveat", "Cinzel", "Comfortaa", "Cormorant",
+  "Cousine", "Crimson Text", "DM Sans", "DM Serif Display", "Dancing Script",
+  "Dosis", "EB Garamond", "Exo", "Exo 2", "Fira Code", "Fira Sans",
+  "Fjalla One", "Frank Ruhl Libre", "Grandstander", "Great Vibes",
+  "Heebo", "IBM Plex Mono", "IBM Plex Sans", "IBM Plex Serif", "Inconsolata",
+  "Inder", "Indie Flower", "Inter", "JetBrains Mono", "Josefin Sans",
+  "Jost", "Kanit", "Karla", "Lato", "League Gothic", "Lexend", "Libre Baskerville",
+  "Libre Franklin", "Lobster", "Lora", "Manrope", "Merriweather", "Montserrat",
+  "Mukta", "Mulish", "Nanum Gothic", "Neuton", "Noto Sans", "Noto Serif",
+  "Nunito", "Nunito Sans", "Open Sans", "Oswald", "Outfit", "Overpass",
+  "PT Sans", "PT Serif", "Pacifico", "Playfair Display", "Poppins",
+  "Prompt", "Public Sans", "Quicksand", "Rajdhani", "Raleway", "Righteous",
+  "Roboto", "Roboto Condensed", "Roboto Mono", "Roboto Serif", "Roboto Slab",
+  "Rubik", "Sacramento", "Signika", "Slabo 27px", "Sora", "Source Code Pro",
+  "Source Sans Pro", "Source Serif Pro", "Space Grotesk", "Space Mono",
+  "Spectral", "Teko", "Titillium Web", "Ubuntu", "Ubuntu Mono", "Varela Round",
+  "Vollkorn", "Work Sans", "Yanone Kaffeesatz", "Zilla Slab",
+];
+
+// --- Font library -------------------------------------------------------
+//
+// Mirrors the color library: a project-wide, id-addressable library that
+// `text_font`/`default_font` fields reference by id (or, for a builtin LVGL
+// font, by typing its name directly - hence the datalist rather than a
+// strict picker in appendPropertyControl). Unlike a color, a font id has no
+// literal-value fallback to substitute on delete, so a deleted font's
+// references are cleared instead of replaced.
+
+function fontReferenceLocations(id, replacement = null) {
+  const matches = [];
+  if (state.project.default_font === id) {
+    matches.push("default_font");
+    if (replacement !== null) state.project.default_font = replacement;
+  }
+  const visit = (value, path, key = "", parent = null) => {
+    if (typeof value === "string") {
+      if (/font$/i.test(key) && value === id) {
+        matches.push(path);
+        if (replacement !== null) parent[key] = replacement;
+      }
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    Object.entries(value).forEach(([childKey, child]) => {
+      visit(child, path ? `${path}.${childKey}` : childKey, childKey, value);
+    });
+  };
+  Object.entries(state.project).forEach(([key, value]) => {
+    if (key !== "fonts" && key !== "default_font") visit(value, key);
+  });
+  return matches;
+}
+
+function populateGoogleFontsSelect() {
+  const select = $("#font-library-gfonts-family");
+  if (select.options.length) return; // static list, populate once
+  GOOGLE_FONTS.forEach((family) => select.append(new Option(family, family)));
+  select.append(new Option("Andere (manuell) …", GOOGLE_FONTS_CUSTOM));
+}
+
+function updateFontSourceFieldsVisibility() {
+  const source = $("#font-library-source").value;
+  $("#font-library-builtin-field").classList.toggle("hidden", source !== "builtin");
+  $("#font-library-gfonts-field").classList.toggle("hidden", source !== "gfonts");
+  $("#font-library-gfonts-extra").classList.toggle("hidden", source !== "gfonts");
+  $("#font-library-gfonts-custom-field").classList.toggle(
+    "hidden", source !== "gfonts" || $("#font-library-gfonts-family").value !== GOOGLE_FONTS_CUSTOM,
+  );
+  $("#font-library-file-field").classList.toggle("hidden", source !== "file");
+  $("#font-library-file-upload").classList.toggle("hidden", source !== "file");
+  $("#font-library-web-field").classList.toggle("hidden", source !== "web");
+}
+
+/** The gfonts family currently expressed by the form, whichever of the two
+ * controls (curated select vs. manual fallback) is authoritative. */
+function currentGfontsFamilyInput() {
+  const selected = $("#font-library-gfonts-family").value;
+  return selected === GOOGLE_FONTS_CUSTOM ? $("#font-library-gfonts-custom").value.trim() : selected;
+}
+
+/** Points the select/custom-field pair at `family`, adding it as the
+ * custom fallback if it isn't one of the curated options. */
+function setGfontsFamilyInput(family) {
+  const select = $("#font-library-gfonts-family");
+  const known = GOOGLE_FONTS.includes(family);
+  select.value = known ? family : GOOGLE_FONTS_CUSTOM;
+  $("#font-library-gfonts-custom").value = known ? "" : family;
+}
+
+function resetFontLibraryForm() {
+  state.editingFontId = null;
+  $("#font-library-id").value = "";
+  $("#font-library-source").value = "builtin";
+  $("#font-library-builtin-name").value = "";
+  $("#font-library-gfonts-family").selectedIndex = 0;
+  $("#font-library-gfonts-custom").value = "";
+  $("#font-library-gfonts-weight").value = "400";
+  $("#font-library-gfonts-italic").checked = false;
+  $("#font-library-file-path").value = "";
+  $("#font-library-web-url").value = "";
+  $("#font-library-size").value = "16";
+  $("#font-library-bpp").value = "4";
+  $("#font-library-glyphs").value = "";
+  $("#font-library-error").classList.add("hidden");
+  $("#save-font-library-entry").textContent = "Schrift hinzufügen";
+  $("#cancel-font-library-edit").classList.add("hidden");
+  updateFontSourceFieldsVisibility();
+}
+
+function editFontLibraryEntry(id) {
+  const entry = fontLibrary().find((item) => item.id === id);
+  if (!entry) return;
+  state.editingFontId = id;
+  $("#font-library-id").value = entry.id;
+  $("#font-library-source").value = entry.source_kind || "builtin";
+  $("#font-library-builtin-name").value = entry.builtin_name || "";
+  setGfontsFamilyInput(entry.gfonts_family || "");
+  $("#font-library-gfonts-weight").value = entry.gfonts_weight || 400;
+  $("#font-library-gfonts-italic").checked = Boolean(entry.gfonts_italic);
+  $("#font-library-file-path").value = entry.file_path || "";
+  $("#font-library-web-url").value = entry.web_url || "";
+  $("#font-library-size").value = entry.size || 16;
+  $("#font-library-bpp").value = String(entry.bpp || 4);
+  $("#font-library-glyphs").value = (entry.glyphs || []).join(", ");
+  $("#font-library-error").classList.add("hidden");
+  $("#save-font-library-entry").textContent = "Änderungen speichern";
+  $("#cancel-font-library-edit").classList.remove("hidden");
+  updateFontSourceFieldsVisibility();
+  $("#font-library-id").focus();
+}
+
+function saveFontLibraryEntry(event) {
+  event.preventDefault();
+  const id = $("#font-library-id").value.trim();
+  const source = $("#font-library-source").value;
+  const error = $("#font-library-error");
+  const fail = (message) => {
+    error.textContent = message;
+    error.classList.remove("hidden");
+  };
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
+    fail("Die ID muss mit einem Buchstaben oder _ beginnen und darf nur Buchstaben, Zahlen und _ enthalten.");
+    return;
+  }
+  if (projectIdIsUsed(id) && id !== state.editingFontId) {
+    fail(`Die ID ${id} wird bereits im Projekt verwendet.`);
+    return;
+  }
+  if (source === "builtin" && !$("#font-library-builtin-name").value.trim()) {
+    fail("Bitte den eingebauten Schriftnamen angeben (z. B. montserrat_16).");
+    return;
+  }
+  if (source === "gfonts" && !currentGfontsFamilyInput()) {
+    fail("Bitte eine Google-Fonts-Familie angeben.");
+    return;
+  }
+  if (source === "file" && !$("#font-library-file-path").value.trim()) {
+    fail("Bitte einen Datei-Pfad angeben.");
+    return;
+  }
+  if (source === "web" && !isRemoteAsset($("#font-library-web-url").value.trim())) {
+    fail("Bitte eine http(s)-URL angeben.");
+    return;
+  }
+
+  const glyphs = $("#font-library-glyphs").value.split(",").map((g) => g.trim()).filter(Boolean);
+
+  pushUndo();
+  let entry;
+  if (state.editingFontId) {
+    entry = fontLibrary().find((item) => item.id === state.editingFontId);
+    if (!entry) return resetFontLibraryForm();
+    const previousId = entry.id;
+    if (previousId !== id) fontReferenceLocations(previousId, id);
+    entry.id = id;
+  } else {
+    entry = { id, external: false, extra: {} };
+    fontLibrary().push(entry);
+  }
+  entry.source_kind = source;
+  entry.builtin_name = source === "builtin" ? $("#font-library-builtin-name").value.trim() : "";
+  entry.gfonts_family = source === "gfonts" ? currentGfontsFamilyInput() : "";
+  entry.gfonts_weight = source === "gfonts" ? (Number($("#font-library-gfonts-weight").value) || 400) : 400;
+  entry.gfonts_italic = source === "gfonts" && $("#font-library-gfonts-italic").checked;
+  entry.file_path = source === "file" ? $("#font-library-file-path").value.trim() : "";
+  entry.web_url = source === "web" ? $("#font-library-web-url").value.trim() : "";
+  entry.size = clamp(Number($("#font-library-size").value) || 16, 1, 255);
+  entry.bpp = Number($("#font-library-bpp").value) || 4;
+  entry.glyphs = glyphs;
+
+  markProjectDirty();
+  resetFontLibraryForm();
+  renderDesigner();
+  toast(`Schrift ${id} gespeichert.`);
+}
+
+function deleteFontLibraryEntry(id) {
+  const entry = fontLibrary().find((item) => item.id === id);
+  if (!entry) return;
+  const references = fontReferenceLocations(id);
+  if (references.length && !confirm(
+    `${id} wird ${references.length}-mal verwendet. Verwendungen entfernen und Schrift löschen?`,
+  )) return;
+  pushUndo();
+  if (references.length) fontReferenceLocations(id, "");
+  state.project.fonts = fontLibrary().filter((item) => item !== entry);
+  fontLoadState.delete(id);
+  if (state.editingFontId === id) resetFontLibraryForm();
+  markProjectDirty();
+  renderDesigner();
+  toast(references.length
+    ? `Schrift ${id} gelöscht; ${references.length} Verwendung(en) entfernt.`
+    : `Schrift ${id} gelöscht.`);
+}
+
+const FONT_SOURCE_LABELS = { builtin: "eingebaut", gfonts: "Google Fonts", file: "Datei", web: "Web" };
+
+function renderFontLibrary() {
+  const list = $("#font-library-list");
+  list.replaceChildren();
+  fontLibrary().forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "font-library-item";
+    const name = document.createElement("span");
+    name.className = "font-library-name";
+    name.textContent = entry.id;
+    const detail = document.createElement("small");
+    detail.textContent = `${FONT_SOURCE_LABELS[entry.source_kind] || entry.source_kind} · ${entry.size}px`;
+    name.append(detail);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "icon-button";
+    edit.title = `${entry.id} bearbeiten`;
+    edit.textContent = "✎";
+    edit.addEventListener("click", () => editFontLibraryEntry(entry.id));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-button";
+    remove.title = `${entry.id} löschen`;
+    remove.textContent = "×";
+    remove.addEventListener("click", () => deleteFontLibraryEntry(entry.id));
+    row.append(name, edit, remove);
+    list.append(row);
+  });
+  if (!fontLibrary().length) {
+    const empty = document.createElement("p");
+    empty.className = "font-library-empty";
+    empty.textContent = "Noch keine Projektschriften angelegt.";
+    list.append(empty);
+  }
+
+  const defaultSelect = $("#default-font");
+  const currentDefault = state.project.default_font || "";
+  defaultSelect.replaceChildren(new Option("— keine —", ""));
+  fontLibrary().forEach((entry) => defaultSelect.append(new Option(entry.id, entry.id)));
+  if (currentDefault && !fontLibrary().some((entry) => entry.id === currentDefault)) {
+    defaultSelect.append(new Option(`${currentDefault} (frei/unbekannt)`, currentDefault));
+  }
+  defaultSelect.value = currentDefault;
+
+  const options = $("#project-font-options");
+  options.replaceChildren();
+  fontLibrary().forEach((entry) => options.append(new Option(entry.id)));
+
+  $("#font-library-export-hint").classList.toggle(
+    "hidden", (state.project.export_sections || []).includes("font"),
+  );
+  if (state.editingFontId && !fontLibrary().some((entry) => entry.id === state.editingFontId)) {
+    resetFontLibraryForm();
+  }
+}
+
+async function uploadFontFile(file) {
+  const content_base64 = await blobToBase64(file);
+  const result = await api("designer/assets/fonts", {
+    method: "POST", body: JSON.stringify({ name: file.name, content_base64 }),
+  });
+  return result.path;
+}
+
+function bindFontLibrary() {
+  populateGoogleFontsSelect();
+  $("#font-library-form").addEventListener("submit", saveFontLibraryEntry);
+  $("#cancel-font-library-edit").addEventListener("click", resetFontLibraryForm);
+  $("#font-library-source").addEventListener("change", updateFontSourceFieldsVisibility);
+  $("#font-library-gfonts-family").addEventListener("change", updateFontSourceFieldsVisibility);
+  $("#font-library-file-pick").addEventListener("click", () => $("#font-library-file-input").click());
+  $("#font-library-file-input").addEventListener("change", async () => {
+    const file = $("#font-library-file-input").files[0];
+    if (!file) return;
+    try {
+      const path = await uploadFontFile(file);
+      $("#font-library-file-path").value = path;
+      toast(`Schriftdatei ${file.name} hochgeladen.`);
+    } catch (error) {
+      toast(`Hochladen fehlgeschlagen: ${error.message}`, true);
+    } finally {
+      $("#font-library-file-input").value = "";
+    }
+  });
+  $("#default-font").addEventListener("change", (event) => {
+    pushUndo();
+    state.project.default_font = event.target.value;
+    markProjectDirty();
+    renderCanvas();
+  });
+  updateFontSourceFieldsVisibility();
+}
+
 // --- Named styles -----------------------------------------------------
 // The model persists exactly two style modes: "inline" (style_tree applies
 // directly to the widget) and "named" (style_refs point into the project's
@@ -3431,6 +3751,14 @@ function appendPropertyControl(label, control, property) {
     });
     row.append(format);
     label.append(row);
+    return;
+  }
+  if (property.kind === "font_ref") {
+    // A datalist rather than a strict picker: ESPHome also accepts a
+    // builtin font name (montserrat_16) typed directly, not only a
+    // font: library id - same trade-off the color datalist already makes.
+    control.setAttribute("list", "project-font-options");
+    label.append(control);
     return;
   }
   if (property.kind !== "color") {
