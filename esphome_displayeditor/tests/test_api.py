@@ -59,6 +59,7 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "script-src 'self'" in response.headers["Content-Security-Policy"]
+    assert "font-src 'self' data: http: https:" in response.headers["Content-Security-Policy"]
     assert response.headers["Permissions-Policy"] == "camera=(), microphone=(), geolocation=()"
     assert "ESPHome Display Editor" in response.text
     assert 'id="open-viewer"' in response.text
@@ -68,8 +69,9 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     assert 'id="runtime-binding-current"' in response.text
     assert 'id="runtime-binding-additional-widgets"' in response.text
     assert 'id="runtime-binding-orphans"' in response.text
-    assert 'styles.css?v=0.11.0' in response.text
-    assert 'app.js?v=0.11.0' in response.text
+    assert 'id="glyph-preview-status"' in response.text
+    assert 'styles.css?v=0.11.1' in response.text
+    assert 'app.js?v=0.11.1' in response.text
     assert client.get("/app.js").status_code == 200
     viewer = client.get("/viewer/viewer.js")
     assert viewer.status_code == 200

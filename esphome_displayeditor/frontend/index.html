@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>ESPHome Display Editor</title>
-    <link rel="stylesheet" href="styles.css?v=0.11.0">
+    <link rel="stylesheet" href="styles.css?v=0.11.1">
   </head>
   <body>
     <header class="topbar">
@@ -85,6 +85,11 @@
               <label>Standardschrift (Projekt)
                 <select id="default-font"><option value="">— keine —</option></select>
               </label>
+              <div class="actions">
+                <button id="add-mdi-font" type="button" class="button subtle compact">MDI-Icons hinzufügen (7447 Symbole)</button>
+              </div>
+              <p class="hint">Lädt die Pictogrammers-MDI-Schriftart als feste, lokal fixierte Bibliotheksschrift.
+                Icons und Schriftart stehen unter Apache 2.0 (Pictogrammers).</p>
               <div id="font-library-list" class="font-library-list"></div>
               <form id="font-library-form" class="font-library-form">
                 <label>ID
@@ -121,6 +126,14 @@
                 <label id="font-library-web-field">Web-URL
                   <input id="font-library-web-url" placeholder="https://…/schrift.ttf">
                 </label>
+                <label id="font-library-refresh-field">ESPHome-Refresh
+                  <select id="font-library-refresh">
+                    <option value="never">never (manuell, empfohlen)</option>
+                    <option value="1d">1d</option>
+                    <option value="7d">7d</option>
+                  </select>
+                  <small>Der Editor prüft Änderungen getrennt und lädt sie nur über den Update-Button.</small>
+                </label>
                 <div class="field-row">
                   <label>Größe <input id="font-library-size" type="number" min="1" max="255" value="16"></label>
                   <label>Bpp
@@ -132,9 +145,10 @@
                     </select>
                   </label>
                 </div>
-                <label>Glyphen (optional, kommagetrennt)
-                  <input id="font-library-glyphs" placeholder="z. B. ABCabc123">
-                </label>
+                <p class="hint">Nur die MDI-Icon-Schriftart wird im Export auf tatsächlich verwendete Symbole
+                  beschränkt (automatisch ermittelt - keine Vorauswahl nötig). Alle anderen Schriften werden
+                  immer vollständig exportiert. Icons fügst du direkt am Text-Feld eines Labels/Buttons über
+                  „Icon einfügen“ ein.</p>
                 <p id="font-library-error" class="widget-action-error hidden"></p>
                 <div class="actions">
                   <button id="save-font-library-entry" type="submit" class="button primary compact">Schrift hinzufügen</button>
@@ -579,6 +593,30 @@
       <div class="dialog-actions"><button id="copy-yaml" class="button primary">In Zwischenablage kopieren</button></div>
     </dialog>
 
+    <dialog id="glyph-dialog" class="glyph-dialog" aria-labelledby="glyph-dialog-title">
+      <div class="dialog-heading">
+        <div><h2 id="glyph-dialog-title">Icon einfügen</h2><small id="glyph-catalog-version"></small></div>
+        <button id="close-glyph-dialog" type="button" class="icon-button" aria-label="Icon-Auswahl schließen">×</button>
+      </div>
+      <div class="glyph-dialog-body">
+        <label>Glyph oder Code einfügen
+          <span class="glyph-input-row">
+            <input id="glyph-input" placeholder="mdi:home, U+F02DC, \U000F02DC oder Text">
+            <button id="add-glyph-input" type="button" class="button subtle compact">Einfügen</button>
+          </span>
+        </label>
+        <p id="glyph-input-error" class="widget-action-error hidden"></p>
+        <label>MDI-Katalog durchsuchen
+          <input id="glyph-search" type="search" placeholder="z. B. home, light, F02DC">
+        </label>
+        <p id="glyph-preview-status" class="hint glyph-preview-status" role="status">Vorschaufont wird beim Öffnen geladen.</p>
+        <div id="glyph-catalog" class="glyph-catalog"></div>
+      </div>
+      <div class="dialog-actions glyph-dialog-actions">
+        <button id="finish-glyph-dialog" type="button" class="button primary">Fertig</button>
+      </div>
+    </dialog>
+
     <dialog id="viewer-dialog" class="viewer-dialog" aria-labelledby="viewer-title">
       <div class="viewer-shell">
         <header class="viewer-toolbar">
@@ -630,6 +668,6 @@
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js?v=0.11.0"></script>
+    <script type="module" src="app.js?v=0.11.1"></script>
   </body>
 </html>

@@ -2,6 +2,7 @@ import { computeLayout, contentOrigin, fontFamilyId, resolvedFontFamily } from "
 import { boundingBox, nearestSegment } from "./glowline/geometry.js";
 import { drawDocument, flowBoundsDocument, hasFlow, strokePath } from "./glowline/renderer.js";
 import { format565, hsvToRgb, quantizeImageData, rgb565to888, rgb888to565 } from "./glowline/rgb565.js";
+import { MDI_CATALOG_VERSION, MDI_GLYPHS } from "./mdi-glyphs.js";
 import {
   ViewerController,
   describeViewerArc,
@@ -3283,6 +3284,18 @@ const GOOGLE_FONTS = [
   "Vollkorn", "Work Sans", "Yanone Kaffeesatz", "Zilla Slab",
 ];
 
+// The Pictogrammers Material Design Icons webfont, offered as a one-click
+// preset so users don't have to know or type this URL themselves. Font and
+// icons are Apache 2.0 (see mdi-glyphs.js header) - free to redistribute a
+// locally-pinned copy from here.
+const MDI_WEBFONT_URL =
+  "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf";
+const MDI_WEBFONT_DEFAULT_ID = "icons_mdi";
+
+function isMdiWebfontUrl(url) {
+  return /materialdesignicons-webfont\.ttf(\?.*)?$/i.test(String(url || "").trim());
+}
+
 // --- Font library -------------------------------------------------------
 //
 // Mirrors the color library: a project-wide, id-addressable library that
@@ -3335,6 +3348,7 @@ function updateFontSourceFieldsVisibility() {
   $("#font-library-file-field").classList.toggle("hidden", source !== "file");
   $("#font-library-file-upload").classList.toggle("hidden", source !== "file");
   $("#font-library-web-field").classList.toggle("hidden", source !== "web");
+  $("#font-library-refresh-field").classList.toggle("hidden", source !== "web");
 }
 
 /** The gfonts family currently expressed by the form, whichever of the two
@@ -3353,6 +3367,236 @@ function setGfontsFamilyInput(family) {
   $("#font-library-gfonts-custom").value = known ? "" : family;
 }
 
+// Update metadata belongs to the editor project, not to ESPHome's `font:`
+// schema. `import_source` is persisted with a project but never exported, so
+// the shared/read-only designer core needs no private model fields.
+function fontSourceMetadataMap(create = false) {
+  if (!state.project.import_source || typeof state.project.import_source !== "object") {
+    if (!create) return {};
+    state.project.import_source = {};
+  }
+  if (!state.project.import_source.font_sources || typeof state.project.import_source.font_sources !== "object") {
+    if (!create) return {};
+    state.project.import_source.font_sources = {};
+  }
+  return state.project.import_source.font_sources;
+}
+
+function fontSourceMetadata(entry) {
+  return fontSourceMetadataMap()[entry?.id] || null;
+}
+
+function isManagedWebFont(entry) {
+  return Boolean(fontSourceMetadata(entry)?.url);
+}
+
+function webFontUrl(entry) {
+  return fontSourceMetadata(entry)?.url || entry?.web_url || "";
+}
+
+const mdiByName = new Map(MDI_GLYPHS.map((entry) => [entry.name.toLowerCase(), entry]));
+let glyphPreviewRequest = 0;
+let glyphPreviewState = { status: "idle", family: "inherit" };
+// The widget/control an open icon dialog inserts into - null while closed.
+let activeIconTarget = null;
+
+function glyphCodepoint(glyph) {
+  return String(glyph || "").codePointAt(0);
+}
+
+function formatGlyphCodepoint(glyphOrCodepoint) {
+  const value = typeof glyphOrCodepoint === "number" ? glyphOrCodepoint : glyphCodepoint(glyphOrCodepoint);
+  return Number.isInteger(value) ? `U+${value.toString(16).toUpperCase().padStart(4, "0")}` : "—";
+}
+
+function uniqueGlyphs(values) {
+  const result = [];
+  const seen = new Set();
+  values.flatMap((value) => Array.from(String(value || ""))).forEach((glyph) => {
+    const codepoint = glyphCodepoint(glyph);
+    if (codepoint === undefined || seen.has(codepoint)) return;
+    seen.add(codepoint);
+    result.push(glyph);
+  });
+  return result;
+}
+
+/** This dialog only ever inserts into the MDI icon webfont, so "mdi:home"
+ * name resolution is always on here (unlike the old per-font-editing dialog,
+ * where the same lookup had to be disabled for non-icon fonts). */
+function parseGlyphInput(value) {
+  const input = String(value || "").trim();
+  if (!input) return [];
+  const tokens = input.split(/[\s,;]+/).filter(Boolean);
+  const glyphs = [];
+  tokens.forEach((rawToken) => {
+    const token = rawToken.replace(/^["']|["']$/g, "");
+    const mdi = mdiByName.get(token.toLowerCase());
+    if (mdi) {
+      glyphs.push(mdi.glyph);
+      return;
+    }
+    const codeMatch = token.match(/^(?:U\+|0x|\\U|\\u\{?)([0-9A-Fa-f]{4,8})\}?$/i);
+    if (codeMatch) {
+      const codepoint = Number.parseInt(codeMatch[1], 16);
+      if (codepoint > 0x10FFFF || (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
+        throw new Error(`${token} ist kein gültiger Unicode-Codepoint.`);
+      }
+      glyphs.push(String.fromCodePoint(codepoint));
+      return;
+    }
+    if (/^mdi:/i.test(token)) throw new Error(`${token} ist nicht im lokalen MDI-Katalog enthalten.`);
+    glyphs.push(...Array.from(token));
+  });
+  return uniqueGlyphs(glyphs);
+}
+
+function glyphPreviewPlaceholder() {
+  return glyphPreviewState.status === "loading" ? "…" : "?";
+}
+
+function updateGlyphPreviewStatus(message, status) {
+  const node = $("#glyph-preview-status");
+  node.textContent = message;
+  node.classList.toggle("ready", status === "loaded");
+  node.classList.toggle("error", status === "failed");
+}
+
+/** Loads the MDI webfont once (from its pinned local revision if the
+ * library already has it, else straight from the upstream URL) so the
+ * catalog can show the real glyph shapes instead of placeholder boxes. */
+async function ensureMdiPreviewFont() {
+  if (glyphPreviewState.status === "loaded") return;
+  const request = ++glyphPreviewRequest;
+  const mdiFont = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
+  const source = mdiFont?.file_path || MDI_WEBFONT_URL;
+  glyphPreviewState = { status: "loading", family: "inherit" };
+  updateGlyphPreviewStatus("Vorschaufont wird geladen …", "loading");
+  renderIconCatalog();
+  try {
+    const cssSource = `url(${JSON.stringify(assetUrl(source))})`;
+    const loaded = await new FontFace("esphome_mdi_preview", cssSource).load();
+    if (request !== glyphPreviewRequest) return;
+    document.fonts.add(loaded);
+    glyphPreviewState = { status: "loaded", family: "esphome_mdi_preview" };
+    updateGlyphPreviewStatus("Vorschaufont geladen.", "loaded");
+  } catch (error) {
+    if (request !== glyphPreviewRequest) return;
+    glyphPreviewState = { status: "failed", family: "inherit" };
+    updateGlyphPreviewStatus("Vorschaufont konnte nicht geladen werden.", "failed");
+  }
+  renderIconCatalog();
+}
+
+function renderIconCatalog() {
+  const filter = $("#glyph-search").value.trim().toLowerCase();
+  const family = glyphPreviewState.status === "loaded" ? glyphPreviewState.family : "inherit";
+  const catalog = $("#glyph-catalog");
+  catalog.replaceChildren();
+  MDI_GLYPHS.filter((entry) => (
+    !filter || entry.name.includes(filter) || formatGlyphCodepoint(entry.codepoint).toLowerCase().includes(filter)
+  )).forEach((entry) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "glyph-catalog-item";
+    button.title = `${entry.name} · ${formatGlyphCodepoint(entry.codepoint)}`;
+    const symbol = document.createElement("span");
+    symbol.className = `glyph-symbol${glyphPreviewState.status === "loaded" ? "" : " preview-unavailable"}`;
+    symbol.style.fontFamily = family;
+    symbol.textContent = glyphPreviewState.status === "loaded" ? entry.glyph : glyphPreviewPlaceholder();
+    const description = document.createElement("span");
+    description.textContent = entry.name;
+    const code = document.createElement("small");
+    code.textContent = formatGlyphCodepoint(entry.codepoint);
+    description.append(code);
+    button.append(symbol, description);
+    button.addEventListener("click", () => insertMdiGlyphs(entry.glyph));
+    catalog.append(button);
+  });
+  if (!catalog.children.length) {
+    const empty = document.createElement("p");
+    empty.className = "glyph-selected-empty";
+    empty.textContent = "Keine passenden MDI-Einträge.";
+    catalog.append(empty);
+  }
+}
+
+/** Opens the icon picker for a specific text control (a label/button's
+ * `text` property). Insertion both writes the glyph into that control and,
+ * on first use, wires up the MDI font as the widget's text_font - an icon
+ * glyph is meaningless without the font that actually contains it. */
+function openIconInsertDialog(widget, control) {
+  activeIconTarget = { widget, control };
+  pushUndo();
+  $("#glyph-input").value = "";
+  $("#glyph-search").value = "";
+  $("#glyph-input-error").classList.add("hidden");
+  $("#glyph-catalog-version").textContent = `Lokaler MDI-Katalog ${MDI_CATALOG_VERSION}`;
+  renderIconCatalog();
+  $("#glyph-dialog").showModal();
+  ensureMdiPreviewFont();
+}
+
+async function insertMdiGlyphs(glyphs) {
+  if (!activeIconTarget) return;
+  const { widget } = activeIconTarget;
+  let mdiFont = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
+  if (!mdiFont) {
+    // First use in this project: register the MDI font automatically so the
+    // inserted glyph actually renders on the real device, not just here.
+    await addMdiIconFont();
+    mdiFont = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
+  }
+  // addMdiIconFont() may have re-rendered the properties panel (new font
+  // registered), which replaces property controls - re-resolve by id so
+  // later inserts keep landing in the control the user is actually looking at.
+  const control = document.getElementById(activeIconTarget.control.id) || activeIconTarget.control;
+  activeIconTarget.control = control;
+
+  if (mdiFont) {
+    const fauxProperty = { part: "main", category: "style" };
+    const styleTarget = propertyTarget(widget, fauxProperty, true, "style");
+    if (styleTarget.text_font !== mdiFont.id) styleTarget.text_font = mdiFont.id;
+  }
+  const start = control.selectionStart ?? control.value.length;
+  const end = control.selectionEnd ?? control.value.length;
+  control.value = control.value.slice(0, start) + glyphs + control.value.slice(end);
+  const pos = start + glyphs.length;
+  control.dispatchEvent(new Event("input", { bubbles: true }));
+  control.focus();
+  control.setSelectionRange(pos, pos);
+  markProjectDirty();
+  renderCanvas();
+}
+
+function addGlyphInput() {
+  const error = $("#glyph-input-error");
+  try {
+    const parsed = parseGlyphInput($("#glyph-input").value);
+    if (!parsed.length) throw new Error("Bitte mindestens eine Glyphe eingeben.");
+    insertMdiGlyphs(parsed.join(""));
+    $("#glyph-input").value = "";
+    error.classList.add("hidden");
+  } catch (problem) {
+    error.textContent = problem.message;
+    error.classList.remove("hidden");
+  }
+}
+
+function bindGlyphEditor() {
+  $("#close-glyph-dialog").addEventListener("click", () => $("#glyph-dialog").close());
+  $("#finish-glyph-dialog").addEventListener("click", () => $("#glyph-dialog").close());
+  $("#add-glyph-input").addEventListener("click", addGlyphInput);
+  $("#glyph-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); addGlyphInput(); }
+  });
+  $("#glyph-search").addEventListener("input", renderIconCatalog);
+  $("#glyph-dialog").addEventListener("close", () => {
+    activeIconTarget = null;
+    renderProperties();
+  });
+}
+
 function resetFontLibraryForm() {
   state.editingFontId = null;
   $("#font-library-id").value = "";
@@ -3364,9 +3608,9 @@ function resetFontLibraryForm() {
   $("#font-library-gfonts-italic").checked = false;
   $("#font-library-file-path").value = "";
   $("#font-library-web-url").value = "";
+  $("#font-library-refresh").value = "never";
   $("#font-library-size").value = "16";
   $("#font-library-bpp").value = "4";
-  $("#font-library-glyphs").value = "";
   $("#font-library-error").classList.add("hidden");
   $("#save-font-library-entry").textContent = "Schrift hinzufügen";
   $("#cancel-font-library-edit").classList.add("hidden");
@@ -3378,16 +3622,20 @@ function editFontLibraryEntry(id) {
   if (!entry) return;
   state.editingFontId = id;
   $("#font-library-id").value = entry.id;
-  $("#font-library-source").value = entry.source_kind || "builtin";
+  $("#font-library-source").value = isManagedWebFont(entry) ? "web" : (entry.source_kind || "builtin");
   $("#font-library-builtin-name").value = entry.builtin_name || "";
   setGfontsFamilyInput(entry.gfonts_family || "");
   $("#font-library-gfonts-weight").value = entry.gfonts_weight || 400;
   $("#font-library-gfonts-italic").checked = Boolean(entry.gfonts_italic);
   $("#font-library-file-path").value = entry.file_path || "";
-  $("#font-library-web-url").value = entry.web_url || "";
+  $("#font-library-web-url").value = webFontUrl(entry);
+  const refresh = fontSourceMetadata(entry)?.refresh || entry.extra?.file?.refresh || "never";
+  if (![...$("#font-library-refresh").options].some((option) => option.value === refresh)) {
+    $("#font-library-refresh").append(new Option(refresh, refresh));
+  }
+  $("#font-library-refresh").value = refresh;
   $("#font-library-size").value = entry.size || 16;
   $("#font-library-bpp").value = String(entry.bpp || 4);
-  $("#font-library-glyphs").value = (entry.glyphs || []).join(", ");
   $("#font-library-error").classList.add("hidden");
   $("#save-font-library-entry").textContent = "Änderungen speichern";
   $("#cancel-font-library-edit").classList.remove("hidden");
@@ -3429,30 +3677,49 @@ function saveFontLibraryEntry(event) {
     return;
   }
 
-  const glyphs = $("#font-library-glyphs").value.split(",").map((g) => g.trim()).filter(Boolean);
-
   pushUndo();
   let entry;
+  const previousId = state.editingFontId || id;
+  const previousMeta = fontSourceMetadataMap()[previousId] || null;
+  const previousWebUrl = previousMeta?.url || "";
   if (state.editingFontId) {
     entry = fontLibrary().find((item) => item.id === state.editingFontId);
     if (!entry) return resetFontLibraryForm();
-    const previousId = entry.id;
     if (previousId !== id) fontReferenceLocations(previousId, id);
     entry.id = id;
   } else {
     entry = { id, external: false, extra: {} };
     fontLibrary().push(entry);
   }
-  entry.source_kind = source;
+  const requestedWebUrl = source === "web" ? $("#font-library-web-url").value.trim() : "";
+  const keepManagedRevision = Boolean(previousMeta && previousWebUrl === requestedWebUrl && entry.file_path);
+  entry.source_kind = keepManagedRevision ? "file" : source;
   entry.builtin_name = source === "builtin" ? $("#font-library-builtin-name").value.trim() : "";
   entry.gfonts_family = source === "gfonts" ? currentGfontsFamilyInput() : "";
   entry.gfonts_weight = source === "gfonts" ? (Number($("#font-library-gfonts-weight").value) || 400) : 400;
   entry.gfonts_italic = source === "gfonts" && $("#font-library-gfonts-italic").checked;
-  entry.file_path = source === "file" ? $("#font-library-file-path").value.trim() : "";
-  entry.web_url = source === "web" ? $("#font-library-web-url").value.trim() : "";
+  entry.file_path = source === "file"
+    ? $("#font-library-file-path").value.trim()
+    : (keepManagedRevision ? entry.file_path : "");
+  entry.web_url = source === "web" && !keepManagedRevision ? requestedWebUrl : "";
+  entry.extra = entry.extra && typeof entry.extra === "object" ? entry.extra : {};
+  if (source === "web") {
+    entry.extra.file = {
+      ...(entry.extra.file && typeof entry.extra.file === "object" ? entry.extra.file : {}),
+      type: "web", url: requestedWebUrl, refresh: $("#font-library-refresh").value || "never",
+    };
+  }
+  const metadata = fontSourceMetadataMap(true);
+  if (previousId !== id) delete metadata[previousId];
+  if (keepManagedRevision) {
+    metadata[id] = { ...previousMeta, url: requestedWebUrl, refresh: $("#font-library-refresh").value || "never" };
+  } else {
+    delete metadata[id];
+  }
   entry.size = clamp(Number($("#font-library-size").value) || 16, 1, 255);
   entry.bpp = Number($("#font-library-bpp").value) || 4;
-  entry.glyphs = glyphs;
+  fontSourceStatuses.delete(state.editingFontId || id);
+  fontSourceStatuses.delete(id);
 
   markProjectDirty();
   resetFontLibraryForm();
@@ -3470,6 +3737,7 @@ function deleteFontLibraryEntry(id) {
   pushUndo();
   if (references.length) fontReferenceLocations(id, "");
   state.project.fonts = fontLibrary().filter((item) => item !== entry);
+  delete fontSourceMetadataMap(true)[id];
   fontLoadState.delete(id);
   if (state.editingFontId === id) resetFontLibraryForm();
   markProjectDirty();
@@ -3480,6 +3748,108 @@ function deleteFontLibraryEntry(id) {
 }
 
 const FONT_SOURCE_LABELS = { builtin: "eingebaut", gfonts: "Google Fonts", file: "Datei", web: "Web" };
+const fontSourceStatuses = new Map();
+
+function fontSourceStatus(entry) {
+  const status = fontSourceStatuses.get(entry.id);
+  if (status?.url === webFontUrl(entry)) return status;
+  if (status) fontSourceStatuses.delete(entry.id);
+  return isManagedWebFont(entry)
+    ? { state: "managed", label: "lokal fixiert" }
+    : { state: "unmanaged", label: "noch nicht lokal gespeichert" };
+}
+
+async function checkFontSource(entry, manual = false) {
+  if ((entry.source_kind !== "web" && !isManagedWebFont(entry)) || !state.capabilities["designer.asset_write"]) return;
+  const metadata = fontSourceMetadata(entry) || {};
+  const existing = fontSourceStatuses.get(entry.id);
+  if (existing?.state === "checking") return;
+  fontSourceStatuses.set(entry.id, { state: "checking", label: "Prüfung läuft …", url: webFontUrl(entry) });
+  renderFontLibrary();
+  try {
+    const result = await api("designer/font-sources/check", {
+      method: "POST",
+      body: JSON.stringify({
+        url: webFontUrl(entry),
+        etag: metadata.etag || "",
+        last_modified: metadata.last_modified || "",
+        sha256: metadata.sha256 || "",
+      }),
+    });
+    const changed = !isManagedWebFont(entry) || result.changed;
+    fontSourceStatuses.set(entry.id, changed
+      ? { state: "changed", label: isManagedWebFont(entry) ? "Update verfügbar" : "lokale Version fehlt", url: webFontUrl(entry) }
+      : { state: "current", label: "Quelle unverändert", url: webFontUrl(entry) });
+    if (manual) toast(changed ? `Für ${entry.id} ist eine Aktualisierung verfügbar.` : `${entry.id} ist aktuell.`);
+  } catch (error) {
+    fontSourceStatuses.set(entry.id, { state: "error", label: "Prüfung fehlgeschlagen", url: webFontUrl(entry) });
+    if (manual) toast(`Prüfung fehlgeschlagen: ${error.message}`, true);
+  }
+  renderFontLibrary();
+}
+
+async function updateFontSource(entry) {
+  if ((entry.source_kind !== "web" && !isManagedWebFont(entry)) || !state.capabilities["designer.asset_write"]) return;
+  fontSourceStatuses.set(entry.id, { state: "checking", label: "Download läuft …", url: webFontUrl(entry) });
+  renderFontLibrary();
+  try {
+    const result = await api("designer/font-sources/update", {
+      method: "POST", body: JSON.stringify({ id: entry.id, url: webFontUrl(entry) }),
+    });
+    const selectedGlyphs = uniqueGlyphs(entry.glyphs || []);
+    if (selectedGlyphs.length && state.capabilities["designer.asset_read"]) {
+      try {
+        const coverage = await api("designer/fonts/glyph-coverage", {
+          method: "POST",
+          body: JSON.stringify({ path: result.path, codepoints: selectedGlyphs.map(glyphCodepoint) }),
+        });
+        if (coverage.missing_count && !confirm(
+          `${coverage.missing_count} ausgewählte Glyphe(n) fehlen in der neuen Fontrevision. `
+          + "Trotzdem als aktive Revision übernehmen?",
+        )) {
+          fontSourceStatuses.set(entry.id, {
+            state: "changed",
+            label: `Update enthält ${coverage.missing_count} fehlende Glyphe(n)`,
+            url: webFontUrl(entry),
+          });
+          renderFontLibrary();
+          toast("Die bisherige Fontrevision bleibt aktiv.", true);
+          return;
+        }
+      } catch (coverageError) {
+        toast(`Glyphenprüfung der neuen Revision fehlgeschlagen: ${coverageError.message}`, true);
+      }
+    }
+    pushUndo();
+    const sourceUrl = webFontUrl(entry);
+    entry.source_kind = "file";
+    entry.file_path = result.path;
+    entry.web_url = "";
+    fontSourceMetadataMap(true)[entry.id] = {
+      url: sourceUrl,
+      refresh: "never",
+      etag: result.etag || "",
+      last_modified: result.last_modified || "",
+      sha256: result.sha256,
+      size: result.size || 0,
+      checked_at: result.checked_at || "",
+      path: result.path,
+    };
+    fontLoadState.delete(entry.id);
+    fontSourceStatuses.set(entry.id, { state: "current", label: "lokal aktualisiert", url: sourceUrl });
+    markProjectDirty();
+    renderDesigner();
+    if (!(state.project.export_sections || []).includes("font")) {
+      toast(`Lokal gespeichert als ${result.path}; die importierte Quell-YAML bleibt unverändert.`, false);
+    } else {
+      toast(`${entry.id} wurde als ${result.path} lokal fixiert.`);
+    }
+  } catch (error) {
+    fontSourceStatuses.set(entry.id, { state: "error", label: "Update fehlgeschlagen", url: webFontUrl(entry) });
+    renderFontLibrary();
+    toast(`Font-Update fehlgeschlagen: ${error.message}`, true);
+  }
+}
 
 function renderFontLibrary() {
   const list = $("#font-library-list");
@@ -3491,8 +3861,39 @@ function renderFontLibrary() {
     name.className = "font-library-name";
     name.textContent = entry.id;
     const detail = document.createElement("small");
-    detail.textContent = `${FONT_SOURCE_LABELS[entry.source_kind] || entry.source_kind} · ${entry.size}px`;
+    const sourceLabel = isManagedWebFont(entry)
+      ? "Web (lokal fixiert)"
+      : (FONT_SOURCE_LABELS[entry.source_kind] || entry.source_kind);
+    detail.textContent = `${sourceLabel} · ${entry.size}px`;
     name.append(detail);
+    const actions = document.createElement("span");
+    actions.className = "font-library-actions";
+    if (entry.source_kind === "web" || isManagedWebFont(entry)) {
+      const statusData = fontSourceStatus(entry);
+      const status = document.createElement("span");
+      status.className = `font-source-status ${statusData.state}`;
+      status.textContent = statusData.label;
+      name.append(status);
+      if (state.capabilities["designer.asset_write"]) {
+        const check = document.createElement("button");
+        check.type = "button";
+        check.className = "icon-button";
+        check.title = `${entry.id}: Quelle jetzt prüfen`;
+        check.textContent = "↻";
+        check.disabled = statusData.state === "checking";
+        check.addEventListener("click", () => checkFontSource(entry, true));
+        actions.append(check);
+        if (!isManagedWebFont(entry) || statusData.state === "changed") {
+          const update = document.createElement("button");
+          update.type = "button";
+          update.className = "button subtle compact";
+          update.textContent = isManagedWebFont(entry) ? "Update" : "Lokal";
+          update.disabled = statusData.state === "checking";
+          update.addEventListener("click", () => updateFontSource(entry));
+          actions.append(update);
+        }
+      }
+    }
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "icon-button";
@@ -3505,8 +3906,19 @@ function renderFontLibrary() {
     remove.title = `${entry.id} löschen`;
     remove.textContent = "×";
     remove.addEventListener("click", () => deleteFontLibraryEntry(entry.id));
-    row.append(name, edit, remove);
+    actions.append(edit, remove);
+    row.append(name, actions);
     list.append(row);
+    if (
+      (entry.source_kind === "web" || isManagedWebFont(entry))
+      && isManagedWebFont(entry)
+      && (() => { const meta = fontSourceMetadata(entry); return meta?.etag || meta?.last_modified || meta?.sha256; })()
+      && !fontSourceStatuses.has(entry.id)
+      && state.capabilities["designer.asset_write"]
+    ) {
+      fontSourceStatuses.set(entry.id, { state: "queued", label: "Prüfung vorgemerkt …", url: webFontUrl(entry) });
+      queueMicrotask(() => checkFontSource(entry));
+    }
   });
   if (!fontLibrary().length) {
     const empty = document.createElement("p");
@@ -3544,8 +3956,47 @@ async function uploadFontFile(file) {
   return result.path;
 }
 
+/** One-click preset: adds the MDI icon webfont as a normal Font Library
+ * entry (source_kind "web", refresh "never") and, where write access is
+ * available, immediately pins a local revision the same way the manual
+ * "Update"/"Lokal" button does - so the result is a font that's fixed in
+ * the library from the start, not just a URL the user still has to fetch
+ * themselves. */
+async function addMdiIconFont() {
+  const existing = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
+  if (existing) {
+    editFontLibraryEntry(existing.id);
+    toast(`${existing.id} verwendet bereits die MDI-Schriftart.`);
+    return;
+  }
+  let id = MDI_WEBFONT_DEFAULT_ID;
+  let suffix = 2;
+  while (projectIdIsUsed(id)) id = `${MDI_WEBFONT_DEFAULT_ID}_${suffix++}`;
+
+  pushUndo();
+  const entry = {
+    id, external: false,
+    source_kind: "web", builtin_name: "", gfonts_family: "", gfonts_weight: 400, gfonts_italic: false,
+    file_path: "", web_url: MDI_WEBFONT_URL,
+    extra: { file: { type: "web", url: MDI_WEBFONT_URL, refresh: "never" } },
+    size: 24, bpp: 4, glyphs: [],
+  };
+  fontLibrary().push(entry);
+  markProjectDirty();
+  renderDesigner();
+
+  if (!state.capabilities["designer.asset_write"]) {
+    toast(`${id} als Web-Quelle angelegt. Für eine lokal fixierte Kopie fehlt die Schreibberechtigung.`, true);
+    return;
+  }
+  toast(`${id} wird als lokale Fontrevision fixiert …`);
+  await updateFontSource(entry);
+}
+
 function bindFontLibrary() {
+  $("#add-mdi-font").addEventListener("click", addMdiIconFont);
   populateGoogleFontsSelect();
+  bindGlyphEditor();
   $("#font-library-form").addEventListener("submit", saveFontLibraryEntry);
   $("#cancel-font-library-edit").addEventListener("click", resetFontLibraryForm);
   $("#font-library-source").addEventListener("change", updateFontSourceFieldsVisibility);
@@ -3708,7 +4159,7 @@ function propertyField(widget, property, index, targetKind) {
   control.addEventListener("change", () => updateDynamicProperty(widget, property, control, targetKind));
   control.addEventListener("input", () => updateDynamicProperty(widget, property, control, targetKind));
   if (property.kind === "bool") label.className = "checkbox-field";
-  appendPropertyControl(label, control, property);
+  appendPropertyControl(label, control, property, widget);
   return label;
 }
 
@@ -3726,7 +4177,21 @@ const IMAGE_TYPE_OPTIONS = [
   ["RGBA", "RGBA"],
 ];
 
-function appendPropertyControl(label, control, property) {
+function appendPropertyControl(label, control, property, widget) {
+  if (property.kind === "text") {
+    const row = document.createElement("div");
+    row.className = "text-with-icon-row";
+    row.append(control);
+    const iconButton = document.createElement("button");
+    iconButton.type = "button";
+    iconButton.className = "button subtle compact";
+    iconButton.title = "MDI-Icon aus dem Katalog in den Text einfügen";
+    iconButton.textContent = "Icon einfügen";
+    iconButton.addEventListener("click", () => openIconInsertDialog(widget, control));
+    row.append(iconButton);
+    label.append(row);
+    return;
+  }
   if (property.kind === "image_ref") {
     const row = document.createElement("div");
     row.className = "image-ref-row";
@@ -4036,7 +4501,7 @@ function ensureFontLoaded(fontId) {
   const source = entry?.file_path || entry?.web_url;
   if (!source) return;
   fontLoadState.set(fontId, "loading");
-  const face = new FontFace(fontFamilyId(fontId), `url("${assetUrl(source)}")`);
+  const face = new FontFace(fontFamilyId(fontId), `url(${JSON.stringify(assetUrl(source))})`);
   face.load().then((loaded) => {
     document.fonts.add(loaded);
     fontLoadState.set(fontId, "loaded");

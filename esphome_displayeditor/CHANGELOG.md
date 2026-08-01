@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+## 0.11.1
+
+- Reworked icon handling end to end:
+  - Added a one-click "MDI-Icons hinzufügen" preset to the Font Library that
+    registers the Pictogrammers MDI webfont (Apache 2.0) as a fixed library
+    entry and immediately pins a local, hash-verified revision - no manual
+    URL entry needed.
+  - Every Label/Button `text` field now has an "Icon einfügen" button that
+    opens the MDI catalog directly at the text you're editing, auto-registers
+    the MDI font on first use, assigns it as that widget's `text_font`, and
+    inserts the chosen glyph at the cursor. The old glyph editor lived only
+    in the Font Library and applied its MDI name matching (`mdi:home`, catalog
+    browsing) to whatever font was being edited there, including Google Fonts
+    or plain text TTFs that don't contain those glyphs at all - it could
+    silently swap literal text like "home" for an unrelated icon character.
+  - The Font Library's manual "Glyphen (optional)" picker is gone. Glyph
+    restriction is now scoped to the MDI icon font only: its export is
+    derived automatically from every widget's actual static text using it
+    (unioned with whatever an imported YAML already had, never narrowed) -
+    no more remembering to keep a glyph list in sync by hand. Every other
+    library font (Google Fonts, uploaded/linked TTFs, ...) always exports
+    complete/unrestricted, even if it previously carried an explicit
+    `glyphs:` from an import - restricting an ordinary text font risks
+    cutting off characters some other part of the config still needs, a
+    risk that doesn't apply to the MDI font's fully-known icon usage.
+  - Fixed export validation rejecting local font/image paths inside the
+    add-on's own confined `images/`/`fonts/` asset folders (the destination
+    of the TTF/OTF upload button and the new MDI quick-add) as if they were
+    arbitrary, unverified host paths.
+- Replaced the curated 36-icon MDI catalog bundled with the glyph editor
+  with the complete Pictogrammers Material Design Icons set (7447 icons,
+  version 7.4.47), generated directly from the official
+  MaterialDesign-Webfont build's own `scss/_variables.scss` so codepoints
+  are guaranteed to match the webfont this app already loads.
+- Webfonts use `refresh: never` by default and can now be checked manually for
+  upstream changes. The editor downloads an approved update into a
+  hash-versioned local `fonts/` file, records ETag/hash metadata, and exports
+  that fixed revision for reproducible and offline ESPHome builds.
+- The Font Library now includes a visual glyph editor. It accepts literal
+  characters, `U+...`, `0x...`, ESPHome `\\U...` escapes and names from a
+  bundled, searchable MDI catalog; selected glyphs can be checked against the
+  actual cmap of a local TTF/OTF before export.
+- Fixed the glyph catalog preview so it loads the local file or webfont URL
+  currently entered in the form, including unsaved entries. Remote font
+  previews are allowed by the frontend security policy, and loading or source
+  errors are shown explicitly instead of rendering ambiguous missing-glyph
+  boxes.
+
 - Added a Font Library (Schriftbibliothek), mirroring the existing Color
   Library: add/edit/delete a project font (builtin LVGL bitmap font, Google
   Fonts, local file path, or web URL), with size/bpp/glyphs. Google Fonts

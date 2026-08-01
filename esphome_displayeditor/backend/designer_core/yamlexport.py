@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from typing import Any
@@ -22,7 +23,7 @@ from typing import Any
 import yaml
 
 from .idgen import IdRegistry
-from .model import STATES_KEY, Project, WidgetNode
+from .model import STATES_KEY, FontLibraryEntry, Project, WidgetNode
 from .widgetschema import LVGL_STYLE_KEYS, WIDGET_SCHEMAS
 
 _LEGACY_STYLE_REMAP = {
@@ -276,7 +277,68 @@ def build_lvgl_tree(project: Project, registry: IdRegistry, issues: list[ExportI
     return lvgl
 
 
+_MDI_WEBFONT_PATTERN = re.compile(r"materialdesignicons-webfont\.ttf(\?.*)?$", re.IGNORECASE)
+
+
+def _is_mdi_webfont_url(url: str) -> bool:
+    return bool(_MDI_WEBFONT_PATTERN.search(str(url or "").strip()))
+
+
+def _is_mdi_font(f: FontLibraryEntry, project: Project) -> bool:
+    """Whether ``f`` is the Pictogrammers MDI icon webfont - the only font
+    glyph automation may touch. A pinned/managed revision's source_kind is
+    "file" by the time it's exported, with the original URL only recorded in
+    the project's own (designer-private) font-source metadata, not on the
+    model field - both places have to be checked."""
+    if f.source_kind == "web" and _is_mdi_webfont_url(f.web_url):
+        return True
+    font_sources = (project.import_source or {}).get("font_sources")
+    meta = font_sources.get(f.id) if isinstance(font_sources, dict) else None
+    return _is_mdi_webfont_url((meta or {}).get("url", ""))
+
+
+def _effective_text_font(widget: WidgetNode, project: Project) -> str:
+    """The font id a widget's ``text`` actually renders with, following the
+    same precedence ESPHome's LVGL component applies: the widget's own style
+    (inline or named) beats its type's theme default, which beats the
+    project-wide default font."""
+    if widget.style_mode == "named" and widget.style_refs:
+        for ref in widget.style_refs:
+            style = project.find_style(ref)
+            font = style.style_tree.get("text_font") if style else None
+            if font:
+                return font
+    else:
+        font = widget.style_tree.get("text_font")
+        if font:
+            return font
+    theme_style = project.theme.get(widget.widget_type)
+    if isinstance(theme_style, dict) and theme_style.get("text_font"):
+        return theme_style["text_font"]
+    return project.default_font
+
+
+def _collect_used_glyphs(project: Project) -> dict[str, set[str]]:
+    """Every character actually typed into a static ``text`` property,
+    grouped by the font id it renders with. The designer's model has no
+    lambda/runtime text (that lives in the hand-maintained device config
+    this file gets ``!include``d into), so every ``text`` value here is the
+    literal, exported string - safe to scan exhaustively rather than only
+    approximately."""
+    used: dict[str, set[str]] = {}
+    for widget in project.all_widgets():
+        text = widget.properties.get("text")
+        if not isinstance(text, str) or not text:
+            continue
+        font_id = _effective_text_font(widget, project)
+        if not font_id:
+            continue
+        used.setdefault(font_id, set()).update(text)
+    return used
+
+
 def build_font_block(project: Project) -> list[dict[str, Any]] | None:
+    used_glyphs = _collect_used_glyphs(project)
     entries = []
     for f in project.fonts:
         if f.source_kind == "builtin":
@@ -299,8 +361,16 @@ def build_font_block(project: Project) -> list[dict[str, Any]] | None:
                 entry["file"].update(
                     {k: v for k, v in extra_file.items() if k not in entry["file"]}
                 )
-        if f.glyphs:
-            entry["glyphs"] = f.glyphs
+        # Glyph automation is scoped to the MDI icon font only - every other
+        # library font (Google Fonts, uploaded/linked TTFs, ...) is always
+        # exported complete. Restricting an ordinary text font risks cutting
+        # off characters some other, non-static part of the config still
+        # needs; the MDI font is the one case where "only what's actually
+        # used" is both safe (its glyph names/usage are fully known here) and
+        # actually worth the code-size saving, given its ~7000-icon size.
+        glyphs = sorted(set(f.glyphs) | used_glyphs.get(f.id, set())) if _is_mdi_font(f, project) else []
+        if glyphs:
+            entry["glyphs"] = glyphs
         if f.glyphsets:
             entry["glyphsets"] = f.glyphsets
         if f.extras:

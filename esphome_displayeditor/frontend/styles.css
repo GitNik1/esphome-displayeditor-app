@@ -263,12 +263,41 @@ input:focus { border-color: var(--accent); }
 .font-library > label { display: block; margin-bottom: 10px; color: var(--muted); font-size: 11px; }
 .font-library-list { display: grid; gap: 6px; margin-bottom: 9px; }
 .font-library-empty { margin: 0; color: var(--muted); font-size: 11px; }
-.font-library-item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; align-items: center; padding: 6px; border: 1px solid var(--line); border-radius: 7px; background: #0c1420; }
+.font-library-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 6px; border: 1px solid var(--line); border-radius: 7px; background: #0c1420; }
 .font-library-name { min-width: 0; overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .font-library-name small { display: block; margin-top: 1px; letter-spacing: 0; color: var(--muted); }
+.font-library-actions { display: flex; gap: 4px; align-items: center; }
+.font-source-status { display: inline-block; margin-top: 4px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 10px; }
+.font-source-status.current { border-color: #2f7658; color: #72d6a8; }
+.font-source-status.changed, .font-source-status.error { border-color: #8f6430; color: #ffbf69; }
+.font-source-status.checking { color: var(--accent); }
+.font-library-form label > small { display: block; margin-top: 4px; line-height: 1.35; color: var(--muted); }
 .font-library-form { padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #101a28; }
 .font-library-form label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 11px; }
 .font-library-form input, .font-library-form select { margin-top: 4px; }
+.glyph-field-row, .glyph-input-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.glyph-field-row input, .glyph-input-row input { margin-top: 0; }
+.glyph-dialog { width: min(820px, 94vw); }
+.glyph-dialog-body { display: grid; gap: 13px; padding: 16px 18px; overflow: auto; }
+.glyph-dialog-body label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.glyph-catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap: 6px; max-height: 240px; overflow: auto; }
+.glyph-catalog-item { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 7px; align-items: center; min-width: 0; padding: 6px; border: 1px solid var(--line); border-radius: 7px; color: var(--text); background: #0c1420; text-align: left; cursor: pointer; }
+.glyph-catalog-item:hover, .glyph-catalog-item.selected { border-color: var(--accent); background: #13253a; }
+.glyph-symbol { display: grid; place-items: center; min-height: 30px; font-size: 25px; }
+.glyph-symbol.preview-unavailable { color: var(--muted); font-family: inherit !important; font-size: 16px; }
+.glyph-preview-status { margin-top: -5px; }
+.glyph-preview-status.ready { color: #72d6a8; }
+.glyph-preview-status.error { color: #ffbf69; }
+.glyph-catalog-item small { display: block; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.glyph-selected-heading { display: flex; justify-content: space-between; align-items: center; }
+.glyph-selected { display: flex; flex-wrap: wrap; gap: 6px; min-height: 35px; padding: 7px; border: 1px solid var(--line); border-radius: 8px; }
+.glyph-selected-empty { color: var(--muted); font-size: 11px; }
+.glyph-chip { display: inline-flex; gap: 5px; align-items: center; padding: 3px 5px 3px 8px; border: 1px solid var(--line); border-radius: 999px; background: #0c1420; }
+.glyph-chip.available { border-color: #2f7658; }
+.glyph-chip.missing { border-color: #9a3f47; color: #ff929b; }
+.glyph-chip button { width: 20px; height: 20px; border: 0; color: var(--muted); background: transparent; cursor: pointer; }
+.glyph-dialog-actions { gap: 7px; }
+.dialog-action-spacer { flex: 1; }
 .background-fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 0 14px 12px; }
 .background-fields label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
 .background-fields label.grow { flex: 1 1 240px; }

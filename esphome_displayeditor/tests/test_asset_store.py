@@ -404,6 +404,16 @@ def test_write_font_asset_rejects_oversized_content(tmp_path: Path) -> None:
     assert raised.value.error == "file_too_large"
 
 
+def test_managed_font_can_use_explicit_larger_limit_and_remains_readable(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path, max_file_size=8, request_max_size=4096))
+    result = fs.write_font_asset("managed.ttf", TTF_HEADER, max_size=4096)
+
+    content, content_type = fs.read_asset(result["path"])
+
+    assert content == TTF_HEADER
+    assert content_type == "font/ttf"
+
+
 def test_write_font_asset_refuses_to_clobber_a_non_font_file(tmp_path: Path) -> None:
     fs = FilesystemBackend(_settings(tmp_path))
     (fs.root / "fonts").mkdir(parents=True)

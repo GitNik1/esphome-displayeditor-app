@@ -246,6 +246,11 @@ class FilesystemBackend:
         still rejected by ``_relative``/``_resolve``, same as everywhere else.
         """
         relative = self._relative(name, suffixes=set(_ASSET_CONTENT_TYPES))
+        limit = (
+            min(self.settings.request_max_size, 16 * 1024 * 1024)
+            if relative.suffix.lower() in self._allowed_font_asset_suffixes
+            else self.settings.max_file_size
+        )
         self._assert_access(relative, write=False)
         target = self._resolve(self.root, relative)
         try:
@@ -258,12 +263,12 @@ class FilesystemBackend:
             stat = os.fstat(descriptor)
             if not target.is_file() or target.is_symlink():
                 raise ApiError("invalid_path", "Path is not a regular file.")
-            if stat.st_size > self.settings.max_file_size:
+            if stat.st_size > limit:
                 raise ApiError("file_too_large", "Asset exceeds the configured size limit.", 413)
             with os.fdopen(descriptor, "rb", closefd=True) as handle:
                 descriptor = -1
-                content = handle.read(self.settings.max_file_size + 1)
-            if len(content) > self.settings.max_file_size:
+                content = handle.read(limit + 1)
+            if len(content) > limit:
                 raise ApiError("file_too_large", "Asset exceeds the configured size limit.", 413)
         finally:
             if descriptor >= 0:
@@ -403,7 +408,7 @@ class FilesystemBackend:
             raise ApiError("invalid_path", "Font names may not contain a directory.")
         return relative
 
-    def write_font_asset(self, name: str, content: bytes) -> dict:
+    def write_font_asset(self, name: str, content: bytes, *, max_size: int | None = None) -> dict:
         """Write a TrueType/OpenType font into the dedicated fonts/ folder.
 
         Same shape as write_image_asset: lands directly on the host (not a
@@ -411,7 +416,8 @@ class FilesystemBackend:
         verified by content rather than by name.
         """
         relative = self._relative_font_asset(name)
-        if len(content) > self.settings.max_file_size:
+        limit = self.settings.max_file_size if max_size is None else max_size
+        if len(content) > limit:
             raise ApiError("file_too_large", "Font exceeds the configured size limit.", 413)
         if not content.startswith(_FONT_MAGICS):
             raise ApiError("invalid_font", "Only TrueType/OpenType font data is accepted.")

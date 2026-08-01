@@ -31,6 +31,25 @@ def _is_remote_asset(path: str) -> bool:
     return path.startswith(("http://", "https://"))
 
 
+_CONFINED_ASSET_SUBDIRS = ("images", "fonts")
+
+
+def _is_confined_asset_path(path: str) -> bool:
+    """Whether a local path lives inside one of the add-on's own dedicated
+    asset folders (``images/``, ``fonts/``) rather than being an arbitrary
+    host path a user typed by hand. Those folders are exactly what
+    ``write_image_asset``/``write_font_asset`` (manual TTF/OTF upload, the
+    MDI webfont quick-add) confine themselves to, and reads through them are
+    already containment-checked by ``FilesystemBackend._resolve`` - the
+    export step itself never opens the file, only writes this string into
+    the YAML, so blocking it here would just defeat those two features."""
+    parts = Path(path).parts
+    return (
+        bool(parts) and parts[0] in _CONFINED_ASSET_SUBDIRS
+        and ".." not in parts and not Path(path).is_absolute()
+    )
+
+
 class DesignerService:
     def __init__(self, data_root: Path) -> None:
         self.export_root = data_root / "exports"
@@ -168,13 +187,17 @@ class DesignerService:
         # `external` assets belong to the ESPHome config a project was imported
         # from. Their paths are relative to *that* file and are only ever copied
         # into the exported YAML as text - the add-on never opens them - so they
-        # carry none of the risk this rule exists to prevent.
+        # carry none of the risk this rule exists to prevent. Paths inside the
+        # add-on's own images/fonts asset folders are the dedicated store this
+        # comment refers to (see _is_confined_asset_path) - the TTF/OTF upload
+        # and the MDI webfont quick-add both write there.
         local_resources = [
             image.file_path
             for image in project.images
             if image.file_path
             and not image.external
             and not _is_remote_asset(image.file_path)
+            and not _is_confined_asset_path(image.file_path)
         ]
         local_resources.extend(
             font.file_path
@@ -183,6 +206,7 @@ class DesignerService:
             and font.file_path
             and not font.external
             and not _is_remote_asset(font.file_path)
+            and not _is_confined_asset_path(font.file_path)
         )
         if (
             project.background.export_as_lvgl_image

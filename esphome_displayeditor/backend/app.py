@@ -22,6 +22,7 @@ from .builder.adapter import BuilderAdapterError, sanitize_output
 from .designer import DesignerService
 from .errors import ApiError, capability_unavailable
 from .filesystem import FilesystemBackend
+from .font_sources import FontSourceService
 from .project_store import ProjectStore
 from .runtime import DeviceManager, DeviceRegistry, SecretStore
 from .security import RateLimiter
@@ -80,6 +81,23 @@ class AssetFontRequest(BaseModel):
     content_base64: str = Field(min_length=1, max_length=24 * 1024 * 1024)
 
 
+class FontSourceCheckRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+    etag: str = Field(default="", max_length=512)
+    last_modified: str = Field(default="", max_length=256)
+    sha256: str = Field(default="", pattern=r"^$|^[0-9a-f]{64}$")
+
+
+class FontSourceUpdateRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=63, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    url: str = Field(min_length=8, max_length=2048)
+
+
+class FontGlyphCoverageRequest(BaseModel):
+    path: str = Field(min_length=5, max_length=512)
+    codepoints: list[int] = Field(min_length=1, max_length=512)
+
+
 class SaveDesignerProjectRequest(DesignerProjectRequest):
     expected_revision: str | None = Field(
         default=None, pattern=r"^sha256:[0-9a-f]{64}$"
@@ -121,6 +139,10 @@ def create_app(
 ) -> FastAPI:
     settings = runtime_settings or Settings.load()
     filesystem = FilesystemBackend(settings)
+    font_sources = FontSourceService(
+        filesystem,
+        max_size=min(settings.request_max_size, 16 * 1024 * 1024),
+    )
     audit = AuditStore(settings.data_root)
     designer = DesignerService(settings.data_root)
     projects = ProjectStore(settings.data_root, designer, settings.max_file_size)
@@ -167,6 +189,7 @@ def create_app(
     )
     application.state.device_manager = runtime_manager
     application.state.builder_manager = builder_manager
+    application.state.font_sources = font_sources
 
     @application.middleware("http")
     async def security_boundary(request: Request, call_next):
@@ -252,7 +275,8 @@ def create_app(
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: http: https:; connect-src 'self' ws: wss:; "
+            "img-src 'self' data: http: https:; font-src 'self' data: http: https:; "
+            "connect-src 'self' ws: wss:; "
             "object-src 'none'; base-uri 'none'"
         )
         if request.url.path.startswith("/api/v1/"):
@@ -1085,6 +1109,80 @@ def create_app(
             result="success",
         )
         return result
+
+    @application.post("/api/v1/designer/font-sources/check")
+    async def check_font_source(body: FontSourceCheckRequest, request: Request) -> dict:
+        user_id = require_capability(request, "designer.asset_write")
+        try:
+            result = await asyncio.to_thread(
+                font_sources.check,
+                body.url,
+                etag=body.etag,
+                last_modified=body.last_modified,
+                sha256=body.sha256,
+            )
+        except ApiError as exc:
+            audit.record(
+                user_id=user_id,
+                action="designer.font_source.check",
+                configuration=body.url,
+                old_revision=body.sha256 or None,
+                new_revision=None,
+                result=exc.error,
+            )
+            raise
+        audit.record(
+            user_id=user_id,
+            action="designer.font_source.check",
+            configuration=body.url,
+            old_revision=body.sha256 or None,
+            new_revision=result.get("sha256") or result.get("etag") or None,
+            result="changed" if result["changed"] else "current",
+        )
+        return result
+
+    @application.post("/api/v1/designer/font-sources/update")
+    async def update_font_source(body: FontSourceUpdateRequest, request: Request) -> dict:
+        user_id = require_capability(request, "designer.asset_write")
+        try:
+            result = await asyncio.to_thread(font_sources.update, body.id, body.url)
+        except ApiError as exc:
+            audit.record(
+                user_id=user_id,
+                action="designer.font_source.update",
+                configuration=body.url,
+                old_revision=None,
+                new_revision=None,
+                result=exc.error,
+            )
+            raise
+        audit.record(
+            user_id=user_id,
+            action="designer.font_source.update",
+            configuration=body.url,
+            old_revision=None,
+            new_revision=result["sha256"],
+            result="success",
+        )
+        return result
+
+    @application.post("/api/v1/designer/fonts/glyph-coverage")
+    async def font_glyph_coverage(body: FontGlyphCoverageRequest) -> dict:
+        # This POST carries a bounded list of codepoints but is read-only;
+        # use the same availability check as GET /assets/read instead of the
+        # write-operation identity gate used by mutating POST endpoints.
+        ensure_capability_available("designer.asset_read")
+        invalid = [
+            value for value in body.codepoints
+            if value < 0 or value > 0x10FFFF or 0xD800 <= value <= 0xDFFF
+        ]
+        if invalid:
+            raise ApiError("invalid_codepoint", "Glyph list contains an invalid Unicode codepoint.", 422)
+        return await asyncio.to_thread(
+            font_sources.glyph_coverage,
+            body.path,
+            list(dict.fromkeys(body.codepoints)),
+        )
 
     @application.get("/api/v1/designer/assets/read/{name:path}")
     async def read_designer_asset(name: str) -> Response:

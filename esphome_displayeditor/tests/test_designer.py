@@ -91,6 +91,100 @@ def test_project_exports_esphome_yaml(tmp_path: Path) -> None:
     assert "0x20C7B7" in result["yaml"]
 
 
+def test_font_glyphs_are_auto_collected_from_widget_text(tmp_path: Path) -> None:
+    """`glyphs:` is no longer manually curated in the Font Library editor -
+    the exporter must derive it from what widgets actually display, unioned
+    with anything an imported YAML already restricted it to (never narrowed
+    automatically)."""
+    project = project_with_button()
+    project["fonts"] = [
+        {
+            "id": "icons_mdi", "source_kind": "web",
+            "web_url": "https://example.invalid/materialdesignicons-webfont.ttf",
+            "size": 24, "bpp": 4, "glyphs": ["A"],
+        },
+    ]
+    project["widgets"] = [
+        {
+            "id": "label_1", "widget_type": "label", "x": 0, "y": 0,
+            "width": 40, "height": 20,
+            "properties": {"text": "Hi"},
+            "style_tree": {"text_font": "icons_mdi"},
+            "children": [],
+        },
+        {
+            "id": "label_2", "widget_type": "label", "x": 0, "y": 30,
+            "width": 40, "height": 20,
+            "properties": {"text": "!"},
+            "style_tree": {"text_font": "icons_mdi"},
+            "children": [],
+        },
+    ]
+    exported = DesignerService(tmp_path).export_yaml(project)["yaml"]
+    glyphs_block = exported.split("glyphs:", 1)[1].split("lvgl:", 1)[0]
+    # The pre-existing "A" (from an imported config) plus every character
+    # actually typed into the two labels' text - nothing lost, nothing missing.
+    for char in ("A", "H", "i", "!"):
+        assert char in glyphs_block
+
+
+def test_font_glyphs_follow_theme_default_font(tmp_path: Path) -> None:
+    """A widget with no explicit ``text_font`` still contributes its
+    characters to whichever font the theme (or project default) assigns it,
+    matching ESPHome's own style precedence - here the MDI font, the only
+    one glyph automation applies to."""
+    project = project_with_button()
+    project["fonts"] = [
+        {
+            "id": "icons_mdi", "source_kind": "web",
+            "web_url": "https://example.invalid/materialdesignicons-webfont.ttf",
+            "size": 16, "bpp": 4,
+        },
+    ]
+    project["theme"] = {"label": {"text_font": "icons_mdi"}}
+    project["widgets"] = [
+        {
+            "id": "label_1", "widget_type": "label", "x": 0, "y": 0,
+            "width": 40, "height": 20,
+            "properties": {"text": "Zw"},
+            "style_tree": {},
+            "children": [],
+        },
+    ]
+    exported = DesignerService(tmp_path).export_yaml(project)["yaml"]
+    glyphs_block = exported.split("glyphs:", 1)[1].split("lvgl:", 1)[0]
+    assert "Z" in glyphs_block and "w" in glyphs_block
+
+
+def test_non_mdi_fonts_are_never_glyph_restricted(tmp_path: Path) -> None:
+    """Glyph automation is scoped to the MDI icon font only - every other
+    library font (Google Fonts, a plain uploaded/linked TTF, ...) must
+    always export complete, even if it already carried an explicit
+    ``glyphs:`` restriction from an imported YAML and is heavily used in
+    static widget text. Restricting an ordinary text font is exactly the
+    risk this scoping exists to avoid."""
+    project = project_with_button()
+    project["fonts"] = [
+        {
+            "id": "body_font", "source_kind": "gfonts",
+            "gfonts_family": "Roboto", "size": 16, "bpp": 4,
+            "glyphs": ["A"],  # a pre-existing restriction from an import
+        },
+    ]
+    project["widgets"] = [
+        {
+            "id": "label_1", "widget_type": "label", "x": 0, "y": 0,
+            "width": 40, "height": 20,
+            "properties": {"text": "Hello"},
+            "style_tree": {"text_font": "body_font"},
+            "children": [],
+        },
+    ]
+    exported = DesignerService(tmp_path).export_yaml(project)["yaml"]
+    font_block = exported.split("font:", 1)[1].split("lvgl:", 1)[0]
+    assert "glyphs" not in font_block
+
+
 def test_duplicate_ids_fail_validation(tmp_path: Path) -> None:
     project = project_with_button()
     project["widgets"].append(dict(project["widgets"][0]))
@@ -129,3 +223,28 @@ def test_external_flag_does_not_whitelist_editor_assets(tmp_path: Path) -> None:
 
     with pytest.raises(ApiError):
         DesignerService(tmp_path).export_yaml(project)
+
+
+def test_confined_asset_folder_paths_pass_validation(tmp_path: Path) -> None:
+    """A non-external local path normally fails validation (see
+    test_local_asset_paths_are_blocked), but a path inside the add-on's own
+    images/fonts asset folders is exactly what write_image_asset/
+    write_font_asset (manual upload, the MDI webfont quick-add) confine
+    themselves to - validation must not treat that the same as an arbitrary
+    host path a user typed by hand. (Actually copying the image file at
+    export time is a separate concern with its own file-existence check;
+    this test isolates the validation rule itself.)"""
+    project = project_with_button()
+    project["images"] = [{"id": "logo", "file_path": "images/logo.png"}]
+    project["fonts"] = [
+        {"id": "icons_mdi", "source_kind": "file", "file_path": "fonts/icons_mdi-abc123.ttf", "size": 24, "bpp": 4},
+    ]
+    _parsed, issues = DesignerService(tmp_path).validate(project)
+    assert not any(issue["severity"] == "error" for issue in issues)
+
+
+def test_confined_asset_path_traversal_still_fails_validation(tmp_path: Path) -> None:
+    project = project_with_button()
+    project["images"] = [{"id": "logo", "file_path": "images/../../etc/passwd"}]
+    _parsed, issues = DesignerService(tmp_path).validate(project)
+    assert any(issue["severity"] == "error" for issue in issues)
