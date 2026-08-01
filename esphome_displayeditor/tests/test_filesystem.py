@@ -110,6 +110,33 @@ def test_publish_rejects_invalid_and_duplicate_yaml(tmp_path: Path) -> None:
         assert path.read_text(encoding="utf-8") == active
 
 
+def test_interrupted_atomic_draft_and_publish_preserve_previous_files(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = make_backend(tmp_path)
+    active_path = backend.root / "display.yaml"
+    active = "esphome:\n  name: active\n"
+    old_draft = "esphome:\n  name: old-draft\n"
+    new_draft = "esphome:\n  name: new-draft\n"
+    active_path.write_text(active, encoding="utf-8", newline="")
+    backend.save_draft("display.yaml", old_draft)
+
+    def interrupted_replace(_source, _target) -> None:
+        raise OSError("simulated interrupted atomic replace")
+
+    monkeypatch.setattr("backend.filesystem.os.replace", interrupted_replace)
+    with pytest.raises(OSError, match="interrupted"):
+        backend.save_draft("display.yaml", new_draft)
+    assert backend.read_draft("display.yaml")["content"] == old_draft
+    assert not list(backend.drafts.glob(".display.yaml.*.tmp"))
+
+    with pytest.raises(OSError, match="interrupted"):
+        backend.publish("display.yaml", revision_for(active))
+    assert active_path.read_text(encoding="utf-8") == active
+    assert backend.read_draft("display.yaml")["content"] == old_draft
+    assert not list(backend.root.glob(".display.yaml.*.tmp"))
+
+
 def test_protected_directories_are_read_only(tmp_path: Path) -> None:
     backend = make_backend(tmp_path)
     package_dir = backend.root / "packages"

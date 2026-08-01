@@ -62,6 +62,7 @@ class Settings:
     api_timeout_seconds: int = 300
     builder_provider: str = "disabled"
     builder_url: str = "http://5c53de3b-esphome:6052"
+    validation_max_age_seconds: int = 900
 
     @classmethod
     def load(cls) -> "Settings":
@@ -124,6 +125,9 @@ class Settings:
             ),
             builder_provider=builder_provider,
             builder_url=builder_url,
+            validation_max_age_seconds=_bounded_int(
+                options, "validation_max_age_seconds", 900, 30, 86400
+            ),
         )
 
     def role_for(self, user_id: str | None) -> str:

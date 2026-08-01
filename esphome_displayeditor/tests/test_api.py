@@ -70,8 +70,10 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     assert 'id="runtime-binding-additional-widgets"' in response.text
     assert 'id="runtime-binding-orphans"' in response.text
     assert 'id="glyph-preview-status"' in response.text
-    assert 'styles.css?v=0.11.1' in response.text
-    assert 'app.js?v=0.11.1' in response.text
+    assert 'id="yaml-line-numbers"' in response.text
+    assert 'id="merge-dialog"' in response.text
+    assert 'styles.css?v=0.12.0' in response.text
+    assert 'app.js?v=0.12.0' in response.text
     assert client.get("/app.js").status_code == 200
     viewer = client.get("/viewer/viewer.js")
     assert viewer.status_code == 200

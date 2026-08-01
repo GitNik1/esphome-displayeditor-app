@@ -6,11 +6,12 @@ import os
 import asyncio
 import base64
 import binascii
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +30,7 @@ from .security import RateLimiter
 from .settings import CAPABILITY_MINIMUM_ROLE, Settings, capabilities
 from .version import APP_VERSION
 from .viewer_bindings import ViewerBindingStore, validate_bindings
+from .workflow import WorkflowStore
 
 
 class DraftRequest(BaseModel):
@@ -147,6 +149,8 @@ def create_app(
     designer = DesignerService(settings.data_root)
     projects = ProjectStore(settings.data_root, designer, settings.max_file_size)
     viewer_bindings = ViewerBindingStore(settings.data_root)
+    workflow = WorkflowStore(settings.data_root)
+    configuration_job_locks: dict[str, asyncio.Lock] = {}
     rate_limiter = RateLimiter(
         settings.api_rate_limit_per_minute,
         settings.write_rate_limit_per_minute,
@@ -190,6 +194,7 @@ def create_app(
     application.state.device_manager = runtime_manager
     application.state.builder_manager = builder_manager
     application.state.font_sources = font_sources
+    application.state.workflow = workflow
 
     @application.middleware("http")
     async def security_boundary(request: Request, call_next):
@@ -584,24 +589,156 @@ def create_app(
     @application.post("/api/v1/configurations/{name:path}/validate")
     async def validate_esphome(name: str, request: Request) -> dict:
         user_id = require_capability(request, "configuration.validate_esphome")
-        active = filesystem.read_config(name)
+        active_before = filesystem.read_config(name)
         result = await builder_manager.validate(name)
+        active_after = filesystem.read_config(name)
+        if active_after["revision"] != active_before["revision"]:
+            workflow.invalidate_validation(name)
+            audit.record(
+                user_id=user_id,
+                action="configuration.validate.esphome",
+                configuration=name,
+                old_revision=active_before["revision"],
+                new_revision=active_after["revision"],
+                result="validation_revision_conflict",
+                esphome_version=builder_manager.esphome_version,
+            )
+            raise ApiError(
+                "validation_revision_conflict",
+                "The active configuration changed while ESPHome was validating it.",
+                409,
+                {
+                    "validated_revision": active_before["revision"],
+                    "active_revision": active_after["revision"],
+                },
+            )
+        proof = None
+        if result["valid"]:
+            proof = workflow.record_validation(
+                name,
+                active_after["revision"],
+                builder_manager.esphome_version,
+            )
+        else:
+            workflow.invalidate_validation(name)
         audit.record(
             user_id=user_id,
             action="configuration.validate.esphome",
             configuration=name,
-            old_revision=active["revision"],
-            new_revision=active["revision"],
+            old_revision=active_after["revision"],
+            new_revision=active_after["revision"],
             result="success" if result["valid"] else "validation_failed",
             esphome_version=builder_manager.esphome_version,
         )
-        return {**result, "revision": active["revision"]}
+        return {
+            **result,
+            "revision": active_after["revision"],
+            "validated_at": proof["validated_at"] if proof else None,
+            "expires_in_seconds": settings.validation_max_age_seconds if proof else 0,
+        }
+
+    def checked_idempotency_key(value: str | None) -> str | None:
+        if value is None:
+            return None
+        key = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", key):
+            raise ApiError(
+                "invalid_idempotency_key",
+                "Idempotency-Key must contain 8 to 128 safe ASCII characters.",
+                422,
+            )
+        return key
+
+    def replayed_job(
+        key: str | None, operation: str, configuration: str
+    ) -> dict[str, Any] | None:
+        if key is None:
+            return None
+        prior = workflow.job_request(key)
+        if prior is None:
+            return None
+        if (
+            prior["operation"] != operation
+            or prior["configuration"] != configuration
+        ):
+            raise ApiError(
+                "idempotency_conflict",
+                "The idempotency key belongs to a different firmware request.",
+                409,
+                {
+                    "operation": prior["operation"],
+                    "configuration": prior["configuration"],
+                },
+            )
+        return {
+            "job": prior["job"],
+            "revision": prior["revision"],
+            "idempotent_replay": True,
+        }
+
+    async def reject_parallel_job(configuration: str) -> None:
+        terminal = {
+            "success", "succeeded", "completed", "done", "failed", "error",
+            "cancelled", "canceled",
+        }
+        for job in await builder_manager.jobs():
+            if str(job.get("configuration", "")) != configuration:
+                continue
+            status = str(job.get("status", "")).strip().lower()
+            if status not in terminal:
+                raise ApiError(
+                    "job_already_running",
+                    "A firmware job is already active for this configuration.",
+                    409,
+                    {
+                        "configuration": configuration,
+                        "job_id": job.get("job_id"),
+                        "status": status or "unknown",
+                    },
+                )
 
     @application.post("/api/v1/configurations/{name:path}/compile", status_code=202)
-    async def compile_configuration(name: str, request: Request) -> dict:
+    async def compile_configuration(
+        name: str,
+        request: Request,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict:
         user_id = require_capability(request, "firmware.compile")
-        active = filesystem.read_config(name)
-        job = await builder_manager.compile(name)
+        key = checked_idempotency_key(idempotency_key)
+        lock = configuration_job_locks.setdefault(name, asyncio.Lock())
+        try:
+            async with lock:
+                replay = replayed_job(key, "compile", name)
+                if replay is not None:
+                    return replay
+                active = filesystem.read_config(name)
+                workflow.require_validation(
+                    name, active["revision"], settings.validation_max_age_seconds
+                )
+                await reject_parallel_job(name)
+                latest = filesystem.read_config(name)
+                if latest["revision"] != active["revision"]:
+                    workflow.require_validation(
+                        name,
+                        latest["revision"],
+                        settings.validation_max_age_seconds,
+                    )
+                job = await builder_manager.compile(name)
+                if key is not None:
+                    workflow.record_job_request(
+                        key, "compile", name, active["revision"], job
+                    )
+        except ApiError as exc:
+            audit.record(
+                user_id=user_id,
+                action="firmware.compile",
+                configuration=name,
+                old_revision=None,
+                new_revision=None,
+                result=exc.error,
+                esphome_version=builder_manager.esphome_version,
+            )
+            raise
         audit.record(
             user_id=user_id,
             action="firmware.compile",
@@ -612,11 +749,14 @@ def create_app(
             job_id=job["job_id"],
             esphome_version=builder_manager.esphome_version,
         )
-        return {"job": job, "revision": active["revision"]}
+        return {"job": job, "revision": active["revision"], "idempotent_replay": False}
 
     @application.post("/api/v1/configurations/{name:path}/install", status_code=202)
     async def install_configuration(
-        name: str, body: InstallRequest, request: Request
+        name: str,
+        body: InstallRequest,
+        request: Request,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     ) -> dict:
         user_id = require_capability(request, "firmware.upload")
         if not body.confirmed:
@@ -625,8 +765,42 @@ def create_app(
                 "Firmware installation requires explicit confirmation.",
                 409,
             )
-        active = filesystem.read_config(name)
-        job = await builder_manager.install(name, body.port)
+        key = checked_idempotency_key(idempotency_key)
+        lock = configuration_job_locks.setdefault(name, asyncio.Lock())
+        try:
+            async with lock:
+                replay = replayed_job(key, "install", name)
+                if replay is not None:
+                    return replay
+                active = filesystem.read_config(name)
+                workflow.require_validation(
+                    name, active["revision"], settings.validation_max_age_seconds
+                )
+                await reject_parallel_job(name)
+                latest = filesystem.read_config(name)
+                if latest["revision"] != active["revision"]:
+                    workflow.require_validation(
+                        name,
+                        latest["revision"],
+                        settings.validation_max_age_seconds,
+                    )
+                job = await builder_manager.install(name, body.port)
+                if key is not None:
+                    workflow.record_job_request(
+                        key, "install", name, active["revision"], job
+                    )
+        except ApiError as exc:
+            audit.record(
+                user_id=user_id,
+                action="firmware.install",
+                configuration=name,
+                old_revision=None,
+                new_revision=None,
+                result=exc.error,
+                esphome_version=builder_manager.esphome_version,
+                metadata={"port": "OTA"},
+            )
+            raise
         audit.record(
             user_id=user_id,
             action="firmware.install",
@@ -638,7 +812,7 @@ def create_app(
             esphome_version=builder_manager.esphome_version,
             metadata={"port": "OTA"},
         )
-        return {"job": job, "revision": active["revision"]}
+        return {"job": job, "revision": active["revision"], "idempotent_replay": False}
 
     @application.get("/api/v1/jobs")
     async def list_builder_jobs(request: Request) -> dict:
@@ -670,8 +844,13 @@ def create_app(
     @application.post("/api/v1/configurations/{name:path}/publish")
     async def publish(name: str, body: PublishRequest, request: Request) -> dict:
         user_id = require_capability(request, "configuration.publish")
+        lock = configuration_job_locks.setdefault(name, asyncio.Lock())
         try:
-            result = filesystem.publish(name, body.expected_revision)
+            async with lock:
+                if builder_manager.available:
+                    await reject_parallel_job(name)
+                result = filesystem.publish(name, body.expected_revision)
+                workflow.invalidate_validation(name)
         except ApiError as exc:
             audit.record(
                 user_id=user_id,

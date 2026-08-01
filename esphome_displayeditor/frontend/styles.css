@@ -403,11 +403,23 @@ input:focus { border-color: var(--accent); }
 .config-item:hover, .config-item.active { color: var(--text); background: var(--surface-2); }
 .config-item small { display: block; margin-top: 3px; }
 .draft-dot { color: var(--warning); }
-.editor-panel { min-width: 0; display: grid; grid-template-rows: 64px minmax(0, 1fr) auto; }
-.editor-toolbar > div:first-child { min-width: 0; }
+.editor-panel { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.editor-toolbar { min-width: 0; display: grid; grid-template-columns: minmax(130px, 220px) minmax(0, 1fr); align-items: center; overflow: hidden; }
+.editor-toolbar > div:first-child { min-width: 0; max-width: 220px; }
+.editor-toolbar .actions { min-width: 0; flex-wrap: wrap; justify-content: flex-end; overflow: visible; }
+.editor-toolbar .actions .button { flex: 0 0 auto; }
 .editor-toolbar strong, .editor-toolbar small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .editor-toolbar small { margin-top: 4px; }
-#yaml-editor { resize: none; border: 0; border-radius: 0; padding: 20px; background: #080e16; color: #d5e4f3; font: 13px/1.6 "Cascadia Code", Consolas, monospace; outline: none; }
+.yaml-editor-area { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: #080e16; }
+.yaml-editor-tools, .yaml-editor-status { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 7px 12px; border-bottom: 1px solid var(--line); color: var(--muted); background: #0e1722; font-size: 11px; }
+.yaml-editor-tools label { flex: 0 0 auto; }
+.yaml-editor-tools input { width: min(280px, 45%); padding: 6px 8px; }
+.yaml-search-result { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yaml-editor-shell { min-height: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); overflow: hidden; }
+#yaml-line-numbers { min-width: 3.6em; height: 100%; margin: 0; padding: 14px 9px; overflow: hidden; border-right: 1px solid var(--line); color: #60758a; background: #0b121b; font: 13px/1.6 "Cascadia Code", Consolas, monospace; text-align: right; user-select: none; }
+#yaml-editor { min-width: 0; resize: none; border: 0; border-radius: 0; padding: 14px 16px; background: #080e16; color: #d5e4f3; font: 13px/1.6 "Cascadia Code", Consolas, monospace; outline: none; tab-size: 2; white-space: pre; overflow: auto; }
+.yaml-editor-status { justify-content: space-between; border-top: 1px solid var(--line); border-bottom: 0; }
+.yaml-editor-status .dirty { color: var(--warning); }
 .output { max-height: 230px; overflow: auto; margin: 0; padding: 15px 20px; border-top: 1px solid var(--line); color: #bdcadd; background: #0e1722; font: 12px/1.5 monospace; white-space: pre-wrap; }
 .builder-jobs { max-height: 240px; overflow: auto; border-top: 1px solid var(--line); padding: 12px 16px; background: var(--surface); }
 .builder-jobs-heading, .builder-job { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -456,6 +468,12 @@ dialog::backdrop { background: #03070bc7; }
 .dialog-heading, .dialog-actions { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .dialog-actions { justify-content: flex-end; border-top: 1px solid var(--line); border-bottom: 0; }
 #yaml-output { max-height: 58vh; overflow: auto; margin: 0; padding: 18px; color: #d5e4f3; background: #080e16; font: 12px/1.55 monospace; white-space: pre-wrap; }
+.merge-dialog { width: min(1500px, 96vw); }
+.merge-hint { margin: 0; padding: 12px 18px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.5; }
+.merge-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; height: min(58vh, 680px); background: var(--line); }
+.merge-grid label { min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; padding: 12px; color: var(--muted); background: var(--surface); font-size: 12px; }
+.merge-grid textarea { min-width: 0; min-height: 0; resize: none; padding: 12px; border: 1px solid var(--line); border-radius: 7px; color: #d5e4f3; background: #080e16; font: 12px/1.55 "Cascadia Code", Consolas, monospace; white-space: pre; overflow: auto; tab-size: 2; }
+.merge-grid textarea[readonly] { color: #91a5b8; background: #0b121b; }
 #toast { position: fixed; right: 20px; bottom: 20px; z-index: 20; max-width: 380px; padding: 11px 15px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: #1a2736; box-shadow: 0 10px 35px #0008; opacity: 0; transform: translateY(10px); pointer-events: none; transition: .2s; }
 #toast.show { opacity: 1; transform: translateY(0); }
 #toast.error { border-color: var(--danger); }
@@ -465,7 +483,7 @@ dialog::backdrop { background: #03070bc7; }
   .properties-panel { display: none; }
   .config-view { grid-template-columns: 220px minmax(400px, 1fr); }
   .devices-view { grid-template-columns: 230px minmax(420px, 1fr); }
-  .editor-toolbar .actions { overflow-x: auto; }
+  .editor-toolbar { grid-template-columns: minmax(110px, 180px) minmax(0, 1fr); }
 }
 
 @media (max-width: 1150px) {
@@ -505,6 +523,10 @@ dialog::backdrop { background: #03070bc7; }
   .devices-view.showing-list .device-detail { display: none; }
   .config-view:not(.showing-list) .back-to-list,
   .devices-view:not(.showing-list) .back-to-list { display: inline-block; }
+  .editor-toolbar { grid-template-columns: auto minmax(0, 1fr); }
+  .editor-toolbar .actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .merge-grid { grid-template-columns: 1fr; height: 62vh; overflow: auto; }
+  .merge-grid label { min-height: 260px; }
 
   /* Base rule positions this via right:-1px/bottom:-1px with no left/top, so
      (unlike .glow-handle) the enlarged hit area is centered by adjusting

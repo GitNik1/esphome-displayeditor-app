@@ -1,5 +1,5 @@
 name: ESPHome Display Editor
-version: "0.11.1"
+version: "0.13.0"
 slug: esphome_displayeditor
 description: Visual LVGL designer and safe ESPHome configuration editor
 url: https://github.com/GitNik1/esphome-displayeditor-app
@@ -37,6 +37,7 @@ options:
   api_timeout_seconds: 300
   builder_provider: disabled
   builder_url: "http://5c53de3b-esphome:6052"
+  validation_max_age_seconds: 900
 schema:
   profile: list(native_filesystem|native_only|read_only|full)
   read_only: bool
@@ -53,3 +54,4 @@ schema:
   api_timeout_seconds: int(10,900)
   builder_provider: list(device_builder|disabled)
   builder_url: url
+  validation_max_age_seconds: int(30,86400)
