@@ -149,7 +149,7 @@ function imageSource(project, id) {
 function allWidgetItems(project) {
   const boxes = computeLayout(project);
   const result = [];
-  const visit = (widgets, ancestorHidden = false) => {
+  const visit = (widgets, ancestorHidden = false, parent = null) => {
     (widgets || []).forEach((widget) => {
       const hidden = ancestorHidden || Boolean(widget.hidden);
       const box = boxes.get(widget) || {
@@ -158,8 +158,8 @@ function allWidgetItems(project) {
         width: Number(widget.width) || 100,
         height: Number(widget.height) || 40,
       };
-      result.push({ widget, box, hidden });
-      visit(widget.children, hidden);
+      result.push({ widget, box, hidden, parent });
+      visit(widget.children, hidden, widget);
     });
   };
   visit(project.widgets);
@@ -534,6 +534,7 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
     "lvgl.widget.update": new Set(["hidden", "text", "value", "state_checked", ...RUNTIME_STYLE_KEYS]),
     "lvgl.label.update": new Set(["text", ...RUNTIME_STYLE_KEYS]),
     "lvgl.button.update": new Set(["text", ...RUNTIME_STYLE_KEYS]),
+    "lvgl.image.update": new Set(["src", ...RUNTIME_STYLE_KEYS]),
     "lvgl.slider.update": new Set(["value", ...RUNTIME_STYLE_KEYS]),
     "lvgl.bar.update": new Set(["value", "start_value", "min_value", "max_value", "mode", "animated", ...RUNTIME_STYLE_KEYS]),
     "lvgl.arc.update": new Set([
@@ -545,6 +546,7 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
   const updateWidgetTypes = {
     "lvgl.label.update": "label",
     "lvgl.button.update": "button",
+    "lvgl.image.update": "image",
     "lvgl.slider.update": "slider",
     "lvgl.bar.update": "bar",
     "lvgl.arc.update": "arc",
@@ -776,7 +778,8 @@ function renderArc(project, widget, activeStates) {
 }
 
 function renderWidgetContent(project, widget, timers, activeStates = []) {
-  if (["label", "button"].includes(widget.widget_type)) {
+  if (widget.widget_type === "label"
+      || (widget.widget_type === "button" && Object.hasOwn(widget.properties || {}, "text"))) {
     const text = document.createElement("span");
     text.className = "viewer-widget-text";
     text.textContent = textContent(widget);
@@ -846,7 +849,7 @@ function renderWidgetContent(project, widget, timers, activeStates = []) {
 }
 
 function renderWidget(project, item, timers, warnings, controller) {
-  const { widget, box, hidden } = item;
+  const { widget, box, hidden, parent } = item;
   const node = document.createElement("div");
   node.className = "viewer-widget";
   node.dataset.type = widget.widget_type;
@@ -856,6 +859,14 @@ function renderWidget(project, item, timers, warnings, controller) {
   node.style.width = `${Math.max(1, box.width)}px`;
   node.style.height = `${Math.max(1, box.height)}px`;
   node.hidden = hidden;
+  // The layout preview uses flat absolutely-positioned siblings. In LVGL the
+  // image/label really are children of the button and a click reaches the
+  // parent button. Let pointer hit-testing pass through those visual children
+  // so the browser viewer behaves the same way.
+  if (parent?.widget_type === "button" && ["image", "label"].includes(widget.widget_type)) {
+    node.classList.add("viewer-button-content");
+    node.style.pointerEvents = "none";
+  }
   const activeStates = [];
   if (["switch", "button"].includes(widget.widget_type) && widget.properties?.state_checked) {
     activeStates.push("checked");
@@ -1128,6 +1139,11 @@ export class ViewerController {
       if (["label", "button"].includes(widget.widget_type)) {
         const text = node.querySelector(".viewer-widget-text");
         if (text) text.textContent = textContent(widget);
+      } else if (widget.widget_type === "image") {
+        const content = node.querySelector(".viewer-image, .viewer-image-fallback");
+        const replacement = renderImage(this.project, widget, widget.properties?.src);
+        if (content) content.replaceWith(replacement);
+        else node.prepend(replacement);
       }
     });
   }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 import tempfile
 from dataclasses import asdict
@@ -23,6 +24,110 @@ from .page_support import apply_surface_payload, materialize_surfaces, strip_emp
 _ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 register_addon_widgets()
+
+
+def _normalise_button_child_text(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Move legacy button ``text`` into a child label before export.
+
+    ESPHome's LVGL button is a container.  Once it owns child widgets (for
+    example the image and label of an image button), its caption must also be
+    represented by a child ``label`` rather than by ``button.text``.  The
+    browser migrates projects as soon as such a child is added; this export
+    guard keeps older saved projects valid as well.  It is add-on-only so the
+    shared, read-only desktop designer core stays byte-identical.
+    """
+    normalized = copy.deepcopy(payload)
+    used_ids: set[str] = set()
+
+    def surface_widget_lists() -> list[list[dict[str, Any]]]:
+        lists: list[list[dict[str, Any]]] = []
+        root = normalized.get("widgets")
+        if isinstance(root, list):
+            lists.append(root)
+        pages = normalized.get("pages")
+        if isinstance(pages, list):
+            for page in pages:
+                if isinstance(page, dict) and isinstance(page.get("widgets"), list):
+                    lists.append(page["widgets"])
+        for layer_name in ("bottom_layer", "top_layer"):
+            layer = normalized.get(layer_name)
+            if isinstance(layer, dict) and isinstance(layer.get("widgets"), list):
+                lists.append(layer["widgets"])
+        return lists
+
+    def collect_widget_ids(nodes: list[dict[str, Any]]) -> None:
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            widget_id = str(node.get("id", ""))
+            if widget_id:
+                used_ids.add(widget_id)
+            children = node.get("children")
+            if isinstance(children, list):
+                collect_widget_ids(children)
+
+    widget_lists = surface_widget_lists()
+    for widgets in widget_lists:
+        collect_widget_ids(widgets)
+    for key in ("styles", "fonts", "images", "colors", "pages"):
+        entries = normalized.get(key)
+        if isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("id"):
+                    used_ids.add(str(entry["id"]))
+
+    def unique_id(base: str) -> str:
+        candidate = re.sub(r"[^A-Za-z0-9_]", "_", base).strip("_") or "button_label"
+        if not re.match(r"^[A-Za-z_]", candidate):
+            candidate = f"button_{candidate}"
+        root = candidate
+        suffix = 2
+        while candidate in used_ids:
+            candidate = f"{root}_{suffix}"
+            suffix += 1
+        used_ids.add(candidate)
+        return candidate
+
+    repaired: list[str] = []
+
+    def visit(nodes: list[dict[str, Any]]) -> None:
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            children = node.get("children")
+            if not isinstance(children, list):
+                children = []
+                node["children"] = children
+            properties = node.get("properties")
+            if (
+                node.get("widget_type") == "button"
+                and children
+                and isinstance(properties, dict)
+                and "text" in properties
+            ):
+                properties = dict(properties)
+                text = properties.pop("text")
+                node["properties"] = properties
+                if text not in (None, ""):
+                    button_id = str(node.get("id") or "button")
+                    children.append({
+                        "id": unique_id(f"{button_id}_label"),
+                        "widget_type": "label",
+                        "width": None,
+                        "height": None,
+                        "align": "CENTER",
+                        "properties": {"text": text},
+                        "children": [],
+                        "synthetic_id": True,
+                    })
+                repaired.append(str(node.get("id") or "button"))
+            visit(children)
+
+    for widgets in widget_lists:
+        visit(widgets)
+    return normalized, repaired
 
 
 def _is_remote_asset(path: str) -> bool:
@@ -291,7 +396,8 @@ class DesignerService:
         return stats
 
     def export_yaml(self, payload: dict[str, Any]) -> dict:
-        project, issues = self.validate(payload)
+        normalized_payload, repaired_buttons = _normalise_button_child_text(payload)
+        project, issues = self.validate(normalized_payload)
         if any(issue["severity"] == "error" for issue in issues):
             raise ApiError("invalid_project", "Project validation failed.", 422, {"issues": issues})
         try:
@@ -299,9 +405,18 @@ class DesignerService:
                 result = export_project(project, str(Path(directory) / "ui.yaml"))
         except ExportError as exc:
             raise ApiError("export_failed", str(exc), 422) from exc
+        export_issues = [asdict(issue) for issue in result.issues]
+        export_issues.extend({
+            "severity": "C",
+            "message": (
+                "Legacy button text was exported as a child label because "
+                "the button contains child widgets."
+            ),
+            "widget_id": button_id,
+        } for button_id in repaired_buttons)
         return {
             "yaml": strip_empty_root_widgets(result.yaml_text, project),
-            "issues": [asdict(issue) for issue in result.issues],
+            "issues": export_issues,
         }
 
     def project_payload(self, project: Project) -> dict[str, Any]:

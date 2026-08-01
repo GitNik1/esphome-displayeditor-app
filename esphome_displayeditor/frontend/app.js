@@ -216,6 +216,17 @@ function allProjectWidgets() {
   return result;
 }
 
+function uniqueProjectWidgetId(base) {
+  const ids = new Set(allProjectWidgets().map((widget) => widget.id));
+  let number = 1;
+  let candidate = `${base}_${number}`;
+  while (ids.has(candidate)) {
+    number += 1;
+    candidate = `${base}_${number}`;
+  }
+  return candidate;
+}
+
 function selectSurface(key) {
   if (!surfaceEntries().some((entry) => entry.key === key)) return;
   stopFlowPreview();
@@ -792,6 +803,7 @@ function bindDesigner() {
   $("#widget-action-type").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-target").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#add-widget-action").addEventListener("click", addWidgetAction);
+  $("#apply-image-button").addEventListener("click", applyImageButtonSettings);
   $("#runtime-binding-target").addEventListener("change", () => renderRuntimeBinding(state.selectedWidget));
   $("#runtime-binding-device").addEventListener("change", () => {
     populateRuntimeEntityChoices();
@@ -1381,6 +1393,16 @@ function renderPalette() {
     button.append(icon, document.createTextNode(schema.label));
     button.addEventListener("click", () => addWidget(schema));
     palette.append(button);
+    if (schema.type_key === "button") {
+      const imageButton = document.createElement("button");
+      const imageButtonIcon = document.createElement("span");
+      imageButtonIcon.className = "widget-icon";
+      imageButtonIcon.textContent = "▧";
+      imageButton.append(imageButtonIcon, document.createTextNode("Bild-Button"));
+      imageButton.title = "Offizieller ESPHome Bild-Button aus button + image + label";
+      imageButton.addEventListener("click", addImageButton);
+      palette.append(imageButton);
+    }
   });
 
   const glowButton = document.createElement("button");
@@ -1403,6 +1425,105 @@ function allWidgets(nodes = activeWidgetRoots()) {
   return result;
 }
 
+function editorWidgetNode(id, widgetType, {
+  x = 0, y = 0, width = 100, height = 40, align = "TOP_LEFT", properties = {},
+  styleTree = {}, children = [],
+} = {}) {
+  return {
+    id,
+    widget_type: widgetType,
+    name: "",
+    x,
+    y,
+    width,
+    height,
+    align,
+    align_to: "",
+    hidden: false,
+    locked: false,
+    properties,
+    style_mode: "inline",
+    style_refs: [],
+    style_tree: styleTree,
+    events: {},
+    children,
+    tab_title: "",
+    tile_row: 0,
+    tile_col: 0,
+    tile_dir: "ALL",
+    layout: {},
+    grid_cell: {},
+    extra: {},
+    source: "editor",
+    synthetic_id: false,
+  };
+}
+
+function migrateButtonTextToChildLabel(button) {
+  if (button?.widget_type !== "button" || !Object.hasOwn(button.properties || {}, "text")) return null;
+  const text = String(button.properties.text ?? "");
+  delete button.properties.text;
+  if (!text) return null;
+  const label = editorWidgetNode(uniqueProjectWidgetId(`${button.id}_label`), "label", {
+    width: Math.max(40, Number(button.width) || 120),
+    height: 24,
+    align: "CENTER",
+    properties: { text, long_mode: "WRAP", recolor: false },
+  });
+  button.children ||= [];
+  button.children.push(label);
+  toast("Button-Text wurde als Label-Kind übernommen, damit das ESPHome-YAML gültig bleibt.");
+  return label;
+}
+
+function selectedChildTarget() {
+  const parentSchema = state.selectedWidget
+    ? state.schemas.find((item) => item.type_key === state.selectedWidget.widget_type)
+    : null;
+  const parent = parentSchema?.allows_children ? state.selectedWidget : null;
+  if (parent) migrateButtonTextToChildLabel(parent);
+  return { parent, target: parent ? parent.children : activeWidgetRoots() };
+}
+
+function addImageButton() {
+  if (state.canvasMode !== "widgets") setCanvasMode("widgets");
+  pushUndo();
+  const { target } = selectedChildTarget();
+  const buttonId = uniqueProjectWidgetId("image_button");
+  const imageId = uniqueProjectWidgetId(`${buttonId}_image`);
+  const labelId = uniqueProjectWidgetId(`${buttonId}_label`);
+  const firstImage = imageLibrary()[0]?.id || "";
+  const offset = (target.length * 12) % 100;
+  const image = editorWidgetNode(imageId, "image", {
+    width: 56,
+    height: 56,
+    align: "CENTER",
+    y: -8,
+    properties: { src: firstImage, angle: 0, zoom: 1 },
+  });
+  const label = editorWidgetNode(labelId, "label", {
+    width: 112,
+    height: 22,
+    align: "BOTTOM_MID",
+    y: -4,
+    properties: { text: "Bild-Button", long_mode: "WRAP", recolor: false },
+    styleTree: { text_align: "CENTER" },
+  });
+  const button = editorWidgetNode(buttonId, "button", {
+    x: 20 + offset,
+    y: 20 + offset,
+    width: 120,
+    height: 90,
+    properties: { checkable: false },
+    children: [image, label],
+  });
+  target.push(button);
+  state.selectedWidget = button;
+  markProjectDirty();
+  renderDesigner();
+  if (!firstImage) toast("Bild-Button angelegt. Bitte jetzt ein Normalbild auswählen.");
+}
+
 function addWidget(schema) {
   if (state.canvasMode !== "widgets") setCanvasMode("widgets");
   pushUndo();
@@ -1414,11 +1535,7 @@ function addWidget(schema) {
   for (const property of schema.properties) {
     if (property.category === "content" && property.default !== null) properties[property.key] = property.default;
   }
-  const parentSchema = state.selectedWidget
-    ? state.schemas.find((item) => item.type_key === state.selectedWidget.widget_type)
-    : null;
-  const parent = parentSchema?.allows_children ? state.selectedWidget : null;
-  const target = parent ? parent.children : activeWidgetRoots();
+  const { target } = selectedChildTarget();
   const widget = {
     id: `${idBase}_${number}`,
     widget_type: schema.type_key,
@@ -2579,8 +2696,19 @@ function renderWidget(item) {
     node.style.backgroundPosition = "center";
   }
   node.style.fontFamily = resolvedFontFamily(effectiveStyle.text_font || state.project.default_font);
+  let imageReference = widget.properties?.src;
+  const selectedImageButton = directImageButtonParts(state.selectedWidget);
+  if (widget.widget_type === "image" && selectedImageButton?.image === widget) {
+    if (state.activeState === "pressed") {
+      imageReference = eventImageSource(state.selectedWidget, "on_press", widget.id) || imageReference;
+    } else if (state.activeState === "checked") {
+      imageReference = eventImageSource(
+        state.selectedWidget, "on_value", widget.id, "checked",
+      ) || imageReference;
+    }
+  }
   const imageSource = widget.widget_type === "image"
-    ? displayableImageSource(widget.properties.src)
+    ? displayableImageSource(imageReference)
     : null;
   if (["bar", "arc"].includes(widget.widget_type)) {
     node.append(renderCanvasValueVisual(widget));
@@ -2594,12 +2722,13 @@ function renderWidget(item) {
     // only the image - setting textContent here would drop the resize handle.
     picture.addEventListener("error", () => {
       const fallback = document.createElement("span");
-      fallback.textContent = `${widget.properties.src || widget.id} ⚠`;
+      fallback.textContent = `${imageReference || widget.id} ⚠`;
       picture.replaceWith(fallback);
       node.title = "Bild konnte im Editor nicht geladen werden.";
     });
     node.append(picture);
-  } else {
+  } else if (!(widget.widget_type === "button" && widget.children?.length
+      && !Object.hasOwn(widget.properties || {}, "text"))) {
     const text = document.createElement("span");
     text.className = "canvas-widget-text";
     text.textContent = widget.properties.text || widget.id;
@@ -2784,6 +2913,7 @@ function renderProperties() {
   renderStateChoices();
   renderStyleControls(widget);
   renderDynamicProperties(widget);
+  renderImageButtonSettings(widget);
   renderWidgetActions(widget);
   renderRuntimeBinding(widget);
   renderExtraKeys(widget);
@@ -2795,6 +2925,156 @@ const ACTION_TRIGGER_LABELS = {
   on_release: "Loslassen",
   on_value: "Schalterzustand",
 };
+
+function directImageButtonParts(widget) {
+  if (widget?.widget_type !== "button") return null;
+  const image = (widget.children || []).find((child) => child.widget_type === "image");
+  if (!image) return null;
+  return {
+    image,
+    label: (widget.children || []).find((child) => child.widget_type === "label") || null,
+  };
+}
+
+function imageUpdateDetails(action, imageId) {
+  const conditional = generatedActionCondition(action);
+  if (conditional) {
+    const inner = imageUpdateDetails(conditional.action, imageId);
+    return inner ? { ...inner, condition: conditional.condition } : null;
+  }
+  const entry = actionObjectEntry(action);
+  if (entry?.[0] !== "lvgl.image.update") return null;
+  const payload = entry[1];
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  if (!actionIdsForEditor(payload).includes(imageId) || typeof payload.src !== "string") return null;
+  return { src: payload.src, condition: "always" };
+}
+
+function eventImageSource(widget, trigger, imageId, condition = "always") {
+  const raw = widget.events?.[trigger];
+  const actions = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
+  for (const action of actions) {
+    const details = imageUpdateDetails(action, imageId);
+    if (details?.condition === condition) return details.src;
+  }
+  return "";
+}
+
+function populateImageChoice(control, value) {
+  control.replaceChildren(new Option("— nicht gesetzt —", ""));
+  imageLibrary().forEach((entry) => control.append(new Option(entry.id, entry.id)));
+  if (value && !imageEntry(value)) control.append(new Option(`${value} (fehlt)`, value));
+  control.value = value || "";
+}
+
+function renderImageButtonSettings(widget) {
+  const section = $("#image-button-section");
+  const parts = directImageButtonParts(widget);
+  section.classList.toggle("hidden", !parts);
+  if (!parts) return;
+  populateImageChoice($("#image-button-normal"), parts.image.properties?.src || "");
+  populateImageChoice(
+    $("#image-button-pressed"),
+    eventImageSource(widget, "on_press", parts.image.id),
+  );
+  populateImageChoice(
+    $("#image-button-checked"),
+    eventImageSource(widget, "on_value", parts.image.id, "checked"),
+  );
+  $("#image-button-label").value = parts.label?.properties?.text || "";
+  $("#image-button-checkable").checked = Boolean(widget.properties?.checkable);
+  $("#image-button-error").classList.add("hidden");
+}
+
+function actionUpdatesImage(action, imageId) {
+  const conditional = generatedActionCondition(action);
+  if (conditional) return actionUpdatesImage(conditional.action, imageId);
+  const entry = actionObjectEntry(action);
+  return entry?.[0] === "lvgl.image.update" && actionIdsForEditor(entry[1]).includes(imageId);
+}
+
+function removeGeneratedImageButtonActions(widget, imageId) {
+  ["on_press", "on_release", "on_value"].forEach((trigger) => {
+    const raw = widget.events?.[trigger];
+    if (raw === undefined) return;
+    const actions = (Array.isArray(raw) ? raw : [raw])
+      .filter((action) => !actionUpdatesImage(action, imageId));
+    if (actions.length) widget.events[trigger] = actions;
+    else delete widget.events[trigger];
+  });
+}
+
+function appendWidgetEvent(widget, trigger, action) {
+  widget.events ||= {};
+  if (!Array.isArray(widget.events[trigger])) {
+    widget.events[trigger] = widget.events[trigger] === undefined ? [] : [widget.events[trigger]];
+  }
+  widget.events[trigger].push(action);
+}
+
+function imageUpdateAction(imageId, src) {
+  return { "lvgl.image.update": { id: imageId, src } };
+}
+
+function conditionalImageUpdate(imageId, src, checked) {
+  return {
+    if: {
+      condition: { lambda: checked ? "return x;" : "return !x;" },
+      then: [imageUpdateAction(imageId, src)],
+    },
+  };
+}
+
+function applyImageButtonSettings() {
+  const widget = state.selectedWidget;
+  const parts = directImageButtonParts(widget);
+  if (!parts) return;
+  const normal = $("#image-button-normal").value;
+  const pressed = $("#image-button-pressed").value;
+  const checked = $("#image-button-checked").value;
+  const error = $("#image-button-error");
+  if (!normal) {
+    error.textContent = "Bitte ein Normalbild auswählen.";
+    error.classList.remove("hidden");
+    return;
+  }
+
+  pushUndo();
+  parts.image.properties ||= {};
+  parts.image.properties.src = normal;
+  const labelText = $("#image-button-label").value;
+  let label = parts.label;
+  if (!label && labelText) {
+    label = editorWidgetNode(uniqueProjectWidgetId(`${widget.id}_label`), "label", {
+      width: Math.max(40, Number(widget.width) || 120),
+      height: 22,
+      align: "BOTTOM_MID",
+      y: -4,
+      properties: { text: labelText, long_mode: "WRAP", recolor: false },
+      styleTree: { text_align: "CENTER" },
+    });
+    widget.children.push(label);
+  } else if (label) {
+    label.properties ||= {};
+    label.properties.text = labelText;
+  }
+
+  widget.properties ||= {};
+  widget.properties.checkable = Boolean($("#image-button-checkable").checked || checked);
+  removeGeneratedImageButtonActions(widget, parts.image.id);
+  if (pressed) {
+    appendWidgetEvent(widget, "on_press", imageUpdateAction(parts.image.id, pressed));
+    appendWidgetEvent(widget, "on_release", imageUpdateAction(parts.image.id, normal));
+  }
+  if (checked) {
+    appendWidgetEvent(widget, "on_value", conditionalImageUpdate(parts.image.id, checked, true));
+    appendWidgetEvent(widget, "on_value", conditionalImageUpdate(parts.image.id, normal, false));
+  }
+  error.classList.add("hidden");
+  markProjectDirty();
+  renderDesigner();
+  toast("Bild-Button aktualisiert.");
+}
 
 function actionObjectEntry(action) {
   if (!action || typeof action !== "object" || Array.isArray(action)) return null;
@@ -2839,7 +3119,7 @@ function describeWidgetAction(action) {
   if (name === "lvgl.page.show") {
     return { text: `Seite öffnen: ${targetIds.join(", ") || "ohne Ziel"}`, targetIds: [], supported: Boolean(targetIds.length) };
   }
-  if (["lvgl.widget.update", "lvgl.label.update", "lvgl.button.update"].includes(name)
+  if (["lvgl.widget.update", "lvgl.label.update", "lvgl.button.update", "lvgl.image.update"].includes(name)
       && payload && typeof payload === "object" && !Array.isArray(payload)) {
     const fields = Object.keys(payload).filter((key) => key !== "id");
     return {
@@ -2913,6 +3193,10 @@ function renderWidgetActionBuilder(widget) {
   $("#widget-action-text-field").classList.toggle(
     "hidden", !update || !["label", "button"].includes(targetWidget?.widget_type),
   );
+  $("#widget-action-image-field").classList.toggle(
+    "hidden", !update || targetWidget?.widget_type !== "image",
+  );
+  populateImageChoice($("#widget-action-image"), "");
   $("#widget-action-error").classList.add("hidden");
 }
 
@@ -2952,6 +3236,8 @@ function addWidgetAction() {
     const payload = { id: targetId };
     const text = $("#widget-action-text").value.trim();
     if (text && ["label", "button"].includes(targetWidget?.widget_type)) payload.text = text;
+    const imageSource = $("#widget-action-image").value;
+    if (imageSource && targetWidget?.widget_type === "image") payload.src = imageSource;
     const styleControls = {
       bg_color: "#widget-action-bg-color",
       text_color: "#widget-action-text-color",
@@ -2963,12 +3249,13 @@ function addWidgetAction() {
       if (value) payload[key] = key.endsWith("_color") ? normaliseActionColor(value) : value;
     });
     if (Object.keys(payload).length === 1) {
-      fail("Mindestens Text, Farbe, Rahmenfarbe oder Deckkraft angeben.");
+      fail("Mindestens Text, Bildquelle, Farbe, Rahmenfarbe oder Deckkraft angeben.");
       return;
     }
     const actionName = targetWidget?.widget_type === "label"
       ? "lvgl.label.update"
-      : targetWidget?.widget_type === "button" ? "lvgl.button.update" : "lvgl.widget.update";
+      : targetWidget?.widget_type === "button" ? "lvgl.button.update"
+        : targetWidget?.widget_type === "image" ? "lvgl.image.update" : "lvgl.widget.update";
     action = { [actionName]: payload };
   }
 
@@ -2991,7 +3278,8 @@ function addWidgetAction() {
   markProjectDirty();
   error.classList.add("hidden");
   ["#widget-action-text", "#widget-action-bg-color", "#widget-action-text-color",
-    "#widget-action-border-color", "#widget-action-opacity"].forEach((selector) => { $(selector).value = ""; });
+    "#widget-action-border-color", "#widget-action-opacity", "#widget-action-image"]
+    .forEach((selector) => { $(selector).value = ""; });
   syncLinkedColorPickers();
   renderWidgetActions(widget);
 }
@@ -5234,6 +5522,7 @@ function performTreeDrop(dragged, target) {
     from.array.splice(from.index, 1);
 
     if (target.kind === "widget" && target.position === "into" && widgetAllowsChildren(target.widget)) {
+      migrateButtonTextToChildLabel(target.widget);
       target.widget.children.push(draggedWidget);
     } else if (target.kind === "widget") {
       const to = findWidgetLocation(roots, target.widget);
@@ -5352,7 +5641,7 @@ function renderTree() {
 
     const label = document.createElement("span");
     label.className = "tree-label";
-    label.textContent = `${widget.id} · ${widget.widget_type}`;
+    label.textContent = `${widget.id} · ${directImageButtonParts(widget) ? "Bild-Button (button)" : widget.widget_type}`;
     label.addEventListener("click", () => {
       if (state.canvasMode !== "widgets") setCanvasMode("widgets");
       state.selectedWidget = widget;
@@ -5379,7 +5668,7 @@ function renderTree() {
     item.style.paddingLeft = `${9 + depth * 16}px`;
     const label = document.createElement("span");
     label.className = "tree-label";
-    label.textContent = `${widget.id} · ${widget.widget_type}`;
+    label.textContent = `${widget.id} · ${directImageButtonParts(widget) ? "Bild-Button (button)" : widget.widget_type}`;
     label.title = "Arbeitsfläche auswählen, um dieses Widget zu bearbeiten.";
     item.append(label);
     tree.append(item);

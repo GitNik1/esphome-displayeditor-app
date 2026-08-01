@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>ESPHome Display Editor</title>
-    <link rel="stylesheet" href="styles.css?v=0.12.0">
+    <link rel="stylesheet" href="styles.css?v=0.14.0">
   </head>
   <body>
     <header class="topbar">
@@ -336,6 +336,28 @@
 
             <div id="dynamic-properties"></div>
 
+            <div id="image-button-section" class="hidden">
+              <div class="property-section">Bild-Button</div>
+              <p class="hint">Offizielle ESPHome-Struktur: Button mit einem untergeordneten Bild und optionalem Label.</p>
+              <label>Normalbild
+                <select id="image-button-normal"></select>
+              </label>
+              <label>Bild beim Drücken
+                <select id="image-button-pressed"></select>
+              </label>
+              <label>Bild im eingeschalteten Zustand
+                <select id="image-button-checked"></select>
+              </label>
+              <label>Beschriftung
+                <input id="image-button-label" maxlength="256" placeholder="optional">
+              </label>
+              <label class="checkbox-field">Einrastfunktion (Schalter)
+                <input id="image-button-checkable" type="checkbox">
+              </label>
+              <p id="image-button-error" class="widget-action-error hidden"></p>
+              <button id="apply-image-button" type="button" class="button primary compact">Bild-Button übernehmen</button>
+            </div>
+
             <div id="widget-actions-section" class="hidden">
               <div class="property-section">Aktionen</div>
               <p class="hint">Ändert andere Widgets beim Drücken, Loslassen oder Umschalten dieses Buttons.</p>
@@ -370,6 +392,9 @@
                 <div id="widget-action-update-fields">
                   <label id="widget-action-text-field">Text
                     <input id="widget-action-text" maxlength="256" placeholder="unverändert">
+                  </label>
+                  <label id="widget-action-image-field" class="hidden">Bildquelle
+                    <select id="widget-action-image"></select>
                   </label>
                   <label>Hintergrundfarbe
                     <div class="color-input-row">
@@ -750,6 +775,6 @@
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js?v=0.12.0"></script>
+    <script type="module" src="app.js?v=0.14.0"></script>
   </body>
 </html>

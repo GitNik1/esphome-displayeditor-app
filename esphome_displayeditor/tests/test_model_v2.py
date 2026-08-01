@@ -170,6 +170,48 @@ def test_checkable_button_exports_normal_pressed_and_checked_colours(tmp_path) -
     assert body["checked"] == {"bg_color": 0x00A000, "text_color": 0xFFFFFF}
 
 
+def test_official_image_button_structure_and_source_actions_export(tmp_path) -> None:
+    image = _widget(
+        id="image_button_icon",
+        widget_type="image",
+        properties={"src": "button_normal"},
+        width=56,
+        height=56,
+        align="CENTER",
+    )
+    label = _widget(
+        id="image_button_label",
+        widget_type="label",
+        properties={"text": "Licht"},
+        width=100,
+        height=22,
+        align="BOTTOM_MID",
+    )
+    project = Project()
+    project.widgets = [_widget(
+        id="image_button",
+        widget_type="button",
+        properties={"checkable": False},
+        children=[image, label],
+        events={
+            "on_press": [{
+                "lvgl.image.update": {"id": "image_button_icon", "src": "button_pressed"},
+            }],
+            "on_release": [{
+                "lvgl.image.update": {"id": "image_button_icon", "src": "button_normal"},
+            }],
+        },
+    )]
+
+    body = _export(project, tmp_path)["lvgl"]["widgets"][0]["button"]
+
+    assert "text" not in body
+    assert [next(iter(child)) for child in body["widgets"]] == ["image", "label"]
+    assert body["widgets"][0]["image"]["src"] == "button_normal"
+    assert body["on_press"][0]["lvgl.image.update"]["src"] == "button_pressed"
+    assert body["on_release"][0]["lvgl.image.update"]["src"] == "button_normal"
+
+
 def test_button_exports_cross_widget_actions_unchanged(tmp_path) -> None:
     action = {
         "if": {
