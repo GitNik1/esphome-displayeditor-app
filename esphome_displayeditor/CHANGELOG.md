@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 0.13.0
+
+- Began the next feature cycle for an ESPHome-compatible LVGL image button
+  built from an official `button` with child `image`/`label` widgets.
+
+## 0.12.0
+
+- Bound compile and OTA install jobs to a persistent proof of a recent,
+  successful ESPHome validation of the exact active SHA-256 revision. A
+  changed, expired or never-validated configuration now fails closed before
+  the Device Builder receives a firmware command; the proof lifetime is
+  configurable with `validation_max_age_seconds`.
+- Added persistent `Idempotency-Key` handling and a per-configuration server
+  lock. Browser retries return the original job after a response loss or app
+  restart, while different parallel compile/install requests receive a stable
+  `job_already_running` conflict instead of starting a duplicate job.
+- Expanded the YAML workspace with synchronized line numbers, cursor position,
+  search navigation, tab indentation and an explicit unsaved-change marker.
+  Switching files warns before discarding local edits.
+- Added a manual three-column merge dialog for the active configuration,
+  stored draft and reconciled result. The result is saved as a draft and still
+  requires the existing revision-protected publish step.
+- Added recovery coverage for persistent validation/idempotency state,
+  application restarts, corrupted workflow SQLite files and interrupted atomic
+  draft/publish writes. A damaged workflow database is archived and recreated
+  empty, deliberately requiring a fresh validation.
+
 - Pages and LVGL top/bottom layers are now fully editable designer surfaces,
   not Viewer-only structures. The workspace selector supports creating,
   renaming, reordering and deleting pages, editing `skip`/`page_wrap`, page

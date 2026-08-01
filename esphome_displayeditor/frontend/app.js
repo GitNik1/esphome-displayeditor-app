@@ -51,6 +51,8 @@ const state = {
   activeRevision: null,
   configurations: [],
   hasDraft: false,
+  yamlLoadedContent: "",
+  yamlDirty: false,
   project: freshProject(),
   activeSurface: "root",
   projectName: null,
@@ -87,6 +89,8 @@ const state = {
   runtimeStatusTimer: null,
   builderJobs: {},
   builderSocket: null,
+  builderRequestKeys: {},
+  builderRequestsRunning: new Set(),
 
   // Glow lines (ported GlowLine editor). Editing widgets and editing lines are
   // mutually exclusive modes, matching the desktop app being a separate tool -
@@ -5509,16 +5513,99 @@ function bindConfigurations() {
   $("#check-yaml").addEventListener("click", checkYaml);
   $("#validate-esphome").addEventListener("click", validateEspHome);
   $("#show-diff").addEventListener("click", showDiff);
+  $("#merge-draft").addEventListener("click", openMergeDialog);
   $("#publish").addEventListener("click", publishDraft);
   $("#compile-config").addEventListener("click", compileConfiguration);
   $("#install-config").addEventListener("click", installConfiguration);
   $("#refresh-jobs").addEventListener("click", loadBuilderJobs);
+  $("#close-merge-dialog").addEventListener("click", () => $("#merge-dialog").close());
+  $("#cancel-merge").addEventListener("click", () => $("#merge-dialog").close());
+  $("#save-merge").addEventListener("click", saveMergedDraft);
+  const editor = $("#yaml-editor");
+  editor.addEventListener("input", updateYamlEditorUi);
+  editor.addEventListener("click", updateYamlCursorStatus);
+  editor.addEventListener("keyup", updateYamlCursorStatus);
+  editor.addEventListener("select", updateYamlCursorStatus);
+  editor.addEventListener("scroll", () => {
+    $("#yaml-line-numbers").scrollTop = editor.scrollTop;
+  });
+  editor.addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    const start = editor.selectionStart;
+    editor.setRangeText("  ", start, editor.selectionEnd, "end");
+    updateYamlEditorUi();
+  });
+  $("#yaml-search-next").addEventListener("click", () => findYamlMatch(1));
+  $("#yaml-search-previous").addEventListener("click", () => findYamlMatch(-1));
+  $("#yaml-search").addEventListener("input", () => findYamlMatch(0));
+  $("#yaml-search").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    findYamlMatch(event.shiftKey ? -1 : 1);
+  });
   // Phone layout only: list <-> detail is one pane at a time there, so this
   // is what "leaving" the detail view means. A no-op above the breakpoint,
   // where both panels already show side by side regardless of the class.
   $("#back-to-configs").addEventListener("click", () => {
     $("#configurations").classList.add("showing-list");
   });
+}
+
+function updateYamlEditorUi() {
+  const editor = $("#yaml-editor");
+  const lineCount = editor.value.split("\n").length;
+  $("#yaml-line-numbers").textContent = Array.from(
+    { length: lineCount }, (_unused, index) => String(index + 1),
+  ).join("\n");
+  state.yamlDirty = Boolean(state.activeConfig)
+    && editor.value !== state.yamlLoadedContent;
+  const status = $("#yaml-dirty-status");
+  status.classList.toggle("dirty", state.yamlDirty);
+  status.textContent = !state.activeConfig
+    ? "Keine Datei geladen"
+    : state.yamlDirty
+      ? "Ungespeicherte Änderungen"
+      : state.hasDraft ? "Gespeicherter Entwurf" : "Aktiver Stand";
+  updateYamlCursorStatus();
+}
+
+function updateYamlCursorStatus() {
+  const editor = $("#yaml-editor");
+  const before = editor.value.slice(0, editor.selectionStart);
+  const lines = before.split("\n");
+  $("#yaml-cursor-status").textContent = `Zeile ${lines.length}, Spalte ${lines.at(-1).length + 1}`;
+}
+
+function findYamlMatch(direction) {
+  const editor = $("#yaml-editor");
+  const query = $("#yaml-search").value;
+  const result = $("#yaml-search-result");
+  if (!query) {
+    result.textContent = "";
+    return;
+  }
+  const haystack = editor.value.toLocaleLowerCase();
+  const needle = query.toLocaleLowerCase();
+  const matches = [];
+  for (let index = haystack.indexOf(needle); index >= 0; index = haystack.indexOf(needle, index + Math.max(needle.length, 1))) {
+    matches.push(index);
+  }
+  if (!matches.length) {
+    result.textContent = "Kein Treffer";
+    return;
+  }
+  let selected = matches.findIndex((index) => index >= editor.selectionStart);
+  if (direction > 0) selected = matches.findIndex((index) => index > editor.selectionStart);
+  if (direction < 0) {
+    selected = matches.findLastIndex((index) => index < editor.selectionStart);
+  }
+  if (selected < 0) selected = direction < 0 ? matches.length - 1 : 0;
+  const index = matches[selected];
+  editor.focus();
+  editor.setSelectionRange(index, index + query.length);
+  result.textContent = `${selected + 1} von ${matches.length}`;
+  updateYamlCursorStatus();
 }
 
 async function loadConfigurations() {
@@ -5551,6 +5638,12 @@ async function loadConfigurations() {
 }
 
 async function loadConfiguration(configuration) {
+  if (
+    state.yamlDirty
+    && state.activeConfig
+    && state.activeConfig !== configuration.name
+    && !confirm("Ungespeicherte YAML-Änderungen verwerfen und eine andere Datei laden?")
+  ) return;
   try {
     const active = await api(`configurations/${encodedName(configuration.name)}`);
     state.activeConfig = configuration.name;
@@ -5564,13 +5657,20 @@ async function loadConfiguration(configuration) {
     $("#config-title").textContent = configuration.name;
     $("#revision").textContent = active.revision;
     $("#yaml-editor").value = content;
+    state.yamlLoadedContent = content;
+    state.yamlDirty = false;
     $("#yaml-editor").disabled = !state.capabilities["configuration.write_draft"];
+    $("#yaml-search").disabled = false;
+    $("#yaml-search-previous").disabled = false;
+    $("#yaml-search-next").disabled = false;
     $("#save-draft").disabled = !state.capabilities["configuration.write_draft"];
     $("#check-yaml").disabled = false;
     $("#show-diff").disabled = !state.hasDraft;
+    $("#merge-draft").disabled = !state.hasDraft || !state.capabilities["configuration.write_draft"];
     $("#publish").disabled = !state.hasDraft || !state.capabilities["configuration.publish"];
     updateBuilderButtons();
     $("#config-output").classList.add("hidden");
+    updateYamlEditorUi();
     await loadConfigurations();
   } catch (error) { toast(error.message, true); }
 }
@@ -5582,9 +5682,13 @@ async function saveDraft() {
       method: "PUT", body: JSON.stringify({ content: $("#yaml-editor").value }),
     });
     state.hasDraft = true;
+    state.yamlLoadedContent = $("#yaml-editor").value;
+    state.yamlDirty = false;
     $("#show-diff").disabled = false;
+    $("#merge-draft").disabled = !state.capabilities["configuration.write_draft"];
     $("#publish").disabled = !state.capabilities["configuration.publish"];
     updateBuilderButtons();
+    updateYamlEditorUi();
     toast("Entwurf gespeichert.");
     await loadConfigurations();
   } catch (error) { toast(error.message, true); }
@@ -5611,6 +5715,46 @@ async function showDiff() {
   } catch (error) { toast(error.message, true); }
 }
 
+async function openMergeDialog() {
+  if (!state.activeConfig || !state.hasDraft) return;
+  try {
+    const encoded = encodedName(state.activeConfig);
+    const [active, draft] = await Promise.all([
+      api(`configurations/${encoded}`),
+      api(`configurations/${encoded}/draft`),
+    ]);
+    state.activeRevision = active.revision;
+    $("#revision").textContent = active.revision;
+    $("#merge-config-name").textContent = state.activeConfig;
+    $("#merge-active").value = active.content;
+    $("#merge-draft-source").value = draft.content;
+    $("#merge-result").value = draft.content;
+    $("#merge-dialog").showModal();
+  } catch (error) { toast(error.message, true); }
+}
+
+async function saveMergedDraft() {
+  if (!state.activeConfig) return;
+  const content = $("#merge-result").value;
+  try {
+    await api(`configurations/${encodedName(state.activeConfig)}/draft`, {
+      method: "PUT", body: JSON.stringify({ content }),
+    });
+    state.hasDraft = true;
+    state.yamlLoadedContent = content;
+    state.yamlDirty = false;
+    $("#yaml-editor").value = content;
+    $("#show-diff").disabled = false;
+    $("#merge-draft").disabled = false;
+    $("#publish").disabled = !state.capabilities["configuration.publish"];
+    $("#merge-dialog").close();
+    updateBuilderButtons();
+    updateYamlEditorUi();
+    await loadConfigurations();
+    toast("Zusammengeführtes YAML als Entwurf gespeichert.");
+  } catch (error) { toast(error.message, true); }
+}
+
 async function publishDraft() {
   if (!state.activeConfig || !state.hasDraft) return;
   if (!confirm(`Entwurf für ${state.activeConfig} in die aktive ESPHome-Konfiguration veröffentlichen?`)) return;
@@ -5620,10 +5764,14 @@ async function publishDraft() {
     });
     state.activeRevision = result.revision;
     state.hasDraft = false;
+    state.yamlLoadedContent = $("#yaml-editor").value;
+    state.yamlDirty = false;
     $("#revision").textContent = result.revision;
     $("#show-diff").disabled = true;
+    $("#merge-draft").disabled = true;
     $("#publish").disabled = true;
     updateBuilderButtons();
+    updateYamlEditorUi();
     toast("Konfiguration atomar veröffentlicht.");
     await loadConfigurations();
   } catch (error) { toast(error.message, true); }
@@ -5632,8 +5780,8 @@ async function publishDraft() {
 function updateBuilderButtons() {
   const activePublishedConfiguration = Boolean(state.activeConfig) && !state.hasDraft;
   $("#validate-esphome").disabled = !activePublishedConfiguration || !state.capabilities["configuration.validate_esphome"];
-  $("#compile-config").disabled = !activePublishedConfiguration || !state.capabilities["firmware.compile"];
-  $("#install-config").disabled = !activePublishedConfiguration || !state.capabilities["firmware.upload"];
+  $("#compile-config").disabled = !activePublishedConfiguration || !state.capabilities["firmware.compile"] || state.builderRequestsRunning.has("compile");
+  $("#install-config").disabled = !activePublishedConfiguration || !state.capabilities["firmware.upload"] || state.builderRequestsRunning.has("install");
 }
 
 async function validateEspHome() {
@@ -5644,34 +5792,64 @@ async function validateEspHome() {
   try {
     const result = await api(`configurations/${encodedName(state.activeConfig)}/validate`, { method: "POST" });
     const lines = Array.isArray(result.output) ? result.output.join("\n") : "";
-    output.textContent = `${result.valid ? "✓ ESPHome-Konfiguration gültig" : "ESPHome-Validierung fehlgeschlagen"}\nRevision: ${result.revision}\n\n${lines}`.trim();
+    const validity = result.valid ? `\nBuild-Freigabe: ${result.expires_in_seconds} Sekunden` : "";
+    output.textContent = `${result.valid ? "✓ ESPHome-Konfiguration gültig" : "ESPHome-Validierung fehlgeschlagen"}\nRevision: ${result.revision}${validity}\n\n${lines}`.trim();
   } catch (error) {
     output.textContent = `${error.code || "Fehler"}: ${error.message}`;
     toast(error.message, true);
   }
 }
 
+function builderRequestKey(operation) {
+  const slot = `${operation}:${state.activeConfig}`;
+  if (!state.builderRequestKeys[slot]) {
+    state.builderRequestKeys[slot] = globalThis.crypto?.randomUUID?.()
+      || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-request`;
+  }
+  return { slot, key: state.builderRequestKeys[slot] };
+}
+
 async function compileConfiguration() {
   if (!state.activeConfig || state.hasDraft) return;
+  const request = builderRequestKey("compile");
+  state.builderRequestsRunning.add("compile");
+  updateBuilderButtons();
   try {
-    const result = await api(`configurations/${encodedName(state.activeConfig)}/compile`, { method: "POST" });
+    const result = await api(`configurations/${encodedName(state.activeConfig)}/compile`, {
+      method: "POST", headers: { "Idempotency-Key": request.key },
+    });
+    delete state.builderRequestKeys[request.slot];
     state.builderJobs[result.job.job_id] = result.job;
     renderBuilderJobs();
-    toast(`Kompilierjob ${result.job.job_id} gestartet.`);
+    toast(result.idempotent_replay ? `Kompilierjob ${result.job.job_id} wiederhergestellt.` : `Kompilierjob ${result.job.job_id} gestartet.`);
   } catch (error) { toast(error.message, true); }
+  finally {
+    state.builderRequestsRunning.delete("compile");
+    updateBuilderButtons();
+  }
 }
 
 async function installConfiguration() {
   if (!state.activeConfig || state.hasDraft) return;
   if (!confirm(`Firmware für ${state.activeConfig} jetzt über OTA kompilieren und installieren?`)) return;
+  const request = builderRequestKey("install");
+  state.builderRequestsRunning.add("install");
+  updateBuilderButtons();
   try {
     const result = await api(`configurations/${encodedName(state.activeConfig)}/install`, {
-      method: "POST", body: JSON.stringify({ port: "OTA", confirmed: true }),
+      method: "POST",
+      headers: { "Idempotency-Key": request.key },
+      body: JSON.stringify({ port: "OTA", confirmed: true }),
     });
+    delete state.builderRequestKeys[request.slot];
     state.builderJobs[result.job.job_id] = result.job;
     renderBuilderJobs();
-    toast(`OTA-Job ${result.job.job_id} gestartet.`);
+    toast(result.idempotent_replay ? `OTA-Job ${result.job.job_id} wiederhergestellt.` : `OTA-Job ${result.job.job_id} gestartet.`);
   } catch (error) { toast(error.message, true); }
+  finally {
+    state.builderRequestsRunning.delete("install");
+    updateBuilderButtons();
+  }
 }
 
 async function loadBuilderJobs() {

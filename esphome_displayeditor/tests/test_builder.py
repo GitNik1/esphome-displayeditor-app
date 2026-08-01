@@ -28,6 +28,7 @@ class FakeBuilderAdapter:
             "job_type": "compile",
             "status": "queued",
         }
+        self.jobs: list[dict] = []
 
     async def probe(self) -> BuilderServerInfo:
         return self.info
@@ -45,11 +46,21 @@ class FakeBuilderAdapter:
                 {"event": "result", "data": {"success": True, "code": 0}},
             )
         elif command in {"firmware/compile", "firmware/install"}:
-            result = {**self.job, "job_type": command.rsplit("/", 1)[1]}
+            result = {
+                **self.job,
+                "job_id": f"job-{len(self.jobs) + 1}",
+                "job_type": command.rsplit("/", 1)[1],
+                "status": "queued",
+            }
+            self.job = result
+            self.jobs.append(result)
         elif command == "firmware/get_jobs":
-            result = [self.job]
+            result = self.jobs
         elif command == "firmware/get_job":
-            result = self.job if payload.get("job_id") == "job-1" else None
+            result = next(
+                (job for job in self.jobs if job["job_id"] == payload.get("job_id")),
+                None,
+            )
         elif command == "firmware/cancel":
             result = None
         else:
@@ -132,6 +143,7 @@ def test_builder_api_capabilities_jobs_validation_and_audit(tmp_path: Path) -> N
             headers=headers,
             json={"port": "OTA", "confirmed": False},
         ).status_code == 409
+        adapter.jobs[0]["status"] = "completed"
         assert client.post(
             "/api/v1/configurations/display.yaml/install",
             headers=headers,
@@ -150,6 +162,129 @@ def test_builder_api_capabilities_jobs_validation_and_audit(tmp_path: Path) -> N
     assert ("firmware/get_jobs", {}) in adapter.commands
     assert ("devices/validate", {"configuration": "display.yaml", "show_secrets": False}) in adapter.commands
     assert ("firmware/install", {"configuration": "display.yaml", "port": "OTA"}) in adapter.commands
+
+
+def test_compile_requires_a_current_successful_validation(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    adapter = FakeBuilderAdapter()
+    manager = BuilderManager(settings, adapter=adapter)  # type: ignore[arg-type]
+    headers = {"X-Remote-User-Id": "admin"}
+    with TestClient(
+        create_app(settings, serve_frontend=False, builder_manager=manager)
+    ) as client:
+        missing = client.post(
+            "/api/v1/configurations/display.yaml/compile", headers=headers
+        )
+        assert missing.status_code == 409
+        assert missing.json()["error"] == "validation_required"
+
+        assert client.post(
+            "/api/v1/configurations/display.yaml/validate", headers=headers
+        ).status_code == 200
+        (settings.config_root / "display.yaml").write_text(
+            "esphome:\n  name: changed\n", encoding="utf-8", newline=""
+        )
+        changed = client.post(
+            "/api/v1/configurations/display.yaml/compile", headers=headers
+        )
+        assert changed.status_code == 409
+        assert changed.json()["error"] == "validation_revision_mismatch"
+    assert not any(command == "firmware/compile" for command, _args in adapter.commands)
+
+
+def test_idempotency_replays_once_and_other_parallel_jobs_are_rejected(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    adapter = FakeBuilderAdapter()
+    manager = BuilderManager(settings, adapter=adapter)  # type: ignore[arg-type]
+    headers = {
+        "X-Remote-User-Id": "admin",
+        "Idempotency-Key": "compile-request-0001",
+    }
+    with TestClient(
+        create_app(settings, serve_frontend=False, builder_manager=manager)
+    ) as client:
+        assert client.post(
+            "/api/v1/configurations/display.yaml/validate", headers=headers
+        ).status_code == 200
+        first = client.post(
+            "/api/v1/configurations/display.yaml/compile", headers=headers
+        )
+        replay = client.post(
+            "/api/v1/configurations/display.yaml/compile", headers=headers
+        )
+        blocked = client.post(
+            "/api/v1/configurations/display.yaml/compile",
+            headers={**headers, "Idempotency-Key": "compile-request-0002"},
+        )
+        revision = first.json()["revision"]
+        assert client.put(
+            "/api/v1/configurations/display.yaml/draft",
+            headers=headers,
+            json={"content": "esphome:\n  name: published-too-early\n"},
+        ).status_code == 200
+        publish_blocked = client.post(
+            "/api/v1/configurations/display.yaml/publish",
+            headers=headers,
+            json={"expected_revision": revision},
+        )
+        conflict = client.post(
+            "/api/v1/configurations/display.yaml/install",
+            headers=headers,
+            json={"port": "OTA", "confirmed": True},
+        )
+    assert first.status_code == 202
+    assert first.json()["idempotent_replay"] is False
+    assert replay.status_code == 202
+    assert replay.json()["idempotent_replay"] is True
+    assert replay.json()["job"] == first.json()["job"]
+    assert blocked.status_code == 409
+    assert blocked.json()["error"] == "job_already_running"
+    assert publish_blocked.status_code == 409
+    assert publish_blocked.json()["error"] == "job_already_running"
+    assert (settings.config_root / "display.yaml").read_text(encoding="utf-8") == (
+        "esphome:\n  name: display\n"
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["error"] == "idempotency_conflict"
+    assert sum(command == "firmware/compile" for command, _args in adapter.commands) == 1
+
+
+def test_idempotency_survives_an_application_restart(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    headers = {
+        "X-Remote-User-Id": "admin",
+        "Idempotency-Key": "restart-safe-request",
+    }
+    first_adapter = FakeBuilderAdapter()
+    with TestClient(
+        create_app(
+            settings,
+            serve_frontend=False,
+            builder_manager=BuilderManager(settings, adapter=first_adapter),  # type: ignore[arg-type]
+        )
+    ) as client:
+        client.post("/api/v1/configurations/display.yaml/validate", headers=headers)
+        first = client.post(
+            "/api/v1/configurations/display.yaml/compile", headers=headers
+        )
+        assert first.status_code == 202
+
+    second_adapter = FakeBuilderAdapter()
+    with TestClient(
+        create_app(
+            settings,
+            serve_frontend=False,
+            builder_manager=BuilderManager(settings, adapter=second_adapter),  # type: ignore[arg-type]
+        )
+    ) as client:
+        replay = client.post(
+            "/api/v1/configurations/display.yaml/compile", headers=headers
+        )
+    assert replay.status_code == 202
+    assert replay.json()["idempotent_replay"] is True
+    assert not any(command == "firmware/compile" for command, _args in second_adapter.commands)
 
 
 def test_unknown_builder_version_keeps_build_capabilities_disabled(tmp_path: Path) -> None:

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>ESPHome Display Editor</title>
-    <link rel="stylesheet" href="styles.css?v=0.11.1">
+    <link rel="stylesheet" href="styles.css?v=0.12.0">
   </head>
   <body>
     <header class="topbar">
@@ -565,13 +565,30 @@
               <button id="check-yaml" class="button subtle" disabled>Syntax prüfen</button>
               <button id="validate-esphome" class="button subtle" disabled>ESPHome prüfen</button>
               <button id="show-diff" class="button subtle" disabled>Diff</button>
+              <button id="merge-draft" class="button subtle" disabled>Zusammenführen</button>
               <button id="save-draft" class="button primary" disabled>Entwurf speichern</button>
               <button id="publish" class="button warning" disabled>Veröffentlichen</button>
               <button id="compile-config" class="button subtle" disabled>Kompilieren</button>
               <button id="install-config" class="button warning" disabled>OTA installieren</button>
             </div>
           </div>
-          <textarea id="yaml-editor" spellcheck="false" disabled aria-label="YAML-Editor"></textarea>
+          <div class="yaml-editor-area">
+            <div class="yaml-editor-tools">
+              <label for="yaml-search">Suchen</label>
+              <input id="yaml-search" type="search" placeholder="Text in YAML" disabled>
+              <button id="yaml-search-previous" class="button subtle compact" title="Vorheriger Treffer" disabled>↑</button>
+              <button id="yaml-search-next" class="button subtle compact" title="Nächster Treffer" disabled>↓</button>
+              <span id="yaml-search-result" class="yaml-search-result" aria-live="polite"></span>
+            </div>
+            <div class="yaml-editor-shell">
+              <pre id="yaml-line-numbers" aria-hidden="true">1</pre>
+              <textarea id="yaml-editor" spellcheck="false" disabled aria-label="YAML-Editor"></textarea>
+            </div>
+            <div class="yaml-editor-status">
+              <span id="yaml-dirty-status">Keine Datei geladen</span>
+              <span id="yaml-cursor-status">Zeile 1, Spalte 1</span>
+            </div>
+          </div>
           <pre id="config-output" class="output hidden"></pre>
           <section id="builder-jobs" class="builder-jobs hidden">
             <div class="builder-jobs-heading"><strong>Firmware-Jobs</strong><button id="refresh-jobs" class="button subtle compact">Aktualisieren</button></div>
@@ -639,6 +656,23 @@
       <div id="yaml-issues" class="issues hidden"></div>
       <pre id="yaml-output"></pre>
       <div class="dialog-actions"><button id="copy-yaml" class="button primary">In Zwischenablage kopieren</button></div>
+    </dialog>
+
+    <dialog id="merge-dialog" class="merge-dialog">
+      <div class="dialog-heading">
+        <div><h2>YAML zusammenführen</h2><small id="merge-config-name"></small></div>
+        <button id="close-merge-dialog" type="button" class="icon-button" aria-label="Zusammenführen schließen">×</button>
+      </div>
+      <p class="merge-hint">Aktiver Stand und Entwurf sind schreibgeschützt. Bearbeite das Ergebnis und speichere es anschließend als neuen Entwurf; veröffentlicht wird weiterhin erst mit „Veröffentlichen“.</p>
+      <div class="merge-grid">
+        <label>Aktiver Stand<textarea id="merge-active" readonly spellcheck="false"></textarea></label>
+        <label>Gespeicherter Entwurf<textarea id="merge-draft-source" readonly spellcheck="false"></textarea></label>
+        <label>Zusammengeführtes Ergebnis<textarea id="merge-result" spellcheck="false"></textarea></label>
+      </div>
+      <div class="dialog-actions">
+        <button id="cancel-merge" type="button" class="button subtle">Abbrechen</button>
+        <button id="save-merge" type="button" class="button primary">Als Entwurf speichern</button>
+      </div>
     </dialog>
 
     <dialog id="glyph-dialog" class="glyph-dialog" aria-labelledby="glyph-dialog-title">
@@ -716,6 +750,6 @@
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js?v=0.11.1"></script>
+    <script type="module" src="app.js?v=0.12.0"></script>
   </body>
 </html>
