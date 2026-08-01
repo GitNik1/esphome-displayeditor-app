@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.11.0
+
+- Fixed the configuration sidebar so long file lists remain inside the
+  available desktop/mobile viewport and scroll independently below the fixed
+  heading. The narrow layout no longer keeps the inactive Designer in the
+  document flow or pushes the configuration view below the viewport.
 - Added the first read-only browser Viewer: projects open in a full-screen,
   isolated preview using the same layout engine as the designer, with fit,
   zoom, rotation and reset controls. The viewer renders the eight currently

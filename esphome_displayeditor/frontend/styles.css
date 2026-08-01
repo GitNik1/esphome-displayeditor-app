@@ -274,9 +274,21 @@ input:focus { border-color: var(--accent); }
 .issues li { margin-bottom: 4px; line-height: 1.5; }
 .issue-error { color: #ff9cab; }
 
-.config-view { grid-template-columns: 290px minmax(0, 1fr); }
-.config-list-panel { border-right: 1px solid var(--line); }
-.config-list { padding: 8px; overflow-y: auto; height: calc(100% - 64px); }
+.config-view { min-height: 0; overflow: hidden; grid-template-columns: 290px minmax(0, 1fr); }
+.config-list-panel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+}
+.config-list {
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .config-item { display: block; width: 100%; padding: 11px; border: 0; border-radius: 7px; text-align: left; background: none; color: var(--muted); cursor: pointer; }
 .config-item:hover, .config-item.active { color: var(--text); background: var(--surface-2); }
 .config-item small { display: block; margin-top: 3px; }
@@ -360,7 +372,8 @@ dialog::backdrop { background: #03070bc7; }
 .back-to-list { display: none; }
 
 @media (max-width: 700px) {
-  #designer { display: flex; flex-direction: column; height: 100%; }
+  #designer { flex-direction: column; height: 100%; }
+  #designer.active { display: flex; }
   #designer > .panel, #designer > .workspace { display: none; flex: 1; min-height: 0; }
   body[data-designer-pane="palette"] #designer > .palette-panel,
   body[data-designer-pane="canvas"] #designer > .workspace,
@@ -378,7 +391,7 @@ dialog::backdrop { background: #03070bc7; }
   .config-view, .devices-view { grid-template-columns: minmax(0, 1fr); }
   .config-list-panel, .device-list-panel { display: none; }
   .config-view.showing-list .config-list-panel,
-  .devices-view.showing-list .device-list-panel { display: block; }
+  .devices-view.showing-list .device-list-panel { display: grid; }
   .config-view.showing-list .editor-panel,
   .devices-view.showing-list .device-detail { display: none; }
   .config-view:not(.showing-list) .back-to-list,

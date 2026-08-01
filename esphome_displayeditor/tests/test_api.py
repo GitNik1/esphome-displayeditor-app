@@ -75,6 +75,12 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     assert "applyViewerAction" in viewer.text
     assert "lvgl.widget.show" in viewer.text
     assert "lvgl.label.update" in viewer.text
+    styles = client.get("/styles.css")
+    assert styles.status_code == 200
+    assert ".config-list-panel" in styles.text
+    assert "grid-template-rows: auto minmax(0, 1fr)" in styles.text
+    assert "scrollbar-gutter: stable" in styles.text
+    assert "#designer.active { display: flex; }" in styles.text
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
