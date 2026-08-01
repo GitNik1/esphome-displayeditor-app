@@ -2,19 +2,27 @@ import { computeLayout, contentOrigin, fontFamilyId, resolvedFontFamily } from "
 import { boundingBox, nearestSegment } from "./glowline/geometry.js";
 import { drawDocument, flowBoundsDocument, hasFlow, strokePath } from "./glowline/renderer.js";
 import { format565, hsvToRgb, quantizeImageData, rgb565to888, rgb888to565 } from "./glowline/rgb565.js";
+import { MDI_CATALOG_VERSION, MDI_GLYPHS } from "./mdi-glyphs.js";
 import {
   ViewerController,
   describeViewerArc,
+  effectiveViewerStyle,
   entityMatchesRuntimeTarget,
   formatRuntimeValue,
   resolveViewerColor,
   runtimeBindingHealth,
   runtimeBoolean,
   viewerBarGeometry,
+  viewerGradientBackground,
+  viewerTextAlign,
 } from "./viewer/viewer.js";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+// Mirrors backend/designer_core/model.py's STATES_KEY - both sides need
+// the exact same key name for a widget/theme's per-state style overrides.
+const STATES_KEY = "states";
 
 // Maps each widget to its live canvas DOM node, so a drag/resize can update
 // descendant boxes (children, layout-dependent siblings) without recreating
@@ -55,6 +63,13 @@ const state = {
   states: [],
   // Which LVGL state the style controls currently edit. "" is the base style.
   activeState: "",
+  // Theme editor: which widget type/state it's currently showing. Separate
+  // from activeState above, which belongs to the per-widget style editor -
+  // both panels can be visible at once and must not fight over one state.
+  themeType: "",
+  themeState: "",
+  editingColorId: null,
+  editingFontId: null,
   devices: [],
   selectedDevice: null,
   editingDevice: null,
@@ -615,6 +630,9 @@ function bindDesignerPaneSwitch() {
 
 function bindDesigner() {
   bindDesignerPaneSwitch();
+  bindThemeEditor();
+  bindColorLibrary();
+  bindFontLibrary();
   viewer = new ViewerController({
     dialog: $("#viewer-dialog"),
     stage: $("#viewer-stage"),
@@ -674,6 +692,10 @@ function bindDesigner() {
   $("#style-mode").addEventListener("change", changeStyleMode);
   $("#style-ref").addEventListener("change", changeStyleRef);
   $("#save-as-style").addEventListener("click", saveCurrentStyleAsNamed);
+  $("#widget-action-trigger").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
+  $("#widget-action-type").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
+  $("#widget-action-target").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
+  $("#add-widget-action").addEventListener("click", addWidgetAction);
   $("#runtime-binding-target").addEventListener("change", () => renderRuntimeBinding(state.selectedWidget));
   $("#runtime-binding-device").addEventListener("change", () => {
     populateRuntimeEntityChoices();
@@ -1348,6 +1370,9 @@ function renderDesigner() {
   renderProperties();
   renderLineProperties();
   renderTree();
+  renderThemeEditor();
+  renderColorLibrary();
+  renderFontLibrary();
   renderDesignerStatus();
   updateUndoButtons();
 }
@@ -2086,7 +2111,7 @@ function ensureImageEntry(id, filePath) {
   let entry = state.project.images.find((img) => img.id === id);
   if (!entry) {
     entry = { id, file_path: filePath, resize: "", dither: "", transparency: "opaque",
-             external: true, extra: {} };
+             img_type: "", external: true, extra: {} };
     state.project.images.push(entry);
   } else {
     entry.file_path = filePath;
@@ -2215,10 +2240,30 @@ function renderWidget(item) {
   node.style.height = `${Math.max(1, height)}px`;
   node.style.opacity = widget.hidden ? "0" : "1";
   if (widget.locked) node.classList.add("locked");
-  const effectiveStyle = effectiveStyleTree(widget);
-  if (effectiveStyle.bg_color) {
-    const color = String(effectiveStyle.bg_color).replace("#", "");
-    if (/^[0-9a-f]{6}$/i.test(color)) node.style.backgroundColor = `#${color}`;
+  // The state selected in the property panel is also the state previewed on
+  // the canvas. This is especially useful for a button's pressed/checked
+  // colours: previously those values were editable but only visible after
+  // opening the separate Viewer.
+  const previewState = state.selectedWidget === widget ? state.activeState : "";
+  const effectiveStyle = effectiveViewerStyle(state.project, widget, previewState);
+  if (previewState) node.dataset.previewState = previewState;
+  const backgroundColor = resolveViewerColor(state.project, effectiveStyle.bg_color);
+  if (backgroundColor) node.style.backgroundColor = backgroundColor;
+  const gradientBackground = viewerGradientBackground(state.project, effectiveStyle);
+  if (gradientBackground) node.style.backgroundImage = gradientBackground;
+  const textColor = resolveViewerColor(state.project, effectiveStyle.text_color);
+  if (textColor) node.style.color = textColor;
+  const textAlign = viewerTextAlign(effectiveStyle.text_align);
+  if (textAlign) node.style.textAlign = textAlign;
+  const bgImageSource = displayableImageSource(effectiveStyle.bg_image_src);
+  if (bgImageSource) {
+    // `cover` is an approximation - LVGL's own bg_image scaling isn't
+    // modeled here, same "plausible, not pixel-exact" spirit as the rest
+    // of the layout engine. Falls back to bg_color alone if the URL 404s;
+    // a CSS background-image has no onerror hook to fall back further.
+    node.style.backgroundImage = `url("${bgImageSource}")`;
+    node.style.backgroundSize = "cover";
+    node.style.backgroundPosition = "center";
   }
   node.style.fontFamily = resolvedFontFamily(effectiveStyle.text_font || state.project.default_font);
   const imageSource = widget.widget_type === "image"
@@ -2242,7 +2287,10 @@ function renderWidget(item) {
     });
     node.append(picture);
   } else {
-    node.textContent = widget.properties.text || widget.id;
+    const text = document.createElement("span");
+    text.className = "canvas-widget-text";
+    text.textContent = widget.properties.text || widget.id;
+    node.append(text);
   }
   node.addEventListener("pointerdown", (event) => beginDrag(event, widget, node, item));
   if (state.selectedWidget === widget && !widget.locked && !managed) {
@@ -2306,13 +2354,23 @@ function renderCanvasValueVisual(widget) {
 }
 
 function effectiveStyleTree(widget) {
-  if (widget.style_mode !== "named") return widget.style_tree || {};
-  const merged = {};
-  (widget.style_refs || []).forEach((ref) => {
-    const entry = styleLibrary().find((item) => item.id === ref);
-    if (entry) Object.assign(merged, entry.style_tree || {});
-  });
-  return merged;
+  const theme = (state.project.theme || {})[widget.widget_type] || {};
+  let ownTree;
+  if (widget.style_mode !== "named") {
+    ownTree = widget.style_tree || {};
+  } else {
+    ownTree = {};
+    (widget.style_refs || []).forEach((ref) => {
+      const entry = styleLibrary().find((item) => item.id === ref);
+      if (entry) Object.assign(ownTree, entry.style_tree || {});
+    });
+  }
+  // The theme is this type's default; the widget's own style (inline or
+  // named) overrides it key-by-key, same precedence ESPHome's LVGL
+  // component applies. Main widget state previews use effectiveViewerStyle
+  // in renderWidget; this nested tree remains useful for part visuals such
+  // as the bar indicator.
+  return { ...theme, ...ownTree };
 }
 
 function beginDrag(event, widget, node, box) {
@@ -2399,6 +2457,7 @@ function renderProperties() {
   $("#empty-properties").classList.toggle("hidden", state.canvasMode === "lines" || Boolean(widget));
   $("#properties").classList.toggle("hidden", !widget);
   if (!widget) $("#runtime-binding-section").classList.add("hidden");
+  if (!widget) $("#widget-actions-section").classList.add("hidden");
   if (!widget) return;
   $("#prop-id").value = widget.id;
   $("#prop-x").value = widget.x;
@@ -2412,8 +2471,229 @@ function renderProperties() {
   renderStateChoices();
   renderStyleControls(widget);
   renderDynamicProperties(widget);
+  renderWidgetActions(widget);
   renderRuntimeBinding(widget);
   renderExtraKeys(widget);
+}
+
+const ACTION_TRIGGER_LABELS = {
+  on_click: "Klick",
+  on_press: "Drücken",
+  on_release: "Loslassen",
+  on_value: "Schalterzustand",
+};
+
+function actionObjectEntry(action) {
+  if (!action || typeof action !== "object" || Array.isArray(action)) return null;
+  const entries = Object.entries(action);
+  return entries.length === 1 ? entries[0] : null;
+}
+
+function actionIdsForEditor(payload) {
+  if (typeof payload === "string") return [payload];
+  if (Array.isArray(payload)) return payload.flatMap(actionIdsForEditor);
+  if (payload && typeof payload === "object") return actionIdsForEditor(payload.id);
+  return [];
+}
+
+function generatedActionCondition(action) {
+  const entry = actionObjectEntry(action);
+  if (entry?.[0] !== "if" || !entry[1] || typeof entry[1] !== "object") return null;
+  const expression = String(entry[1].condition?.lambda || "").replace(/\s+/g, "").toLowerCase();
+  const branch = Array.isArray(entry[1].then) && entry[1].then.length === 1 ? entry[1].then[0] : null;
+  if (!branch || !["returnx;", "return!x;"].includes(expression)) return null;
+  return { condition: expression === "returnx;" ? "checked" : "unchecked", action: branch };
+}
+
+function describeWidgetAction(action) {
+  const conditional = generatedActionCondition(action);
+  if (conditional) {
+    const prefix = conditional.condition === "checked" ? "Wenn eingeschaltet: " : "Wenn ausgeschaltet: ";
+    const inner = describeWidgetAction(conditional.action);
+    return { ...inner, text: `${prefix}${inner.text}` };
+  }
+  const entry = actionObjectEntry(action);
+  if (!entry) return { text: "Nicht grafisch unterstützte Aktion", targetIds: [], supported: false };
+  const [name, payload] = entry;
+  const targetIds = actionIdsForEditor(payload);
+  if (["lvgl.widget.show", "lvgl.widget.hide"].includes(name)) {
+    return {
+      text: `${name.endsWith(".show") ? "Anzeigen" : "Ausblenden"}: ${targetIds.join(", ") || "ohne Ziel"}`,
+      targetIds,
+      supported: Boolean(targetIds.length),
+    };
+  }
+  if (name === "lvgl.page.show") {
+    return { text: `Seite öffnen: ${targetIds.join(", ") || "ohne Ziel"}`, targetIds: [], supported: Boolean(targetIds.length) };
+  }
+  if (["lvgl.widget.update", "lvgl.label.update", "lvgl.button.update"].includes(name)
+      && payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const fields = Object.keys(payload).filter((key) => key !== "id");
+    return {
+      text: `Ändern: ${targetIds.join(", ") || "ohne Ziel"}${fields.length ? ` · ${fields.join(", ")}` : ""}`,
+      targetIds,
+      supported: Boolean(targetIds.length && fields.length),
+    };
+  }
+  return { text: `${name} · nur im YAML bearbeitbar`, targetIds, supported: false };
+}
+
+function renderWidgetActions(widget) {
+  const section = $("#widget-actions-section");
+  const visible = widget?.widget_type === "button";
+  section.classList.toggle("hidden", !visible);
+  if (!visible) return;
+
+  widget.events ||= {};
+  const list = $("#widget-action-list");
+  list.replaceChildren();
+  let count = 0;
+  Object.entries(widget.events).forEach(([trigger, raw]) => {
+    const actions = Array.isArray(raw) ? raw : [raw];
+    actions.forEach((action, index) => {
+      count += 1;
+      const description = describeWidgetAction(action);
+      const missing = description.targetIds.filter((id) => !projectWidgetEntries().some((item) => item.id === id));
+      const row = document.createElement("div");
+      row.className = `widget-action-item${!description.supported || missing.length ? " invalid" : ""}`;
+      const label = document.createElement("span");
+      const triggerLabel = ACTION_TRIGGER_LABELS[trigger] || trigger;
+      label.textContent = `${triggerLabel}: ${description.text}${missing.length ? ` · Ziel fehlt: ${missing.join(", ")}` : ""}`;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "button danger compact";
+      remove.textContent = "Entfernen";
+      remove.addEventListener("click", () => removeWidgetAction(widget, trigger, index));
+      row.append(label, remove);
+      list.append(row);
+    });
+  });
+  if (!count) {
+    const empty = document.createElement("p");
+    empty.className = "widget-action-empty";
+    empty.textContent = "Noch keine Aktionen angelegt.";
+    list.append(empty);
+  }
+  renderWidgetActionBuilder(widget);
+}
+
+function renderWidgetActionBuilder(widget) {
+  if (!widget || widget.widget_type !== "button") return;
+  const trigger = $("#widget-action-trigger").value;
+  const type = $("#widget-action-type").value;
+  const conditionField = $("#widget-action-condition-field");
+  conditionField.classList.toggle("hidden", trigger !== "on_value");
+  if (trigger !== "on_value") $("#widget-action-condition").value = "always";
+
+  const target = $("#widget-action-target");
+  const previous = target.value;
+  const choices = type === "page_show"
+    ? (state.project.pages || []).map((page) => ({ value: page.id, label: `${page.id} · Seite` }))
+    : projectWidgetEntries().map((item) => ({ value: item.id, label: `${item.id} · ${item.widget_type}` }));
+  target.replaceChildren();
+  choices.forEach((choice) => target.append(new Option(choice.label, choice.value)));
+  if (choices.some((choice) => choice.value === previous)) target.value = previous;
+
+  const update = type === "update";
+  $("#widget-action-update-fields").classList.toggle("hidden", !update);
+  const targetWidget = projectWidgetEntries().find((item) => item.id === target.value);
+  $("#widget-action-text-field").classList.toggle(
+    "hidden", !update || !["label", "button"].includes(targetWidget?.widget_type),
+  );
+  $("#widget-action-error").classList.add("hidden");
+}
+
+function normaliseActionColor(value) {
+  const raw = String(value || "").trim();
+  const hex = raw.replace(/^#/, "").replace(/^0x/i, "");
+  return /^[0-9a-f]{6}$/i.test(hex) ? `0x${hex.toUpperCase()}` : raw;
+}
+
+function addWidgetAction() {
+  const widget = state.selectedWidget;
+  if (!widget || widget.widget_type !== "button") return;
+  const trigger = $("#widget-action-trigger").value;
+  const type = $("#widget-action-type").value;
+  const targetId = $("#widget-action-target").value;
+  const error = $("#widget-action-error");
+  const fail = (message) => {
+    error.textContent = message;
+    error.classList.remove("hidden");
+  };
+  if (!targetId) {
+    fail(type === "page_show" ? "Das Projekt enthält keine auswählbare Seite." : "Bitte ein Ziel-Widget auswählen.");
+    return;
+  }
+  if (trigger === "on_value" && !widget.properties?.checkable) {
+    fail("Für Schalterzustände zuerst die Einrastfunktion des Buttons aktivieren.");
+    return;
+  }
+
+  let action;
+  if (type === "show" || type === "hide") {
+    action = { [`lvgl.widget.${type}`]: targetId };
+  } else if (type === "page_show") {
+    action = { "lvgl.page.show": targetId };
+  } else {
+    const targetWidget = projectWidgetEntries().find((item) => item.id === targetId);
+    const payload = { id: targetId };
+    const text = $("#widget-action-text").value.trim();
+    if (text && ["label", "button"].includes(targetWidget?.widget_type)) payload.text = text;
+    const styleControls = {
+      bg_color: "#widget-action-bg-color",
+      text_color: "#widget-action-text-color",
+      border_color: "#widget-action-border-color",
+      opa: "#widget-action-opacity",
+    };
+    Object.entries(styleControls).forEach(([key, selector]) => {
+      const value = $(selector).value.trim();
+      if (value) payload[key] = key.endsWith("_color") ? normaliseActionColor(value) : value;
+    });
+    if (Object.keys(payload).length === 1) {
+      fail("Mindestens Text, Farbe, Rahmenfarbe oder Deckkraft angeben.");
+      return;
+    }
+    const actionName = targetWidget?.widget_type === "label"
+      ? "lvgl.label.update"
+      : targetWidget?.widget_type === "button" ? "lvgl.button.update" : "lvgl.widget.update";
+    action = { [actionName]: payload };
+  }
+
+  const condition = $("#widget-action-condition").value;
+  if (trigger === "on_value" && condition !== "always") {
+    action = {
+      if: {
+        condition: { lambda: condition === "checked" ? "return x;" : "return !x;" },
+        then: [action],
+      },
+    };
+  }
+
+  pushUndo();
+  widget.events ||= {};
+  if (!Array.isArray(widget.events[trigger])) {
+    widget.events[trigger] = widget.events[trigger] === undefined ? [] : [widget.events[trigger]];
+  }
+  widget.events[trigger].push(action);
+  markProjectDirty();
+  error.classList.add("hidden");
+  ["#widget-action-text", "#widget-action-bg-color", "#widget-action-text-color",
+    "#widget-action-border-color", "#widget-action-opacity"].forEach((selector) => { $(selector).value = ""; });
+  syncLinkedColorPickers();
+  renderWidgetActions(widget);
+}
+
+function removeWidgetAction(widget, trigger, index) {
+  pushUndo();
+  const raw = widget.events?.[trigger];
+  if (Array.isArray(raw)) {
+    raw.splice(index, 1);
+    if (!raw.length) delete widget.events[trigger];
+  } else {
+    delete widget.events[trigger];
+  }
+  markProjectDirty();
+  renderWidgetActions(widget);
 }
 
 function runtimeTargets(widget) {
@@ -2716,9 +2996,10 @@ async function cleanupRuntimeBindings() {
 }
 
 function setCanvasRuntimeText(node, text) {
-  let textNode = [...node.childNodes].find((child) => child.nodeType === Node.TEXT_NODE);
+  let textNode = node.querySelector(".canvas-widget-text");
   if (!textNode) {
-    textNode = document.createTextNode("");
+    textNode = document.createElement("span");
+    textNode.className = "canvas-widget-text";
     node.prepend(textNode);
   }
   textNode.textContent = text;
@@ -2766,6 +3047,981 @@ function toggleWidgetFlag(flag) {
   markProjectDirty();
   renderCanvas();
   renderTree();
+}
+
+// --- Project colour library ------------------------------------------
+
+function colorLibrary() {
+  if (!Array.isArray(state.project.colors)) state.project.colors = [];
+  return state.project.colors;
+}
+
+function normaliseLibraryHex(value) {
+  const raw = String(value || "").trim().replace(/^#/, "").replace(/^0x/i, "");
+  if (/^[0-9a-f]{3}$/i.test(raw)) {
+    return raw.split("").map((character) => character + character).join("").toUpperCase();
+  }
+  return /^[0-9a-f]{6}$/i.test(raw) ? raw.toUpperCase() : null;
+}
+
+function colorReferenceLocations(id, replacement = null) {
+  const matches = [];
+  const visit = (value, path, key = "", parent = null) => {
+    if (typeof value === "string") {
+      if (/color$/i.test(key) && value === id) {
+        matches.push(path);
+        if (replacement !== null) parent[key] = replacement;
+      }
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    Object.entries(value).forEach(([childKey, child]) => {
+      visit(child, path ? `${path}.${childKey}` : childKey, childKey, value);
+    });
+  };
+  Object.entries(state.project).forEach(([key, value]) => {
+    if (key !== "colors") visit(value, key);
+  });
+  return matches;
+}
+
+function projectIdIsUsed(id, ignoredColorId = null) {
+  if (projectWidgetEntries().some((entry) => entry.id === id)) return true;
+  const libraries = [state.project.styles, state.project.fonts, state.project.images];
+  if (libraries.some((entries) => (entries || []).some((entry) => entry.id === id))) return true;
+  return colorLibrary().some((entry) => entry.id === id && entry.id !== ignoredColorId);
+}
+
+function resetColorLibraryForm() {
+  state.editingColorId = null;
+  $("#color-library-id").value = "";
+  $("#color-library-hex").value = "";
+  $("#color-library-picker").value = "#00a000";
+  $("#color-library-error").classList.add("hidden");
+  $("#save-color-library-entry").textContent = "Farbe hinzufügen";
+  $("#cancel-color-library-edit").classList.add("hidden");
+}
+
+function editColorLibraryEntry(id) {
+  const entry = colorLibrary().find((item) => item.id === id);
+  if (!entry) return;
+  state.editingColorId = id;
+  $("#color-library-id").value = entry.id;
+  $("#color-library-hex").value = normaliseLibraryHex(entry.hex) || "FFFFFF";
+  $("#color-library-picker").value = `#${normaliseLibraryHex(entry.hex) || "FFFFFF"}`;
+  $("#color-library-error").classList.add("hidden");
+  $("#save-color-library-entry").textContent = "Änderungen speichern";
+  $("#cancel-color-library-edit").classList.remove("hidden");
+  $("#color-library-id").focus();
+}
+
+function saveColorLibraryEntry(event) {
+  event.preventDefault();
+  const id = $("#color-library-id").value.trim();
+  const hex = normaliseLibraryHex($("#color-library-hex").value);
+  const error = $("#color-library-error");
+  const fail = (message) => {
+    error.textContent = message;
+    error.classList.remove("hidden");
+  };
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
+    fail("Die ID muss mit einem Buchstaben oder _ beginnen und darf nur Buchstaben, Zahlen und _ enthalten.");
+    return;
+  }
+  if (!hex) {
+    fail("Bitte eine Farbe als drei- oder sechsstelligen Hexwert angeben.");
+    return;
+  }
+  if (projectIdIsUsed(id, state.editingColorId)) {
+    fail(`Die ID ${id} wird bereits im Projekt verwendet.`);
+    return;
+  }
+
+  pushUndo();
+  if (state.editingColorId) {
+    const entry = colorLibrary().find((item) => item.id === state.editingColorId);
+    if (!entry) return resetColorLibraryForm();
+    const previousId = entry.id;
+    entry.id = id;
+    entry.hex = hex;
+    if (previousId !== id) colorReferenceLocations(previousId, id);
+  } else {
+    colorLibrary().push({ id, hex });
+  }
+  markProjectDirty();
+  resetColorLibraryForm();
+  renderDesigner();
+  toast(`Farbe ${id} gespeichert.`);
+}
+
+function deleteColorLibraryEntry(id) {
+  const entry = colorLibrary().find((item) => item.id === id);
+  if (!entry) return;
+  const references = colorReferenceLocations(id);
+  if (references.length && !confirm(
+    `${id} wird ${references.length}-mal verwendet. Verwendungen durch ${entry.hex} ersetzen und Farbe löschen?`,
+  )) return;
+  pushUndo();
+  if (references.length) colorReferenceLocations(id, normaliseLibraryHex(entry.hex) || entry.hex);
+  state.project.colors = colorLibrary().filter((item) => item !== entry);
+  if (state.editingColorId === id) resetColorLibraryForm();
+  markProjectDirty();
+  renderDesigner();
+  toast(references.length
+    ? `Farbe ${id} gelöscht; ${references.length} Verwendung(en) wurden durch den Hexwert ersetzt.`
+    : `Farbe ${id} gelöscht.`);
+}
+
+function renderColorLibrary() {
+  const list = $("#color-library-list");
+  list.replaceChildren();
+  colorLibrary().forEach((entry) => {
+    const hex = normaliseLibraryHex(entry.hex) || "FFFFFF";
+    const row = document.createElement("div");
+    row.className = "color-library-item";
+    const swatch = document.createElement("span");
+    swatch.className = "color-library-swatch";
+    swatch.style.backgroundColor = `#${hex}`;
+    const name = document.createElement("span");
+    name.className = "color-library-name";
+    name.textContent = entry.id;
+    const value = document.createElement("small");
+    value.textContent = `#${hex}`;
+    name.append(value);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "icon-button";
+    edit.title = `${entry.id} bearbeiten`;
+    edit.textContent = "✎";
+    edit.addEventListener("click", () => editColorLibraryEntry(entry.id));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-button";
+    remove.title = `${entry.id} löschen`;
+    remove.textContent = "×";
+    remove.addEventListener("click", () => deleteColorLibraryEntry(entry.id));
+    row.append(swatch, name, edit, remove);
+    list.append(row);
+  });
+  if (!colorLibrary().length) {
+    const empty = document.createElement("p");
+    empty.className = "color-library-empty";
+    empty.textContent = "Noch keine Projektfarben angelegt.";
+    list.append(empty);
+  }
+
+  const options = $("#project-color-options");
+  options.replaceChildren();
+  colorLibrary().forEach((entry) => {
+    const option = document.createElement("option");
+    option.value = entry.id;
+    option.label = `#${normaliseLibraryHex(entry.hex) || entry.hex}`;
+    options.append(option);
+  });
+  $("#color-library-export-hint").classList.toggle(
+    "hidden", (state.project.export_sections || []).includes("color"),
+  );
+  if (state.editingColorId && !colorLibrary().some((entry) => entry.id === state.editingColorId)) {
+    resetColorLibraryForm();
+  }
+  syncLinkedColorPickers();
+}
+
+function syncLinkedColorPickers() {
+  $$(".linked-color-picker").forEach((picker) => {
+    const target = picker.dataset.colorTarget
+      ? document.getElementById(picker.dataset.colorTarget)
+      : picker.previousElementSibling;
+    const resolved = target ? resolveViewerColor(state.project, target.value) : null;
+    picker.value = resolved && /^#[0-9a-f]{6}$/i.test(resolved) ? resolved : "#000000";
+  });
+}
+
+function bindColorLibrary() {
+  $("#color-library-form").addEventListener("submit", saveColorLibraryEntry);
+  $("#cancel-color-library-edit").addEventListener("click", resetColorLibraryForm);
+  $("#color-library-picker").addEventListener("input", (event) => {
+    $("#color-library-hex").value = event.target.value.slice(1).toUpperCase();
+  });
+  $("#color-library-hex").addEventListener("input", (event) => {
+    const hex = normaliseLibraryHex(event.target.value);
+    if (hex) $("#color-library-picker").value = `#${hex}`;
+  });
+  $$(".linked-color-picker").forEach((picker) => {
+    const target = $(`#${picker.dataset.colorTarget}`);
+    picker.addEventListener("input", () => {
+      target.value = picker.value.slice(1).toUpperCase();
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    target.addEventListener("input", syncLinkedColorPickers);
+  });
+}
+
+// A curated subset of Google Fonts - the full catalog runs into the
+// thousands and would need a live API call (this add-on makes none at
+// runtime beyond what the user explicitly points it at). "Andere (manuell)"
+// falls back to a free-text field for anything not listed here.
+const GOOGLE_FONTS_CUSTOM = "__custom__";
+const GOOGLE_FONTS = [
+  "Abel", "Alegreya", "Anton", "Archivo", "Arimo", "Arvo", "Asap",
+  "Bangers", "Barlow", "Bebas Neue", "BenchNine", "Bitter", "Bree Serif",
+  "Cabin", "Cairo", "Caveat", "Cinzel", "Comfortaa", "Cormorant",
+  "Cousine", "Crimson Text", "DM Sans", "DM Serif Display", "Dancing Script",
+  "Dosis", "EB Garamond", "Exo", "Exo 2", "Fira Code", "Fira Sans",
+  "Fjalla One", "Frank Ruhl Libre", "Grandstander", "Great Vibes",
+  "Heebo", "IBM Plex Mono", "IBM Plex Sans", "IBM Plex Serif", "Inconsolata",
+  "Inder", "Indie Flower", "Inter", "JetBrains Mono", "Josefin Sans",
+  "Jost", "Kanit", "Karla", "Lato", "League Gothic", "Lexend", "Libre Baskerville",
+  "Libre Franklin", "Lobster", "Lora", "Manrope", "Merriweather", "Montserrat",
+  "Mukta", "Mulish", "Nanum Gothic", "Neuton", "Noto Sans", "Noto Serif",
+  "Nunito", "Nunito Sans", "Open Sans", "Oswald", "Outfit", "Overpass",
+  "PT Sans", "PT Serif", "Pacifico", "Playfair Display", "Poppins",
+  "Prompt", "Public Sans", "Quicksand", "Rajdhani", "Raleway", "Righteous",
+  "Roboto", "Roboto Condensed", "Roboto Mono", "Roboto Serif", "Roboto Slab",
+  "Rubik", "Sacramento", "Signika", "Slabo 27px", "Sora", "Source Code Pro",
+  "Source Sans Pro", "Source Serif Pro", "Space Grotesk", "Space Mono",
+  "Spectral", "Teko", "Titillium Web", "Ubuntu", "Ubuntu Mono", "Varela Round",
+  "Vollkorn", "Work Sans", "Yanone Kaffeesatz", "Zilla Slab",
+];
+
+// The Pictogrammers Material Design Icons webfont, offered as a one-click
+// preset so users don't have to know or type this URL themselves. Font and
+// icons are Apache 2.0 (see mdi-glyphs.js header) - free to redistribute a
+// locally-pinned copy from here.
+const MDI_WEBFONT_URL =
+  "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf";
+const MDI_WEBFONT_DEFAULT_ID = "icons_mdi";
+
+function isMdiWebfontUrl(url) {
+  return /materialdesignicons-webfont\.ttf(\?.*)?$/i.test(String(url || "").trim());
+}
+
+// --- Font library -------------------------------------------------------
+//
+// Mirrors the color library: a project-wide, id-addressable library that
+// `text_font`/`default_font` fields reference by id (or, for a builtin LVGL
+// font, by typing its name directly - hence the datalist rather than a
+// strict picker in appendPropertyControl). Unlike a color, a font id has no
+// literal-value fallback to substitute on delete, so a deleted font's
+// references are cleared instead of replaced.
+
+function fontReferenceLocations(id, replacement = null) {
+  const matches = [];
+  if (state.project.default_font === id) {
+    matches.push("default_font");
+    if (replacement !== null) state.project.default_font = replacement;
+  }
+  const visit = (value, path, key = "", parent = null) => {
+    if (typeof value === "string") {
+      if (/font$/i.test(key) && value === id) {
+        matches.push(path);
+        if (replacement !== null) parent[key] = replacement;
+      }
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    Object.entries(value).forEach(([childKey, child]) => {
+      visit(child, path ? `${path}.${childKey}` : childKey, childKey, value);
+    });
+  };
+  Object.entries(state.project).forEach(([key, value]) => {
+    if (key !== "fonts" && key !== "default_font") visit(value, key);
+  });
+  return matches;
+}
+
+function populateGoogleFontsSelect() {
+  const select = $("#font-library-gfonts-family");
+  if (select.options.length) return; // static list, populate once
+  GOOGLE_FONTS.forEach((family) => select.append(new Option(family, family)));
+  select.append(new Option("Andere (manuell) …", GOOGLE_FONTS_CUSTOM));
+}
+
+function updateFontSourceFieldsVisibility() {
+  const source = $("#font-library-source").value;
+  $("#font-library-builtin-field").classList.toggle("hidden", source !== "builtin");
+  $("#font-library-gfonts-field").classList.toggle("hidden", source !== "gfonts");
+  $("#font-library-gfonts-extra").classList.toggle("hidden", source !== "gfonts");
+  $("#font-library-gfonts-custom-field").classList.toggle(
+    "hidden", source !== "gfonts" || $("#font-library-gfonts-family").value !== GOOGLE_FONTS_CUSTOM,
+  );
+  $("#font-library-file-field").classList.toggle("hidden", source !== "file");
+  $("#font-library-file-upload").classList.toggle("hidden", source !== "file");
+  $("#font-library-web-field").classList.toggle("hidden", source !== "web");
+  $("#font-library-refresh-field").classList.toggle("hidden", source !== "web");
+}
+
+/** The gfonts family currently expressed by the form, whichever of the two
+ * controls (curated select vs. manual fallback) is authoritative. */
+function currentGfontsFamilyInput() {
+  const selected = $("#font-library-gfonts-family").value;
+  return selected === GOOGLE_FONTS_CUSTOM ? $("#font-library-gfonts-custom").value.trim() : selected;
+}
+
+/** Points the select/custom-field pair at `family`, adding it as the
+ * custom fallback if it isn't one of the curated options. */
+function setGfontsFamilyInput(family) {
+  const select = $("#font-library-gfonts-family");
+  const known = GOOGLE_FONTS.includes(family);
+  select.value = known ? family : GOOGLE_FONTS_CUSTOM;
+  $("#font-library-gfonts-custom").value = known ? "" : family;
+}
+
+// Update metadata belongs to the editor project, not to ESPHome's `font:`
+// schema. `import_source` is persisted with a project but never exported, so
+// the shared/read-only designer core needs no private model fields.
+function fontSourceMetadataMap(create = false) {
+  if (!state.project.import_source || typeof state.project.import_source !== "object") {
+    if (!create) return {};
+    state.project.import_source = {};
+  }
+  if (!state.project.import_source.font_sources || typeof state.project.import_source.font_sources !== "object") {
+    if (!create) return {};
+    state.project.import_source.font_sources = {};
+  }
+  return state.project.import_source.font_sources;
+}
+
+function fontSourceMetadata(entry) {
+  return fontSourceMetadataMap()[entry?.id] || null;
+}
+
+function isManagedWebFont(entry) {
+  return Boolean(fontSourceMetadata(entry)?.url);
+}
+
+function webFontUrl(entry) {
+  return fontSourceMetadata(entry)?.url || entry?.web_url || "";
+}
+
+const mdiByName = new Map(MDI_GLYPHS.map((entry) => [entry.name.toLowerCase(), entry]));
+let glyphPreviewRequest = 0;
+let glyphPreviewState = { status: "idle", family: "inherit" };
+// The widget/control an open icon dialog inserts into - null while closed.
+let activeIconTarget = null;
+
+function glyphCodepoint(glyph) {
+  return String(glyph || "").codePointAt(0);
+}
+
+function formatGlyphCodepoint(glyphOrCodepoint) {
+  const value = typeof glyphOrCodepoint === "number" ? glyphOrCodepoint : glyphCodepoint(glyphOrCodepoint);
+  return Number.isInteger(value) ? `U+${value.toString(16).toUpperCase().padStart(4, "0")}` : "—";
+}
+
+function uniqueGlyphs(values) {
+  const result = [];
+  const seen = new Set();
+  values.flatMap((value) => Array.from(String(value || ""))).forEach((glyph) => {
+    const codepoint = glyphCodepoint(glyph);
+    if (codepoint === undefined || seen.has(codepoint)) return;
+    seen.add(codepoint);
+    result.push(glyph);
+  });
+  return result;
+}
+
+/** This dialog only ever inserts into the MDI icon webfont, so "mdi:home"
+ * name resolution is always on here (unlike the old per-font-editing dialog,
+ * where the same lookup had to be disabled for non-icon fonts). */
+function parseGlyphInput(value) {
+  const input = String(value || "").trim();
+  if (!input) return [];
+  const tokens = input.split(/[\s,;]+/).filter(Boolean);
+  const glyphs = [];
+  tokens.forEach((rawToken) => {
+    const token = rawToken.replace(/^["']|["']$/g, "");
+    const mdi = mdiByName.get(token.toLowerCase());
+    if (mdi) {
+      glyphs.push(mdi.glyph);
+      return;
+    }
+    const codeMatch = token.match(/^(?:U\+|0x|\\U|\\u\{?)([0-9A-Fa-f]{4,8})\}?$/i);
+    if (codeMatch) {
+      const codepoint = Number.parseInt(codeMatch[1], 16);
+      if (codepoint > 0x10FFFF || (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
+        throw new Error(`${token} ist kein gültiger Unicode-Codepoint.`);
+      }
+      glyphs.push(String.fromCodePoint(codepoint));
+      return;
+    }
+    if (/^mdi:/i.test(token)) throw new Error(`${token} ist nicht im lokalen MDI-Katalog enthalten.`);
+    glyphs.push(...Array.from(token));
+  });
+  return uniqueGlyphs(glyphs);
+}
+
+function glyphPreviewPlaceholder() {
+  return glyphPreviewState.status === "loading" ? "…" : "?";
+}
+
+function updateGlyphPreviewStatus(message, status) {
+  const node = $("#glyph-preview-status");
+  node.textContent = message;
+  node.classList.toggle("ready", status === "loaded");
+  node.classList.toggle("error", status === "failed");
+}
+
+/** Loads the MDI webfont once (from its pinned local revision if the
+ * library already has it, else straight from the upstream URL) so the
+ * catalog can show the real glyph shapes instead of placeholder boxes. */
+async function ensureMdiPreviewFont() {
+  if (glyphPreviewState.status === "loaded") return;
+  const request = ++glyphPreviewRequest;
+  const mdiFont = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
+  const source = mdiFont?.file_path || MDI_WEBFONT_URL;
+  glyphPreviewState = { status: "loading", family: "inherit" };
+  updateGlyphPreviewStatus("Vorschaufont wird geladen …", "loading");
+  renderIconCatalog();
+  try {
+    const cssSource = `url(${JSON.stringify(assetUrl(source))})`;
+    const loaded = await new FontFace("esphome_mdi_preview", cssSource).load();
+    if (request !== glyphPreviewRequest) return;
+    document.fonts.add(loaded);
+    glyphPreviewState = { status: "loaded", family: "esphome_mdi_preview" };
+    updateGlyphPreviewStatus("Vorschaufont geladen.", "loaded");
+  } catch (error) {
+    if (request !== glyphPreviewRequest) return;
+    glyphPreviewState = { status: "failed", family: "inherit" };
+    updateGlyphPreviewStatus("Vorschaufont konnte nicht geladen werden.", "failed");
+  }
+  renderIconCatalog();
+}
+
+function renderIconCatalog() {
+  const filter = $("#glyph-search").value.trim().toLowerCase();
+  const family = glyphPreviewState.status === "loaded" ? glyphPreviewState.family : "inherit";
+  const catalog = $("#glyph-catalog");
+  catalog.replaceChildren();
+  MDI_GLYPHS.filter((entry) => (
+    !filter || entry.name.includes(filter) || formatGlyphCodepoint(entry.codepoint).toLowerCase().includes(filter)
+  )).forEach((entry) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "glyph-catalog-item";
+    button.title = `${entry.name} · ${formatGlyphCodepoint(entry.codepoint)}`;
+    const symbol = document.createElement("span");
+    symbol.className = `glyph-symbol${glyphPreviewState.status === "loaded" ? "" : " preview-unavailable"}`;
+    symbol.style.fontFamily = family;
+    symbol.textContent = glyphPreviewState.status === "loaded" ? entry.glyph : glyphPreviewPlaceholder();
+    const description = document.createElement("span");
+    description.textContent = entry.name;
+    const code = document.createElement("small");
+    code.textContent = formatGlyphCodepoint(entry.codepoint);
+    description.append(code);
+    button.append(symbol, description);
+    button.addEventListener("click", () => insertMdiGlyphs(entry.glyph));
+    catalog.append(button);
+  });
+  if (!catalog.children.length) {
+    const empty = document.createElement("p");
+    empty.className = "glyph-selected-empty";
+    empty.textContent = "Keine passenden MDI-Einträge.";
+    catalog.append(empty);
+  }
+}
+
+/** Opens the icon picker for a specific text control (a label/button's
+ * `text` property). Insertion both writes the glyph into that control and,
+ * on first use, wires up the MDI font as the widget's text_font - an icon
+ * glyph is meaningless without the font that actually contains it. */
+function openIconInsertDialog(widget, control) {
+  activeIconTarget = { widget, control };
+  pushUndo();
+  $("#glyph-input").value = "";
+  $("#glyph-search").value = "";
+  $("#glyph-input-error").classList.add("hidden");
+  $("#glyph-catalog-version").textContent = `Lokaler MDI-Katalog ${MDI_CATALOG_VERSION}`;
+  renderIconCatalog();
+  $("#glyph-dialog").showModal();
+  ensureMdiPreviewFont();
+}
+
+async function insertMdiGlyphs(glyphs) {
+  if (!activeIconTarget) return;
+  const { widget } = activeIconTarget;
+  let mdiFont = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
+  if (!mdiFont) {
+    // First use in this project: register the MDI font automatically so the
+    // inserted glyph actually renders on the real device, not just here.
+    await addMdiIconFont();
+    mdiFont = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
+  }
+  // addMdiIconFont() may have re-rendered the properties panel (new font
+  // registered), which replaces property controls - re-resolve by id so
+  // later inserts keep landing in the control the user is actually looking at.
+  const control = document.getElementById(activeIconTarget.control.id) || activeIconTarget.control;
+  activeIconTarget.control = control;
+
+  if (mdiFont) {
+    const fauxProperty = { part: "main", category: "style" };
+    const styleTarget = propertyTarget(widget, fauxProperty, true, "style");
+    if (styleTarget.text_font !== mdiFont.id) styleTarget.text_font = mdiFont.id;
+  }
+  const start = control.selectionStart ?? control.value.length;
+  const end = control.selectionEnd ?? control.value.length;
+  control.value = control.value.slice(0, start) + glyphs + control.value.slice(end);
+  const pos = start + glyphs.length;
+  control.dispatchEvent(new Event("input", { bubbles: true }));
+  control.focus();
+  control.setSelectionRange(pos, pos);
+  markProjectDirty();
+  renderCanvas();
+}
+
+function addGlyphInput() {
+  const error = $("#glyph-input-error");
+  try {
+    const parsed = parseGlyphInput($("#glyph-input").value);
+    if (!parsed.length) throw new Error("Bitte mindestens eine Glyphe eingeben.");
+    insertMdiGlyphs(parsed.join(""));
+    $("#glyph-input").value = "";
+    error.classList.add("hidden");
+  } catch (problem) {
+    error.textContent = problem.message;
+    error.classList.remove("hidden");
+  }
+}
+
+function bindGlyphEditor() {
+  $("#close-glyph-dialog").addEventListener("click", () => $("#glyph-dialog").close());
+  $("#finish-glyph-dialog").addEventListener("click", () => $("#glyph-dialog").close());
+  $("#add-glyph-input").addEventListener("click", addGlyphInput);
+  $("#glyph-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); addGlyphInput(); }
+  });
+  $("#glyph-search").addEventListener("input", renderIconCatalog);
+  $("#glyph-dialog").addEventListener("close", () => {
+    activeIconTarget = null;
+    renderProperties();
+  });
+}
+
+function resetFontLibraryForm() {
+  state.editingFontId = null;
+  $("#font-library-id").value = "";
+  $("#font-library-source").value = "builtin";
+  $("#font-library-builtin-name").value = "";
+  $("#font-library-gfonts-family").selectedIndex = 0;
+  $("#font-library-gfonts-custom").value = "";
+  $("#font-library-gfonts-weight").value = "400";
+  $("#font-library-gfonts-italic").checked = false;
+  $("#font-library-file-path").value = "";
+  $("#font-library-web-url").value = "";
+  $("#font-library-refresh").value = "never";
+  $("#font-library-size").value = "16";
+  $("#font-library-bpp").value = "4";
+  $("#font-library-error").classList.add("hidden");
+  $("#save-font-library-entry").textContent = "Schrift hinzufügen";
+  $("#cancel-font-library-edit").classList.add("hidden");
+  updateFontSourceFieldsVisibility();
+}
+
+function editFontLibraryEntry(id) {
+  const entry = fontLibrary().find((item) => item.id === id);
+  if (!entry) return;
+  state.editingFontId = id;
+  $("#font-library-id").value = entry.id;
+  $("#font-library-source").value = isManagedWebFont(entry) ? "web" : (entry.source_kind || "builtin");
+  $("#font-library-builtin-name").value = entry.builtin_name || "";
+  setGfontsFamilyInput(entry.gfonts_family || "");
+  $("#font-library-gfonts-weight").value = entry.gfonts_weight || 400;
+  $("#font-library-gfonts-italic").checked = Boolean(entry.gfonts_italic);
+  $("#font-library-file-path").value = entry.file_path || "";
+  $("#font-library-web-url").value = webFontUrl(entry);
+  const refresh = fontSourceMetadata(entry)?.refresh || entry.extra?.file?.refresh || "never";
+  if (![...$("#font-library-refresh").options].some((option) => option.value === refresh)) {
+    $("#font-library-refresh").append(new Option(refresh, refresh));
+  }
+  $("#font-library-refresh").value = refresh;
+  $("#font-library-size").value = entry.size || 16;
+  $("#font-library-bpp").value = String(entry.bpp || 4);
+  $("#font-library-error").classList.add("hidden");
+  $("#save-font-library-entry").textContent = "Änderungen speichern";
+  $("#cancel-font-library-edit").classList.remove("hidden");
+  updateFontSourceFieldsVisibility();
+  $("#font-library-id").focus();
+}
+
+function saveFontLibraryEntry(event) {
+  event.preventDefault();
+  const id = $("#font-library-id").value.trim();
+  const source = $("#font-library-source").value;
+  const error = $("#font-library-error");
+  const fail = (message) => {
+    error.textContent = message;
+    error.classList.remove("hidden");
+  };
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
+    fail("Die ID muss mit einem Buchstaben oder _ beginnen und darf nur Buchstaben, Zahlen und _ enthalten.");
+    return;
+  }
+  if (projectIdIsUsed(id) && id !== state.editingFontId) {
+    fail(`Die ID ${id} wird bereits im Projekt verwendet.`);
+    return;
+  }
+  if (source === "builtin" && !$("#font-library-builtin-name").value.trim()) {
+    fail("Bitte den eingebauten Schriftnamen angeben (z. B. montserrat_16).");
+    return;
+  }
+  if (source === "gfonts" && !currentGfontsFamilyInput()) {
+    fail("Bitte eine Google-Fonts-Familie angeben.");
+    return;
+  }
+  if (source === "file" && !$("#font-library-file-path").value.trim()) {
+    fail("Bitte einen Datei-Pfad angeben.");
+    return;
+  }
+  if (source === "web" && !isRemoteAsset($("#font-library-web-url").value.trim())) {
+    fail("Bitte eine http(s)-URL angeben.");
+    return;
+  }
+
+  pushUndo();
+  let entry;
+  const previousId = state.editingFontId || id;
+  const previousMeta = fontSourceMetadataMap()[previousId] || null;
+  const previousWebUrl = previousMeta?.url || "";
+  if (state.editingFontId) {
+    entry = fontLibrary().find((item) => item.id === state.editingFontId);
+    if (!entry) return resetFontLibraryForm();
+    if (previousId !== id) fontReferenceLocations(previousId, id);
+    entry.id = id;
+  } else {
+    entry = { id, external: false, extra: {} };
+    fontLibrary().push(entry);
+  }
+  const requestedWebUrl = source === "web" ? $("#font-library-web-url").value.trim() : "";
+  const keepManagedRevision = Boolean(previousMeta && previousWebUrl === requestedWebUrl && entry.file_path);
+  entry.source_kind = keepManagedRevision ? "file" : source;
+  entry.builtin_name = source === "builtin" ? $("#font-library-builtin-name").value.trim() : "";
+  entry.gfonts_family = source === "gfonts" ? currentGfontsFamilyInput() : "";
+  entry.gfonts_weight = source === "gfonts" ? (Number($("#font-library-gfonts-weight").value) || 400) : 400;
+  entry.gfonts_italic = source === "gfonts" && $("#font-library-gfonts-italic").checked;
+  entry.file_path = source === "file"
+    ? $("#font-library-file-path").value.trim()
+    : (keepManagedRevision ? entry.file_path : "");
+  entry.web_url = source === "web" && !keepManagedRevision ? requestedWebUrl : "";
+  entry.extra = entry.extra && typeof entry.extra === "object" ? entry.extra : {};
+  if (source === "web") {
+    entry.extra.file = {
+      ...(entry.extra.file && typeof entry.extra.file === "object" ? entry.extra.file : {}),
+      type: "web", url: requestedWebUrl, refresh: $("#font-library-refresh").value || "never",
+    };
+  }
+  const metadata = fontSourceMetadataMap(true);
+  if (previousId !== id) delete metadata[previousId];
+  if (keepManagedRevision) {
+    metadata[id] = { ...previousMeta, url: requestedWebUrl, refresh: $("#font-library-refresh").value || "never" };
+  } else {
+    delete metadata[id];
+  }
+  entry.size = clamp(Number($("#font-library-size").value) || 16, 1, 255);
+  entry.bpp = Number($("#font-library-bpp").value) || 4;
+  fontSourceStatuses.delete(state.editingFontId || id);
+  fontSourceStatuses.delete(id);
+
+  markProjectDirty();
+  resetFontLibraryForm();
+  renderDesigner();
+  toast(`Schrift ${id} gespeichert.`);
+}
+
+function deleteFontLibraryEntry(id) {
+  const entry = fontLibrary().find((item) => item.id === id);
+  if (!entry) return;
+  const references = fontReferenceLocations(id);
+  if (references.length && !confirm(
+    `${id} wird ${references.length}-mal verwendet. Verwendungen entfernen und Schrift löschen?`,
+  )) return;
+  pushUndo();
+  if (references.length) fontReferenceLocations(id, "");
+  state.project.fonts = fontLibrary().filter((item) => item !== entry);
+  delete fontSourceMetadataMap(true)[id];
+  fontLoadState.delete(id);
+  if (state.editingFontId === id) resetFontLibraryForm();
+  markProjectDirty();
+  renderDesigner();
+  toast(references.length
+    ? `Schrift ${id} gelöscht; ${references.length} Verwendung(en) entfernt.`
+    : `Schrift ${id} gelöscht.`);
+}
+
+const FONT_SOURCE_LABELS = { builtin: "eingebaut", gfonts: "Google Fonts", file: "Datei", web: "Web" };
+const fontSourceStatuses = new Map();
+
+function fontSourceStatus(entry) {
+  const status = fontSourceStatuses.get(entry.id);
+  if (status?.url === webFontUrl(entry)) return status;
+  if (status) fontSourceStatuses.delete(entry.id);
+  return isManagedWebFont(entry)
+    ? { state: "managed", label: "lokal fixiert" }
+    : { state: "unmanaged", label: "noch nicht lokal gespeichert" };
+}
+
+async function checkFontSource(entry, manual = false) {
+  if ((entry.source_kind !== "web" && !isManagedWebFont(entry)) || !state.capabilities["designer.asset_write"]) return;
+  const metadata = fontSourceMetadata(entry) || {};
+  const existing = fontSourceStatuses.get(entry.id);
+  if (existing?.state === "checking") return;
+  fontSourceStatuses.set(entry.id, { state: "checking", label: "Prüfung läuft …", url: webFontUrl(entry) });
+  renderFontLibrary();
+  try {
+    const result = await api("designer/font-sources/check", {
+      method: "POST",
+      body: JSON.stringify({
+        url: webFontUrl(entry),
+        etag: metadata.etag || "",
+        last_modified: metadata.last_modified || "",
+        sha256: metadata.sha256 || "",
+      }),
+    });
+    const changed = !isManagedWebFont(entry) || result.changed;
+    fontSourceStatuses.set(entry.id, changed
+      ? { state: "changed", label: isManagedWebFont(entry) ? "Update verfügbar" : "lokale Version fehlt", url: webFontUrl(entry) }
+      : { state: "current", label: "Quelle unverändert", url: webFontUrl(entry) });
+    if (manual) toast(changed ? `Für ${entry.id} ist eine Aktualisierung verfügbar.` : `${entry.id} ist aktuell.`);
+  } catch (error) {
+    fontSourceStatuses.set(entry.id, { state: "error", label: "Prüfung fehlgeschlagen", url: webFontUrl(entry) });
+    if (manual) toast(`Prüfung fehlgeschlagen: ${error.message}`, true);
+  }
+  renderFontLibrary();
+}
+
+async function updateFontSource(entry) {
+  if ((entry.source_kind !== "web" && !isManagedWebFont(entry)) || !state.capabilities["designer.asset_write"]) return;
+  fontSourceStatuses.set(entry.id, { state: "checking", label: "Download läuft …", url: webFontUrl(entry) });
+  renderFontLibrary();
+  try {
+    const result = await api("designer/font-sources/update", {
+      method: "POST", body: JSON.stringify({ id: entry.id, url: webFontUrl(entry) }),
+    });
+    const selectedGlyphs = uniqueGlyphs(entry.glyphs || []);
+    if (selectedGlyphs.length && state.capabilities["designer.asset_read"]) {
+      try {
+        const coverage = await api("designer/fonts/glyph-coverage", {
+          method: "POST",
+          body: JSON.stringify({ path: result.path, codepoints: selectedGlyphs.map(glyphCodepoint) }),
+        });
+        if (coverage.missing_count && !confirm(
+          `${coverage.missing_count} ausgewählte Glyphe(n) fehlen in der neuen Fontrevision. `
+          + "Trotzdem als aktive Revision übernehmen?",
+        )) {
+          fontSourceStatuses.set(entry.id, {
+            state: "changed",
+            label: `Update enthält ${coverage.missing_count} fehlende Glyphe(n)`,
+            url: webFontUrl(entry),
+          });
+          renderFontLibrary();
+          toast("Die bisherige Fontrevision bleibt aktiv.", true);
+          return;
+        }
+      } catch (coverageError) {
+        toast(`Glyphenprüfung der neuen Revision fehlgeschlagen: ${coverageError.message}`, true);
+      }
+    }
+    pushUndo();
+    const sourceUrl = webFontUrl(entry);
+    entry.source_kind = "file";
+    entry.file_path = result.path;
+    entry.web_url = "";
+    fontSourceMetadataMap(true)[entry.id] = {
+      url: sourceUrl,
+      refresh: "never",
+      etag: result.etag || "",
+      last_modified: result.last_modified || "",
+      sha256: result.sha256,
+      size: result.size || 0,
+      checked_at: result.checked_at || "",
+      path: result.path,
+    };
+    fontLoadState.delete(entry.id);
+    fontSourceStatuses.set(entry.id, { state: "current", label: "lokal aktualisiert", url: sourceUrl });
+    markProjectDirty();
+    renderDesigner();
+    if (!(state.project.export_sections || []).includes("font")) {
+      toast(`Lokal gespeichert als ${result.path}; die importierte Quell-YAML bleibt unverändert.`, false);
+    } else {
+      toast(`${entry.id} wurde als ${result.path} lokal fixiert.`);
+    }
+  } catch (error) {
+    fontSourceStatuses.set(entry.id, { state: "error", label: "Update fehlgeschlagen", url: webFontUrl(entry) });
+    renderFontLibrary();
+    toast(`Font-Update fehlgeschlagen: ${error.message}`, true);
+  }
+}
+
+function renderFontLibrary() {
+  const list = $("#font-library-list");
+  list.replaceChildren();
+  fontLibrary().forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "font-library-item";
+    const name = document.createElement("span");
+    name.className = "font-library-name";
+    name.textContent = entry.id;
+    const detail = document.createElement("small");
+    const sourceLabel = isManagedWebFont(entry)
+      ? "Web (lokal fixiert)"
+      : (FONT_SOURCE_LABELS[entry.source_kind] || entry.source_kind);
+    detail.textContent = `${sourceLabel} · ${entry.size}px`;
+    name.append(detail);
+    const actions = document.createElement("span");
+    actions.className = "font-library-actions";
+    if (entry.source_kind === "web" || isManagedWebFont(entry)) {
+      const statusData = fontSourceStatus(entry);
+      const status = document.createElement("span");
+      status.className = `font-source-status ${statusData.state}`;
+      status.textContent = statusData.label;
+      name.append(status);
+      if (state.capabilities["designer.asset_write"]) {
+        const check = document.createElement("button");
+        check.type = "button";
+        check.className = "icon-button";
+        check.title = `${entry.id}: Quelle jetzt prüfen`;
+        check.textContent = "↻";
+        check.disabled = statusData.state === "checking";
+        check.addEventListener("click", () => checkFontSource(entry, true));
+        actions.append(check);
+        if (!isManagedWebFont(entry) || statusData.state === "changed") {
+          const update = document.createElement("button");
+          update.type = "button";
+          update.className = "button subtle compact";
+          update.textContent = isManagedWebFont(entry) ? "Update" : "Lokal";
+          update.disabled = statusData.state === "checking";
+          update.addEventListener("click", () => updateFontSource(entry));
+          actions.append(update);
+        }
+      }
+    }
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "icon-button";
+    edit.title = `${entry.id} bearbeiten`;
+    edit.textContent = "✎";
+    edit.addEventListener("click", () => editFontLibraryEntry(entry.id));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-button";
+    remove.title = `${entry.id} löschen`;
+    remove.textContent = "×";
+    remove.addEventListener("click", () => deleteFontLibraryEntry(entry.id));
+    actions.append(edit, remove);
+    row.append(name, actions);
+    list.append(row);
+    if (
+      (entry.source_kind === "web" || isManagedWebFont(entry))
+      && isManagedWebFont(entry)
+      && (() => { const meta = fontSourceMetadata(entry); return meta?.etag || meta?.last_modified || meta?.sha256; })()
+      && !fontSourceStatuses.has(entry.id)
+      && state.capabilities["designer.asset_write"]
+    ) {
+      fontSourceStatuses.set(entry.id, { state: "queued", label: "Prüfung vorgemerkt …", url: webFontUrl(entry) });
+      queueMicrotask(() => checkFontSource(entry));
+    }
+  });
+  if (!fontLibrary().length) {
+    const empty = document.createElement("p");
+    empty.className = "font-library-empty";
+    empty.textContent = "Noch keine Projektschriften angelegt.";
+    list.append(empty);
+  }
+
+  const defaultSelect = $("#default-font");
+  const currentDefault = state.project.default_font || "";
+  defaultSelect.replaceChildren(new Option("— keine —", ""));
+  fontLibrary().forEach((entry) => defaultSelect.append(new Option(entry.id, entry.id)));
+  if (currentDefault && !fontLibrary().some((entry) => entry.id === currentDefault)) {
+    defaultSelect.append(new Option(`${currentDefault} (frei/unbekannt)`, currentDefault));
+  }
+  defaultSelect.value = currentDefault;
+
+  const options = $("#project-font-options");
+  options.replaceChildren();
+  fontLibrary().forEach((entry) => options.append(new Option(entry.id)));
+
+  $("#font-library-export-hint").classList.toggle(
+    "hidden", (state.project.export_sections || []).includes("font"),
+  );
+  if (state.editingFontId && !fontLibrary().some((entry) => entry.id === state.editingFontId)) {
+    resetFontLibraryForm();
+  }
+}
+
+async function uploadFontFile(file) {
+  const content_base64 = await blobToBase64(file);
+  const result = await api("designer/assets/fonts", {
+    method: "POST", body: JSON.stringify({ name: file.name, content_base64 }),
+  });
+  return result.path;
+}
+
+/** One-click preset: adds the MDI icon webfont as a normal Font Library
+ * entry (source_kind "web", refresh "never") and, where write access is
+ * available, immediately pins a local revision the same way the manual
+ * "Update"/"Lokal" button does - so the result is a font that's fixed in
+ * the library from the start, not just a URL the user still has to fetch
+ * themselves. */
+async function addMdiIconFont() {
+  const existing = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
+  if (existing) {
+    editFontLibraryEntry(existing.id);
+    toast(`${existing.id} verwendet bereits die MDI-Schriftart.`);
+    return;
+  }
+  let id = MDI_WEBFONT_DEFAULT_ID;
+  let suffix = 2;
+  while (projectIdIsUsed(id)) id = `${MDI_WEBFONT_DEFAULT_ID}_${suffix++}`;
+
+  pushUndo();
+  const entry = {
+    id, external: false,
+    source_kind: "web", builtin_name: "", gfonts_family: "", gfonts_weight: 400, gfonts_italic: false,
+    file_path: "", web_url: MDI_WEBFONT_URL,
+    extra: { file: { type: "web", url: MDI_WEBFONT_URL, refresh: "never" } },
+    size: 24, bpp: 4, glyphs: [],
+  };
+  fontLibrary().push(entry);
+  markProjectDirty();
+  renderDesigner();
+
+  if (!state.capabilities["designer.asset_write"]) {
+    toast(`${id} als Web-Quelle angelegt. Für eine lokal fixierte Kopie fehlt die Schreibberechtigung.`, true);
+    return;
+  }
+  toast(`${id} wird als lokale Fontrevision fixiert …`);
+  await updateFontSource(entry);
+}
+
+function bindFontLibrary() {
+  $("#add-mdi-font").addEventListener("click", addMdiIconFont);
+  populateGoogleFontsSelect();
+  bindGlyphEditor();
+  $("#font-library-form").addEventListener("submit", saveFontLibraryEntry);
+  $("#cancel-font-library-edit").addEventListener("click", resetFontLibraryForm);
+  $("#font-library-source").addEventListener("change", updateFontSourceFieldsVisibility);
+  $("#font-library-gfonts-family").addEventListener("change", updateFontSourceFieldsVisibility);
+  $("#font-library-file-pick").addEventListener("click", () => $("#font-library-file-input").click());
+  $("#font-library-file-input").addEventListener("change", async () => {
+    const file = $("#font-library-file-input").files[0];
+    if (!file) return;
+    try {
+      const path = await uploadFontFile(file);
+      $("#font-library-file-path").value = path;
+      toast(`Schriftdatei ${file.name} hochgeladen.`);
+    } catch (error) {
+      toast(`Hochladen fehlgeschlagen: ${error.message}`, true);
+    } finally {
+      $("#font-library-file-input").value = "";
+    }
+  });
+  $("#default-font").addEventListener("change", (event) => {
+    pushUndo();
+    state.project.default_font = event.target.value;
+    markProjectDirty();
+    renderCanvas();
+  });
+  updateFontSourceFieldsVisibility();
 }
 
 // --- Named styles -----------------------------------------------------
@@ -2893,7 +4149,9 @@ function renderLayoutSection(widget) {
 
 function propertyField(widget, property, index, targetKind) {
   const label = document.createElement("label");
-  label.textContent = property.label;
+  label.textContent = widget.widget_type === "button" && property.key === "checkable"
+    ? "Einrastfunktion (Schalter)"
+    : property.label;
   const target = propertyTarget(widget, property, false, targetKind);
   const value = target?.[property.key];
   const control = propertyControl(property, value, index);
@@ -2901,8 +4159,93 @@ function propertyField(widget, property, index, targetKind) {
   control.addEventListener("change", () => updateDynamicProperty(widget, property, control, targetKind));
   control.addEventListener("input", () => updateDynamicProperty(widget, property, control, targetKind));
   if (property.kind === "bool") label.className = "checkbox-field";
-  label.append(control);
+  appendPropertyControl(label, control, property, widget);
   return label;
+}
+
+// ESPHome's `image: type:` values - the colour format a PNG gets converted
+// to. There is no per-image-entry editor anywhere else in the app (resize/
+// dither/transparency aren't editable either), so this rides along with
+// whatever control already lets you pick the image itself.
+const IMAGE_TYPE_OPTIONS = [
+  ["", "— Standard —"],
+  ["BINARY", "BINARY"],
+  ["TRANSPARENT_BINARY", "TRANSPARENT_BINARY"],
+  ["GRAYSCALE", "GRAYSCALE"],
+  ["RGB565", "RGB565"],
+  ["RGB", "RGB"],
+  ["RGBA", "RGBA"],
+];
+
+function appendPropertyControl(label, control, property, widget) {
+  if (property.kind === "text") {
+    const row = document.createElement("div");
+    row.className = "text-with-icon-row";
+    row.append(control);
+    const iconButton = document.createElement("button");
+    iconButton.type = "button";
+    iconButton.className = "button subtle compact";
+    iconButton.title = "MDI-Icon aus dem Katalog in den Text einfügen";
+    iconButton.textContent = "Icon einfügen";
+    iconButton.addEventListener("click", () => openIconInsertDialog(widget, control));
+    row.append(iconButton);
+    label.append(row);
+    return;
+  }
+  if (property.kind === "image_ref") {
+    const row = document.createElement("div");
+    row.className = "image-ref-row";
+    row.append(control);
+    const format = document.createElement("select");
+    format.className = "image-ref-format";
+    format.title = "Bildformat (type:)";
+    IMAGE_TYPE_OPTIONS.forEach(([value, text]) => format.append(new Option(text, value)));
+    const syncFormat = () => {
+      const entry = imageEntry(control.value);
+      format.disabled = !entry;
+      format.value = entry ? (entry.img_type || "") : "";
+    };
+    syncFormat();
+    control.addEventListener("change", syncFormat);
+    format.addEventListener("change", () => {
+      const entry = imageEntry(control.value);
+      if (!entry) return;
+      pushUndo();
+      entry.img_type = format.value;
+      markProjectDirty();
+    });
+    row.append(format);
+    label.append(row);
+    return;
+  }
+  if (property.kind === "font_ref") {
+    // A datalist rather than a strict picker: ESPHome also accepts a
+    // builtin font name (montserrat_16) typed directly, not only a
+    // font: library id - same trade-off the color datalist already makes.
+    control.setAttribute("list", "project-font-options");
+    label.append(control);
+    return;
+  }
+  if (property.kind !== "color") {
+    label.append(control);
+    return;
+  }
+  control.setAttribute("list", "project-color-options");
+  const row = document.createElement("div");
+  row.className = "color-input-row";
+  const picker = document.createElement("input");
+  picker.type = "color";
+  picker.className = "linked-color-picker";
+  picker.setAttribute("aria-label", `${property.label} auswählen`);
+  const resolved = resolveViewerColor(state.project, control.value);
+  picker.value = resolved && /^#[0-9a-f]{6}$/i.test(resolved) ? resolved : "#000000";
+  picker.addEventListener("input", () => {
+    control.value = picker.value.slice(1).toUpperCase();
+    control.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  control.addEventListener("input", syncLinkedColorPickers);
+  row.append(control, picker);
+  label.append(row);
 }
 
 function propertyTarget(widget, property, create, kind = property.category) {
@@ -2932,13 +4275,162 @@ function propertyTarget(widget, property, create, kind = property.category) {
 function renderStateChoices() {
   const select = $("#style-state");
   select.replaceChildren(new Option("Normal", ""));
-  state.states.forEach((name) => select.append(new Option(name, name)));
+  const labels = {
+    checked: "Eingerastet (checked)",
+    pressed: "Gedrückt (pressed)",
+    disabled: "Deaktiviert (disabled)",
+    focused: "Fokussiert (focused)",
+    edited: "Bearbeitet (edited)",
+    scrolled: "Gescrollt (scrolled)",
+  };
+  state.states.forEach((name) => select.append(new Option(labels[name] || name, name)));
   select.value = state.activeState;
+
+  const hint = $("#style-state-hint");
+  const widget = state.selectedWidget;
+  if (!hint) return;
+  if (widget?.widget_type !== "button") {
+    hint.textContent = "Der gewählte LVGL-Zustand wird direkt auf der Zeichenfläche angezeigt.";
+  } else if (state.activeState === "pressed") {
+    hint.textContent = "Dieser Stil gilt nur, solange der Button gedrückt wird.";
+  } else if (state.activeState === "checked") {
+    hint.textContent = widget.properties?.checkable
+      ? "Dieser Stil gilt, wenn der Button eingerastet ist. Ein weiterer Klick schaltet zurück."
+      : "Für diesen Stil zusätzlich „Einrastfunktion (Schalter)“ aktivieren.";
+  } else {
+    hint.textContent = "Normal ist der Grundstil. Für eine Tastfarbe „Gedrückt“, für eine Schaltfarbe „Eingerastet“ wählen.";
+  }
 }
 
 function changeActiveState() {
   state.activeState = $("#style-state").value;
+  renderCanvas();
   renderProperties();
+}
+
+// --- Theme editor -------------------------------------------------------
+//
+// `lvgl.theme:` sets a default style per widget TYPE (optionally per state),
+// applied to every widget of that type that doesn't override it - unlike
+// everything else in the properties panel, it isn't about the selected
+// widget at all, so it gets its own small, independent editor rather than
+// being squeezed into the per-widget style form.
+
+function themeLibrary() {
+  if (!state.project.theme || typeof state.project.theme !== "object") state.project.theme = {};
+  return state.project.theme;
+}
+
+function bindThemeEditor() {
+  $("#theme-type").addEventListener("change", () => {
+    state.themeType = $("#theme-type").value;
+    renderThemeEditor();
+  });
+  $("#theme-state").addEventListener("change", () => {
+    state.themeState = $("#theme-state").value;
+    renderThemeEditor();
+  });
+  $("#delete-theme-entry").addEventListener("click", () => {
+    const type = state.themeType;
+    if (!type || !themeLibrary()[type]) return;
+    pushUndo();
+    delete themeLibrary()[type];
+    markProjectDirty();
+    renderThemeEditor();
+  });
+}
+
+function renderThemeEditor() {
+  const typeSelect = $("#theme-type");
+  typeSelect.replaceChildren();
+  state.schemas.forEach((schema) => typeSelect.append(new Option(schema.label, schema.type_key)));
+  if (!state.themeType && state.schemas.length) state.themeType = state.schemas[0].type_key;
+  typeSelect.value = state.themeType;
+
+  const stateSelect = $("#theme-state");
+  stateSelect.replaceChildren(new Option("Normal", ""));
+  state.states.forEach((name) => stateSelect.append(new Option(name, name)));
+  stateSelect.value = state.themeState;
+
+  const schema = state.schemas.find((item) => item.type_key === state.themeType);
+  const entry = themeLibrary()[state.themeType];
+  $("#delete-theme-entry").disabled = !entry;
+  $("#theme-empty").classList.toggle("hidden", Boolean(entry));
+
+  const container = $("#theme-properties");
+  container.replaceChildren();
+  if (!schema) return;
+  const properties = schema.properties.filter((property) => property.category === "style");
+  let previousPart = null;
+  properties.forEach((property, index) => {
+    if (property.part !== previousPart) {
+      const heading = document.createElement("div");
+      heading.className = "property-section";
+      heading.textContent = property.part === "main" ? "Stil" : property.part;
+      container.append(heading);
+      previousPart = property.part;
+    }
+    const label = document.createElement("label");
+    label.textContent = property.label;
+    const target = themePropertyTarget(state.themeType, property, false);
+    const value = target?.[property.key];
+    const control = propertyControl(property, value, `theme-${index}`);
+    control.addEventListener("focus", pushUndo);
+    control.addEventListener("change", () => updateThemeProperty(property, control));
+    control.addEventListener("input", () => updateThemeProperty(property, control));
+    if (property.kind === "bool") label.className = "checkbox-field";
+    appendPropertyControl(label, control, property);
+    container.append(label);
+  });
+}
+
+// Mirrors propertyTarget()'s state-routing (root.states[<state>]), but keyed
+// by widget TYPE against project.theme instead of by widget instance against
+// widget.style_tree.
+function themePropertyTarget(typeKey, property, create) {
+  if (!typeKey) return undefined;
+  const lib = themeLibrary();
+  if (!lib[typeKey] && create) lib[typeKey] = {};
+  let root = lib[typeKey];
+  if (!root) return undefined;
+  if (state.themeState) {
+    if (!root[STATES_KEY] && create) root[STATES_KEY] = {};
+    if (!root[STATES_KEY]?.[state.themeState] && create) root[STATES_KEY][state.themeState] = {};
+    root = root[STATES_KEY]?.[state.themeState];
+  }
+  if (!root) return undefined;
+  if (property.part === "main") return root;
+  if (!root[property.part] && create) root[property.part] = {};
+  return root[property.part];
+}
+
+function updateThemeProperty(property, control) {
+  const target = themePropertyTarget(state.themeType, property, true);
+  if (property.kind === "image_ref" && control.value === ADD_IMAGE_OPTION) {
+    pushUndo();
+    const id = addImageSource();
+    control.value = id || target[property.key] || "";
+    if (!id) return;
+    target[property.key] = id;
+    markProjectDirty();
+    renderDesigner();
+    return;
+  }
+
+  let value;
+  if (property.kind === "bool") value = control.checked;
+  else if (LIST_KINDS.includes(property.kind)) value = parseListValue(property, control.value);
+  else if (["int", "float"].includes(property.kind)) value = control.value === "" ? null : Number(control.value);
+  else value = control.value;
+
+  const clears = value === "" || value === null
+    || (Array.isArray(value) && value.length === 0);
+  if (clears) delete target[property.key];
+  else target[property.key] = value;
+
+  markProjectDirty();
+  renderCanvas();
+  renderThemeEditor();
 }
 
 function renderGridCellSection(widget) {
@@ -3003,9 +4495,13 @@ const fontLoadState = new Map();
 function ensureFontLoaded(fontId) {
   if (!fontId || fontLoadState.has(fontId)) return;
   const entry = fontLibrary().find((font) => font.id === fontId);
-  if (!entry || !entry.file_path) return;
+  // A `font: file: {type: web, url: ...}` entry keeps its URL in web_url,
+  // not file_path (which stays empty for that source kind) - web_url is
+  // already a full http(s) URL, so it needs no assetUrl() resolution.
+  const source = entry?.file_path || entry?.web_url;
+  if (!source) return;
   fontLoadState.set(fontId, "loading");
-  const face = new FontFace(fontFamilyId(fontId), `url("${assetUrl(entry.file_path)}")`);
+  const face = new FontFace(fontFamilyId(fontId), `url(${JSON.stringify(assetUrl(source))})`);
   face.load().then((loaded) => {
     document.fonts.add(loaded);
     fontLoadState.set(fontId, "loaded");
@@ -3053,7 +4549,7 @@ function addImageSource() {
   let id = `img_${slug}`;
   let counter = 2;
   while (imageEntry(id)) id = `img_${slug}_${counter++}`;
-  imageLibrary().push({ id, file_path: url, resize: "", dither: "", transparency: "opaque" });
+  imageLibrary().push({ id, file_path: url, resize: "", dither: "", transparency: "opaque", img_type: "" });
   return id;
 }
 
@@ -3176,7 +4672,10 @@ function updateSelectedWidget(event) {
   if (!widget) return;
   const key = event.target.id.replace("prop-", "");
   if (key === "id") {
-    widget.id = event.target.value;
+    const previousId = widget.id;
+    const nextId = event.target.value;
+    if (previousId !== nextId) replaceProjectWidgetReferences(previousId, nextId);
+    widget.id = nextId;
   } else if (["width", "height"].includes(key)) {
     widget[key] = Math.max(1, Number(event.target.value));
   } else if (key === "x" || key === "y") {
@@ -3202,7 +4701,55 @@ function updateSelectedWidget(event) {
   if (key === "id") {
     renderRuntimeBindingOrphans();
     renderRuntimeBinding(widget);
+    renderWidgetActions(widget);
   }
+}
+
+function replaceActionTargetReference(action, previousId, nextId) {
+  const entry = actionObjectEntry(action);
+  if (!entry) return;
+  const [name, payload] = entry;
+  if (name === "if" && payload && typeof payload === "object") {
+    [payload.then, payload.else].forEach((branch) => {
+      const actions = Array.isArray(branch) ? branch : branch ? [branch] : [];
+      actions.forEach((nested) => replaceActionTargetReference(nested, previousId, nextId));
+    });
+    return;
+  }
+  if (["lvgl.widget.show", "lvgl.widget.hide", "lvgl.page.show"].includes(name)) {
+    if (payload === previousId) action[name] = nextId;
+    else if (Array.isArray(payload)) {
+      action[name] = payload.map((item) => item === previousId ? nextId : item);
+    } else if (payload && typeof payload === "object") {
+      if (payload.id === previousId) payload.id = nextId;
+      else if (Array.isArray(payload.id)) {
+        payload.id = payload.id.map((item) => item === previousId ? nextId : item);
+      }
+    }
+    return;
+  }
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    if (payload.id === previousId) payload.id = nextId;
+    else if (Array.isArray(payload.id)) {
+      payload.id = payload.id.map((item) => item === previousId ? nextId : item);
+    }
+  }
+}
+
+function replaceProjectWidgetReferences(previousId, nextId) {
+  projectWidgetEntries().forEach((item) => {
+    if (item.align_to === previousId) item.align_to = nextId;
+    Object.values(item.events || {}).forEach((raw) => {
+      const actions = Array.isArray(raw) ? raw : [raw];
+      actions.forEach((action) => replaceActionTargetReference(action, previousId, nextId));
+    });
+  });
+  (state.project.glow_strokes || []).forEach((stroke) => {
+    if (stroke.parent_id === previousId) stroke.parent_id = nextId;
+  });
+  state.viewerBindings.forEach((binding) => {
+    if (binding.widget_id === previousId) binding.widget_id = nextId;
+  });
 }
 
 function deleteSelectedWidget() {

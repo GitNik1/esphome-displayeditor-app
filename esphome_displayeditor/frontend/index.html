@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>ESPHome Display Editor</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=0.11.1">
   </head>
   <body>
     <header class="topbar">
@@ -37,6 +37,127 @@
           <div id="palette" class="palette"></div>
           <div class="tree-heading"><small>HIERARCHIE</small></div>
           <div id="widget-tree" class="widget-tree empty">Noch keine Widgets</div>
+
+          <details class="theme-editor-details">
+            <summary>Theme (Standardstil je Widget-Typ)</summary>
+            <div class="theme-editor">
+              <label>Widget-Typ
+                <select id="theme-type"></select>
+              </label>
+              <label>Zustand
+                <select id="theme-state"><option value="">Normal</option></select>
+              </label>
+              <div id="theme-properties"></div>
+              <p id="theme-empty" class="hint">Für diesen Widget-Typ ist noch kein Theme-Eintrag vorhanden.</p>
+              <div class="actions">
+                <button id="delete-theme-entry" type="button" class="button danger compact">Theme für diesen Typ löschen</button>
+              </div>
+            </div>
+          </details>
+
+          <details class="color-library-details">
+            <summary>Farbbibliothek</summary>
+            <div class="color-library">
+              <div id="color-library-list" class="color-library-list"></div>
+              <form id="color-library-form" class="color-library-form">
+                <label>ID
+                  <input id="color-library-id" maxlength="63" pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="z. B. status_gruen">
+                </label>
+                <label>Farbe
+                  <div class="color-input-row">
+                    <input id="color-library-hex" maxlength="8" placeholder="RRGGBB">
+                    <input id="color-library-picker" type="color" value="#00a000" aria-label="Farbe auswählen">
+                  </div>
+                </label>
+                <p id="color-library-error" class="widget-action-error hidden"></p>
+                <div class="actions">
+                  <button id="save-color-library-entry" type="submit" class="button primary compact">Farbe hinzufügen</button>
+                  <button id="cancel-color-library-edit" type="button" class="button subtle compact hidden">Abbrechen</button>
+                </div>
+              </form>
+              <p id="color-library-export-hint" class="hint hidden">Importiertes Projekt: Neue Farb-IDs zusätzlich im <code>color:</code>-Block der Quellkonfiguration definieren.</p>
+            </div>
+          </details>
+
+          <details class="font-library-details">
+            <summary>Schriftbibliothek</summary>
+            <div class="font-library">
+              <label>Standardschrift (Projekt)
+                <select id="default-font"><option value="">— keine —</option></select>
+              </label>
+              <div class="actions">
+                <button id="add-mdi-font" type="button" class="button subtle compact">MDI-Icons hinzufügen (7447 Symbole)</button>
+              </div>
+              <p class="hint">Lädt die Pictogrammers-MDI-Schriftart als feste, lokal fixierte Bibliotheksschrift.
+                Icons und Schriftart stehen unter Apache 2.0 (Pictogrammers).</p>
+              <div id="font-library-list" class="font-library-list"></div>
+              <form id="font-library-form" class="font-library-form">
+                <label>ID
+                  <input id="font-library-id" maxlength="63" pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="z. B. ueberschrift_28">
+                </label>
+                <label>Quelle
+                  <select id="font-library-source">
+                    <option value="builtin">LVGL-Bitmap-Schrift (eingebaut)</option>
+                    <option value="gfonts">Google Fonts</option>
+                    <option value="file">Datei (lokaler Pfad)</option>
+                    <option value="web">Web-URL</option>
+                  </select>
+                </label>
+                <label id="font-library-builtin-field">Eingebauter Name
+                  <input id="font-library-builtin-name" placeholder="z. B. montserrat_16">
+                </label>
+                <label id="font-library-gfonts-field">Google-Fonts-Familie
+                  <select id="font-library-gfonts-family"></select>
+                </label>
+                <label id="font-library-gfonts-custom-field" class="hidden">Familie (manuell)
+                  <input id="font-library-gfonts-custom" placeholder="z. B. Meine Schrift">
+                </label>
+                <div id="font-library-gfonts-extra" class="field-row">
+                  <label>Schnittstärke <input id="font-library-gfonts-weight" type="number" min="100" max="900" step="100" value="400"></label>
+                  <label class="checkbox-field">Kursiv <input id="font-library-gfonts-italic" type="checkbox"></label>
+                </div>
+                <label id="font-library-file-field">Datei-Pfad
+                  <input id="font-library-file-path" placeholder="z. B. fonts/Custom.ttf">
+                </label>
+                <div id="font-library-file-upload" class="actions">
+                  <button id="font-library-file-pick" type="button" class="button subtle compact">TTF/OTF hochladen …</button>
+                  <input id="font-library-file-input" class="hidden" type="file" accept=".ttf,.otf">
+                </div>
+                <label id="font-library-web-field">Web-URL
+                  <input id="font-library-web-url" placeholder="https://…/schrift.ttf">
+                </label>
+                <label id="font-library-refresh-field">ESPHome-Refresh
+                  <select id="font-library-refresh">
+                    <option value="never">never (manuell, empfohlen)</option>
+                    <option value="1d">1d</option>
+                    <option value="7d">7d</option>
+                  </select>
+                  <small>Der Editor prüft Änderungen getrennt und lädt sie nur über den Update-Button.</small>
+                </label>
+                <div class="field-row">
+                  <label>Größe <input id="font-library-size" type="number" min="1" max="255" value="16"></label>
+                  <label>Bpp
+                    <select id="font-library-bpp">
+                      <option value="1">1</option>
+                      <option value="2">2</option>
+                      <option value="4" selected>4</option>
+                      <option value="8">8</option>
+                    </select>
+                  </label>
+                </div>
+                <p class="hint">Nur die MDI-Icon-Schriftart wird im Export auf tatsächlich verwendete Symbole
+                  beschränkt (automatisch ermittelt - keine Vorauswahl nötig). Alle anderen Schriften werden
+                  immer vollständig exportiert. Icons fügst du direkt am Text-Feld eines Labels/Buttons über
+                  „Icon einfügen“ ein.</p>
+                <p id="font-library-error" class="widget-action-error hidden"></p>
+                <div class="actions">
+                  <button id="save-font-library-entry" type="submit" class="button primary compact">Schrift hinzufügen</button>
+                  <button id="cancel-font-library-edit" type="button" class="button subtle compact hidden">Abbrechen</button>
+                </div>
+              </form>
+              <p id="font-library-export-hint" class="hint hidden">Importiertes Projekt: Neue Font-IDs zusätzlich im <code>font:</code>-Block der Quellkonfiguration definieren.</p>
+            </div>
+          </details>
         </aside>
 
         <section class="workspace">
@@ -151,6 +272,7 @@
             <label>Zustand
               <select id="style-state"><option value="">Normal</option></select>
             </label>
+            <p id="style-state-hint" class="hint">Der gewählte LVGL-Zustand wird direkt auf der Zeichenfläche angezeigt.</p>
             <label>Modus
               <select id="style-mode">
                 <option value="inline">Eigener Stil (inline)</option>
@@ -165,6 +287,68 @@
             </div>
 
             <div id="dynamic-properties"></div>
+
+            <div id="widget-actions-section" class="hidden">
+              <div class="property-section">Aktionen</div>
+              <p class="hint">Ändert andere Widgets beim Drücken, Loslassen oder Umschalten dieses Buttons.</p>
+              <div id="widget-action-list" class="widget-action-list"></div>
+              <div class="widget-action-builder">
+                <label>Auslöser
+                  <select id="widget-action-trigger">
+                    <option value="on_click">Klick</option>
+                    <option value="on_press">Drücken</option>
+                    <option value="on_release">Loslassen</option>
+                    <option value="on_value">Schalterzustand geändert</option>
+                  </select>
+                </label>
+                <label id="widget-action-condition-field" class="hidden">Bedingung
+                  <select id="widget-action-condition">
+                    <option value="always">Immer</option>
+                    <option value="checked">Wenn eingeschaltet</option>
+                    <option value="unchecked">Wenn ausgeschaltet</option>
+                  </select>
+                </label>
+                <label>Aktion
+                  <select id="widget-action-type">
+                    <option value="update">Stil oder Inhalt ändern</option>
+                    <option value="show">Widget anzeigen</option>
+                    <option value="hide">Widget ausblenden</option>
+                    <option value="page_show">Seite öffnen</option>
+                  </select>
+                </label>
+                <label>Ziel
+                  <select id="widget-action-target"></select>
+                </label>
+                <div id="widget-action-update-fields">
+                  <label id="widget-action-text-field">Text
+                    <input id="widget-action-text" maxlength="256" placeholder="unverändert">
+                  </label>
+                  <label>Hintergrundfarbe
+                    <div class="color-input-row">
+                      <input id="widget-action-bg-color" list="project-color-options" maxlength="32" placeholder="z. B. 00A000 oder color_id">
+                      <input type="color" class="linked-color-picker" data-color-target="widget-action-bg-color" value="#00a000" aria-label="Hintergrundfarbe auswählen">
+                    </div>
+                  </label>
+                  <label>Textfarbe
+                    <div class="color-input-row">
+                      <input id="widget-action-text-color" list="project-color-options" maxlength="32" placeholder="z. B. FFFFFF oder color_id">
+                      <input type="color" class="linked-color-picker" data-color-target="widget-action-text-color" value="#ffffff" aria-label="Textfarbe auswählen">
+                    </div>
+                  </label>
+                  <label>Rahmenfarbe
+                    <div class="color-input-row">
+                      <input id="widget-action-border-color" list="project-color-options" maxlength="32" placeholder="unverändert">
+                      <input type="color" class="linked-color-picker" data-color-target="widget-action-border-color" value="#ffffff" aria-label="Rahmenfarbe auswählen">
+                    </div>
+                  </label>
+                  <label>Deckkraft
+                    <input id="widget-action-opacity" maxlength="16" placeholder="z. B. 50% oder COVER">
+                  </label>
+                </div>
+                <p id="widget-action-error" class="widget-action-error hidden"></p>
+                <button id="add-widget-action" type="button" class="button primary compact">Aktion hinzufügen</button>
+              </div>
+            </div>
 
             <div id="runtime-binding-section" class="hidden">
               <div class="property-section">Live-Daten im Viewer</div>
@@ -353,6 +537,9 @@
       </section>
     </main>
 
+    <datalist id="project-color-options"></datalist>
+    <datalist id="project-font-options"></datalist>
+
     <dialog id="import-dialog">
       <div class="dialog-heading"><h2>ESPHome-YAML importieren</h2><button id="close-import" class="icon-button">×</button></div>
       <div class="import-body">
@@ -406,6 +593,30 @@
       <div class="dialog-actions"><button id="copy-yaml" class="button primary">In Zwischenablage kopieren</button></div>
     </dialog>
 
+    <dialog id="glyph-dialog" class="glyph-dialog" aria-labelledby="glyph-dialog-title">
+      <div class="dialog-heading">
+        <div><h2 id="glyph-dialog-title">Icon einfügen</h2><small id="glyph-catalog-version"></small></div>
+        <button id="close-glyph-dialog" type="button" class="icon-button" aria-label="Icon-Auswahl schließen">×</button>
+      </div>
+      <div class="glyph-dialog-body">
+        <label>Glyph oder Code einfügen
+          <span class="glyph-input-row">
+            <input id="glyph-input" placeholder="mdi:home, U+F02DC, \U000F02DC oder Text">
+            <button id="add-glyph-input" type="button" class="button subtle compact">Einfügen</button>
+          </span>
+        </label>
+        <p id="glyph-input-error" class="widget-action-error hidden"></p>
+        <label>MDI-Katalog durchsuchen
+          <input id="glyph-search" type="search" placeholder="z. B. home, light, F02DC">
+        </label>
+        <p id="glyph-preview-status" class="hint glyph-preview-status" role="status">Vorschaufont wird beim Öffnen geladen.</p>
+        <div id="glyph-catalog" class="glyph-catalog"></div>
+      </div>
+      <div class="dialog-actions glyph-dialog-actions">
+        <button id="finish-glyph-dialog" type="button" class="button primary">Fertig</button>
+      </div>
+    </dialog>
+
     <dialog id="viewer-dialog" class="viewer-dialog" aria-labelledby="viewer-title">
       <div class="viewer-shell">
         <header class="viewer-toolbar">
@@ -457,6 +668,6 @@
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js"></script>
+    <script type="module" src="app.js?v=0.11.1"></script>
   </body>
 </html>

@@ -9,8 +9,11 @@ import {
   effectiveViewerStyle,
   entityMatchesRuntimeTarget,
   formatRuntimeValue,
+  resolveViewerColor,
   runtimeBindingHealth,
   viewerBarGeometry,
+  viewerGradientBackground,
+  viewerTextAlign,
 } from "../../frontend/viewer/viewer.js";
 
 const project = {
@@ -49,6 +52,29 @@ const clone = cloneViewerProject(project);
 clone.widgets[0].hidden = true;
 assert.equal(project.widgets[0].hidden, false, "Viewer clone must not mutate the editor project");
 
+assert.equal(viewerTextAlign("LEFT"), "left");
+assert.equal(viewerTextAlign("CENTER"), "center");
+assert.equal(viewerTextAlign("RIGHT"), "right");
+assert.equal(viewerTextAlign("AUTO"), "start");
+assert.equal(viewerTextAlign(""), "");
+assert.equal(
+  viewerGradientBackground(
+    { colors: [{ id: "gradient_end", hex: "0080FF" }] },
+    { bg_color: "102030", bg_grad_color: "gradient_end", bg_grad_dir: "HOR" },
+  ),
+  "linear-gradient(to right, #102030, #0080FF)",
+);
+assert.equal(
+  viewerGradientBackground({}, {
+    bg_color: "000000", bg_grad_color: "FFFFFF", bg_grad_dir: "VER", bg_opa: "50%",
+  }),
+  "linear-gradient(to bottom, rgba(0, 0, 0, 0.5), rgba(255, 255, 255, 0.5))",
+);
+assert.equal(
+  viewerGradientBackground({}, { bg_color: "000000", bg_grad_color: "FFFFFF", bg_grad_dir: "NONE" }),
+  "",
+);
+
 const toggle = project.widgets[0].children[2];
 assert.deepEqual(effectiveViewerStyle(project, toggle, "checked"), {
   bg_color: "555555",
@@ -60,6 +86,34 @@ assert.deepEqual(effectiveViewerPartStyle(project, toggle, "indicator", "checked
   border_width: 3,
 });
 
+const colorButtonProject = {
+  theme: {}, styles: [],
+  widgets: [{
+    id: "color_button", widget_type: "button",
+    properties: { text: "Aktivieren", checkable: true },
+    style_tree: {
+      bg_color: "404040", text_color: "FFFFFF",
+      states: {
+        pressed: { bg_color: "0080FF" },
+        checked: { bg_color: "00A000", text_color: "FFFFFF" },
+      },
+    },
+    children: [],
+  }],
+};
+const colorButton = colorButtonProject.widgets[0];
+colorButtonProject.colors = [{ id: "status_green", hex: "00FF00" }];
+assert.equal(resolveViewerColor(colorButtonProject, "status_green"), "#00FF00");
+assert.deepEqual(effectiveViewerStyle(colorButtonProject, colorButton), {
+  bg_color: "404040", text_color: "FFFFFF",
+});
+assert.deepEqual(effectiveViewerStyle(colorButtonProject, colorButton, "pressed"), {
+  bg_color: "0080FF", text_color: "FFFFFF",
+});
+assert.deepEqual(effectiveViewerStyle(colorButtonProject, colorButton, "checked"), {
+  bg_color: "00A000", text_color: "FFFFFF",
+});
+
 assert.equal(applyViewerAction(project, { "lvgl.widget.hide": ["panel"] }).changed, true);
 assert.equal(project.widgets[0].hidden, true);
 assert.equal(applyViewerAction(project, { "lvgl.widget.show": "panel" }).changed, true);
@@ -69,6 +123,38 @@ assert.equal(applyViewerAction(project, {
   "lvgl.label.update": { id: "title", text: "Neu" },
 }).handled, true);
 assert.equal(project.widgets[0].children[0].properties.text, "Neu");
+
+assert.equal(applyViewerAction(project, {
+  "lvgl.label.update": {
+    id: "title", text: "Aktiv", text_color: "0x00FF00", bg_color: "0x102010",
+  },
+}).changed, true);
+assert.equal(project.widgets[0].children[0].properties.text, "Aktiv");
+assert.equal(project.widgets[0].children[0].style_tree.text_color, "0x00FF00");
+assert.equal(project.widgets[0].children[0].style_tree.bg_color, "0x102010");
+
+const conditionalOff = applyViewerAction(project, {
+  if: {
+    condition: { lambda: "return x;" },
+    then: [{ "lvgl.label.update": { id: "title", text_color: "0xFFFFFF" } }],
+  },
+}, {}, { x: false });
+assert.equal(conditionalOff.changed, false);
+assert.equal(project.widgets[0].children[0].style_tree.text_color, "0x00FF00");
+const conditionalOn = applyViewerAction(project, {
+  if: {
+    condition: { lambda: "return x;" },
+    then: [{ "lvgl.label.update": { id: "title", text_color: "0xFFFFFF" } }],
+  },
+}, {}, { x: true });
+assert.equal(conditionalOn.changed, true);
+assert.equal(project.widgets[0].children[0].style_tree.text_color, "0xFFFFFF");
+
+assert.equal(applyViewerAction(colorButtonProject, {
+  "lvgl.button.update": { id: "color_button", text: "Ein", bg_color: "0x008000" },
+}).changed, true);
+assert.equal(colorButton.properties.text, "Ein");
+assert.equal(colorButton.style_tree.bg_color, "0x008000");
 
 applyViewerAction(project, { "lvgl.slider.update": { id: "level", value: 42 } });
 applyViewerAction(project, { "lvgl.switch.update": { id: "toggle", state_checked: true } });

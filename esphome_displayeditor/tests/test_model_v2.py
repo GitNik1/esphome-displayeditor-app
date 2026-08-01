@@ -10,6 +10,7 @@ from __future__ import annotations
 import yaml
 
 from backend.designer_core.model import (
+    ColorLibraryEntry,
     PROJECT_FORMAT_VERSION,
     STATES_KEY,
     ImageLibraryEntry,
@@ -143,6 +144,75 @@ def test_state_styles_are_flattened_back_alongside_parts(tmp_path) -> None:
     assert body["pressed"] == {"bg_color": 0x3A4552}
     assert body["knob"] == {"bg_color": 0xFFFFFF}
     assert STATES_KEY not in body
+
+
+def test_checkable_button_exports_normal_pressed_and_checked_colours(tmp_path) -> None:
+    project = Project()
+    project.widgets = [_widget(
+        id="color_button",
+        widget_type="button",
+        properties={"text": "Aktivieren", "checkable": True},
+        style_tree={
+            "bg_color": "404040",
+            "text_color": "FFFFFF",
+            STATES_KEY: {
+                "pressed": {"bg_color": "0080FF"},
+                "checked": {"bg_color": "00A000", "text_color": "FFFFFF"},
+            },
+        },
+    )]
+
+    body = _export(project, tmp_path)["lvgl"]["widgets"][0]["button"]
+
+    assert body["checkable"] is True
+    assert body["bg_color"] == 0x404040
+    assert body["pressed"] == {"bg_color": 0x0080FF}
+    assert body["checked"] == {"bg_color": 0x00A000, "text_color": 0xFFFFFF}
+
+
+def test_button_exports_cross_widget_actions_unchanged(tmp_path) -> None:
+    action = {
+        "if": {
+            "condition": {"lambda": "return x;"},
+            "then": [{
+                "lvgl.label.update": {
+                    "id": "status_label",
+                    "text": "Aktiv",
+                    "text_color": "0x00FF00",
+                },
+            }],
+        },
+    }
+    project = Project()
+    project.widgets = [
+        _widget(
+            id="toggle_button",
+            widget_type="button",
+            properties={"checkable": True},
+            events={"on_value": [action]},
+        ),
+        _widget(id="status_label", widget_type="label", properties={"text": "Aus"}),
+    ]
+
+    body = _export(project, tmp_path)["lvgl"]["widgets"][0]["button"]
+
+    assert body["on_value"] == [action]
+
+
+def test_project_color_id_is_exported_and_kept_as_style_reference(tmp_path) -> None:
+    project = Project()
+    project.colors = [ColorLibraryEntry(id="status_green", hex="00FF00")]
+    project.widgets = [_widget(
+        id="status_label",
+        widget_type="label",
+        properties={"text": "Aktiv"},
+        style_tree={"text_color": "status_green"},
+    )]
+
+    document = _export(project, tmp_path)
+
+    assert document["color"] == [{"id": "status_green", "hex": "00FF00"}]
+    assert document["lvgl"]["widgets"][0]["label"]["text_color"] == "status_green"
 
 
 def test_unmodelled_keys_are_written_back_unchanged(tmp_path) -> None:

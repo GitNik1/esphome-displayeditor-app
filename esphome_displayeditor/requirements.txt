@@ -3,3 +3,5 @@ uvicorn>=0.34,<1
 PyYAML>=6.0,<7
 aioesphomeapi>=45.7,<46
 websockets>=17,<18
+requests>=2.32,<3
+fonttools>=4.59,<5

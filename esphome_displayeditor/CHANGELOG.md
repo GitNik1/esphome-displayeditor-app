@@ -2,12 +2,157 @@
 
 ## Unreleased
 
+## 0.11.1
+
+- Reworked icon handling end to end:
+  - Added a one-click "MDI-Icons hinzufügen" preset to the Font Library that
+    registers the Pictogrammers MDI webfont (Apache 2.0) as a fixed library
+    entry and immediately pins a local, hash-verified revision - no manual
+    URL entry needed.
+  - Every Label/Button `text` field now has an "Icon einfügen" button that
+    opens the MDI catalog directly at the text you're editing, auto-registers
+    the MDI font on first use, assigns it as that widget's `text_font`, and
+    inserts the chosen glyph at the cursor. The old glyph editor lived only
+    in the Font Library and applied its MDI name matching (`mdi:home`, catalog
+    browsing) to whatever font was being edited there, including Google Fonts
+    or plain text TTFs that don't contain those glyphs at all - it could
+    silently swap literal text like "home" for an unrelated icon character.
+  - The Font Library's manual "Glyphen (optional)" picker is gone. Glyph
+    restriction is now scoped to the MDI icon font only: its export is
+    derived automatically from every widget's actual static text using it
+    (unioned with whatever an imported YAML already had, never narrowed) -
+    no more remembering to keep a glyph list in sync by hand. Every other
+    library font (Google Fonts, uploaded/linked TTFs, ...) always exports
+    complete/unrestricted, even if it previously carried an explicit
+    `glyphs:` from an import - restricting an ordinary text font risks
+    cutting off characters some other part of the config still needs, a
+    risk that doesn't apply to the MDI font's fully-known icon usage.
+  - Fixed export validation rejecting local font/image paths inside the
+    add-on's own confined `images/`/`fonts/` asset folders (the destination
+    of the TTF/OTF upload button and the new MDI quick-add) as if they were
+    arbitrary, unverified host paths.
+- Replaced the curated 36-icon MDI catalog bundled with the glyph editor
+  with the complete Pictogrammers Material Design Icons set (7447 icons,
+  version 7.4.47), generated directly from the official
+  MaterialDesign-Webfont build's own `scss/_variables.scss` so codepoints
+  are guaranteed to match the webfont this app already loads.
+- Webfonts use `refresh: never` by default and can now be checked manually for
+  upstream changes. The editor downloads an approved update into a
+  hash-versioned local `fonts/` file, records ETag/hash metadata, and exports
+  that fixed revision for reproducible and offline ESPHome builds.
+- The Font Library now includes a visual glyph editor. It accepts literal
+  characters, `U+...`, `0x...`, ESPHome `\\U...` escapes and names from a
+  bundled, searchable MDI catalog; selected glyphs can be checked against the
+  actual cmap of a local TTF/OTF before export.
+- Fixed the glyph catalog preview so it loads the local file or webfont URL
+  currently entered in the form, including unsaved entries. Remote font
+  previews are allowed by the frontend security policy, and loading or source
+  errors are shown explicitly instead of rendering ambiguous missing-glyph
+  boxes.
+
+- Added a Font Library (Schriftbibliothek), mirroring the existing Color
+  Library: add/edit/delete a project font (builtin LVGL bitmap font, Google
+  Fonts, local file path, or web URL), with size/bpp/glyphs. Google Fonts
+  gets a real dropdown of ~100 curated families plus a manual fallback for
+  anything not listed (fetching the full live catalog would need a new
+  outbound API call this add-on doesn't otherwise make). The "Datei" source
+  can upload a `.ttf`/`.otf` directly instead of only typing a path - a new
+  `POST /api/v1/designer/assets/fonts` endpoint (`designer.asset_write`,
+  same capability as the existing baked-image upload) writes it into a
+  dedicated `fonts/` folder, content verified by the font's own sfnt magic
+  bytes rather than trusting the filename, mirroring `write_image_asset`'s
+  containment exactly. `text_font`
+  fields across the properties panel (and a new project-wide "Standardschrift"
+  picker) get a datalist of library font ids for autocomplete - still a free
+  text field, since a builtin LVGL font name (`montserrat_16`) is valid
+  without ever being declared in the library, the same trade-off the color
+  datalist already makes. Deleting a font that's still referenced clears
+  those references (there's no literal-value fallback for a font id the way
+  there is for a color's hex value) after a confirmation showing the
+  reference count.
+
+- Fixed: a `color:` entry defined via `red`/`green`/`blue` percentages
+  instead of `hex:` (both are valid ESPHome syntax) used to import as plain
+  white - `_import_colors` only ever read `hex:` and silently defaulted to
+  `FFFFFF` otherwise, losing the colour entirely. RGB components are now
+  converted to an equivalent hex value. A `white` channel has no RGB-hex
+  equivalent in this model and is still dropped, but now with an import
+  notice instead of silently.
+
+- Image entries' `type:` (ESPHome's colour format - `RGB565`, `RGBA`, ...)
+  is now a modeled, editable field instead of an opaque preserved key. A
+  "Bildformat" dropdown appears next to any image picker in the properties
+  panel; picking an image and setting its format edits the shared library
+  entry directly, so it applies everywhere that image is referenced. Fixes
+  the last remaining "preserved but not editable" gap for images from
+  `p4_86_panel.yaml`-style imports - all 13 of that fixture's images used
+  to be flagged as having an unmodeled key.
+
+- Horizontale und vertikale LVGL-Farbverläufe werden jetzt auch auf der
+  Designer-Zeichenfläche dargestellt, einschließlich Farb-IDs und Deckkraft.
+
+- Die Textausrichtung LEFT, CENTER, RIGHT und AUTO wird für Labels und
+  andere Textwidgets jetzt auch auf der Designer-Zeichenfläche korrekt über
+  die gesamte Widgetbreite dargestellt.
+
+- Der Designer besitzt jetzt eine Farbbibliothek mit ESPHome-ID, Hexfeld,
+  Farbwähler, Bearbeiten und Löschen. Alle dynamischen Farbfelder sowie die
+  Button-Aktionen bieten diese IDs zur Auswahl an; Umbenennen aktualisiert
+  Verwendungen und Löschen kann sie sicher durch den bisherigen Hexwert
+  ersetzen.
+
+- Buttons besitzen jetzt einen grafischen Aktionseditor für Klick, Drücken,
+  Loslassen und Schalterzustände. Zielwidgets lassen sich damit im Editor
+  anzeigen, ausblenden oder zur Laufzeit in Text, Farbe, Rahmen und Deckkraft
+  verändern; der Browser-Viewer simuliert dieselben Aktionen und sicheren
+  Ein/Aus-Bedingungen.
+
+- Button-Zustandsfarben sind jetzt im Designer unmittelbar sichtbar: Die
+  Zustände `pressed` und `checked` haben verständliche deutsche Bezeichnungen
+  und Hilfetexte, die ausgewählte Zustandsfarbe wird direkt auf der
+  Zeichenfläche dargestellt und der Viewer kennzeichnet einrastende Buttons
+  barrierefrei mit `aria-pressed`.
+
+- Gap-closing pass against the real `p4_86_panel.yaml` fixture (a hand-written
+  device config with a `theme:` block, an icon webfont, grid backgrounds and
+  a time-literal animation duration - everything the importer/canvas had no
+  coverage for yet):
+  - Fixed: a `font:` entry with `file: {type: web, url: ...}` stores its URL
+    in `web_url`, not `file_path` (which stays empty for that source kind).
+    `ensureFontLoaded()` only ever checked `file_path`, so a webfont icon
+    button's custom glyphs silently never loaded - now `web_url` is accepted
+    too.
+  - Fixed: `bg_image_src` had a schema entry and a properties-panel field but
+    was never actually drawn - `renderWidget()` only ever applied
+    `bg_color`. Containers with a background image now show it (`cover`,
+    centered - an approximation, not pixel-exact LVGL scaling).
+  - Fixed: `lvgl.theme:` (a per-widget-type default style, optionally with
+    per-state overrides) imported/exported correctly already but had no
+    editor and, more importantly, was never applied to the canvas - a
+    themed widget with no style of its own rendered as if it had none at
+    all. New collapsible "Theme" panel (palette sidebar) edits a theme entry
+    per widget type/state; `effectiveStyleTree()` now merges the type's
+    theme under the widget's own style (own style wins key-by-key).
+  - Fixed: `duration: 500ms` (ESPHome's time-literal shorthand, also `1s`/
+    `2min`/`1h`) was stored as the literal string `"500ms"` instead of a
+    number of milliseconds. A small parser now converts known
+    duration-like keys (`duration`, `anim_time`, `anim_duration`) at import.
+  - Fixed: re-exporting an imported web font dropped its preserved
+    `refresh:` (and any other `file:`-level extra key) - `build_font_block`'s
+    dict-merge skipped it because `"file"` was already a top-level key of
+    the built entry, so the generic extra-merge never looked inside it.
+
 ## 0.11.0
 
 - Fixed the configuration sidebar so long file lists remain inside the
   available desktop/mobile viewport and scroll independently below the fixed
   heading. The narrow layout no longer keeps the inactive Designer in the
   document flow or pushes the configuration view below the viewport.
+- Fixed the Designer grid row so wrapped toolbars no longer enlarge the
+  workspace beyond a short browser or Home Assistant Ingress viewport and
+  cut off its lower controls.
+- Frontend assets are revalidated and carry the app version in their entry
+  URLs so an update cannot leave an obsolete layout in the browser cache.
 - Added the first read-only browser Viewer: projects open in a full-screen,
   isolated preview using the same layout engine as the designer, with fit,
   zoom, rotation and reset controls. The viewer renders the eight currently

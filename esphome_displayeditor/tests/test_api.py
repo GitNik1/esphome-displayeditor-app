@@ -59,6 +59,7 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "script-src 'self'" in response.headers["Content-Security-Policy"]
+    assert "font-src 'self' data: http: https:" in response.headers["Content-Security-Policy"]
     assert response.headers["Permissions-Policy"] == "camera=(), microphone=(), geolocation=()"
     assert "ESPHome Display Editor" in response.text
     assert 'id="open-viewer"' in response.text
@@ -68,6 +69,9 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     assert 'id="runtime-binding-current"' in response.text
     assert 'id="runtime-binding-additional-widgets"' in response.text
     assert 'id="runtime-binding-orphans"' in response.text
+    assert 'id="glyph-preview-status"' in response.text
+    assert 'styles.css?v=0.11.1' in response.text
+    assert 'app.js?v=0.11.1' in response.text
     assert client.get("/app.js").status_code == 200
     viewer = client.get("/viewer/viewer.js")
     assert viewer.status_code == 200
@@ -77,10 +81,12 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     assert "lvgl.label.update" in viewer.text
     styles = client.get("/styles.css")
     assert styles.status_code == 200
+    assert styles.headers["Cache-Control"] == "no-cache"
     assert ".config-list-panel" in styles.text
     assert "grid-template-rows: auto minmax(0, 1fr)" in styles.text
     assert "scrollbar-gutter: stable" in styles.text
     assert "#designer.active { display: flex; }" in styles.text
+    assert "grid-template-rows: minmax(0, 1fr)" in styles.text
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")

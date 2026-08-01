@@ -18,7 +18,7 @@ import pytest
 import yaml
 
 from backend.designer_core.model import STATES_KEY, Project
-from backend.designer_core.yamlexport import export_project
+from backend.designer_core.yamlexport import build_font_block, export_project
 from backend.designer_core.yamlimport import (
     LvglImportError,
     import_esphome_yaml,
@@ -138,6 +138,51 @@ def test_theme_block_is_imported(imported) -> None:
     assert theme["button"][STATES_KEY]["pressed"]["bg_color"] == "3A4552"
 
 
+@pytest.mark.parametrize("literal, expected", [
+    ("500ms", 500),
+    ("1s", 1000),
+    ("2min", 120_000),
+    ("1h", 3_600_000),
+    ("1.5s", 1500),
+])
+def test_normalise_duration_parses_time_literals(literal: str, expected) -> None:
+    from backend.designer_core.yamlimport import _normalise_duration
+    assert _normalise_duration(literal) == expected
+
+
+@pytest.mark.parametrize("value", [500, "forever", "not_a_duration", None])
+def test_normalise_duration_leaves_non_time_literals_alone(value) -> None:
+    from backend.designer_core.yamlimport import _normalise_duration
+    assert _normalise_duration(value) == value
+
+
+def test_duration_time_literal_is_converted_to_milliseconds(imported) -> None:
+    """``duration: 500ms`` is a plain string to any YAML parser - ESPHome's
+    own time-literal shorthand, not a bare number. Left as a string, anything
+    expecting a number (a numeric property-panel input, a future validator)
+    would misbehave."""
+    node = imported.project.find_widget("sprinterbg_linie1_anim")
+
+    assert node.properties["duration"] == 500
+
+
+def test_web_font_reexports_its_preserved_file_level_keys(imported) -> None:
+    """`icons_44`'s `file: {type: web, url: ..., refresh: never}` has one
+    key (`refresh`) with no modeled field - it's stashed in extra["file"] on
+    import specifically so export can restore it, per model.py's own "kept
+    verbatim" comment. build_font_block's dict-merge used to skip it: `file`
+    was already a top-level key of the built entry, so the generic
+    extra-merge (`k not in entry`) never looked inside it."""
+    block = build_font_block(imported.project)
+    icons = next(entry for entry in block if entry["id"] == "icons_44")
+
+    assert icons["file"] == {
+        "type": "web",
+        "url": "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf",
+        "refresh": "never",
+    }
+
+
 def test_colors_are_converted_back_from_integers(imported) -> None:
     """An unquoted ``0x101318`` is just an int to any YAML parser. Left alone,
     every imported colour would be wrong."""
@@ -151,6 +196,53 @@ def test_colors_are_converted_back_from_integers(imported) -> None:
 
     assert offenders == []
     assert imported.project.find_widget("left_menu").style_tree["bg_color"] == "181D23"
+
+
+@pytest.mark.parametrize("channel_value, expected", [
+    ("100%", 255),
+    ("50%", 128),
+    ("0%", 0),
+    (1.0, 255),
+    (0.5, 128),
+    (0, 0),
+    ("not_a_number%", 0),
+])
+def test_parse_color_channel(channel_value, expected) -> None:
+    from backend.designer_core.yamlimport import _parse_color_channel
+    assert _parse_color_channel(channel_value) == expected
+
+
+def test_import_colors_prefers_hex_when_present() -> None:
+    from backend.designer_core.yamlimport import _import_colors
+    doc = {"color": [{"id": "status_green", "hex": "55DD88", "red": "0%"}]}
+    colors = _import_colors(doc, [])
+    assert colors[0].hex == "55DD88"
+
+
+def test_import_colors_converts_rgb_components_to_hex() -> None:
+    """ESPHome's `color:` also accepts red/green/blue instead of `hex:` - the
+    model only stores a plain RGB hex, so this used to silently fall back to
+    "FFFFFF" (losing the colour entirely) whenever `hex:` was absent."""
+    from backend.designer_core.yamlimport import _import_colors
+    doc = {"color": [{"id": "status_green", "red": "0%", "green": "87%", "blue": "53%"}]}
+    colors = _import_colors(doc, [])
+    assert colors[0].id == "status_green"
+    assert colors[0].hex == "00DE87"
+
+
+def test_import_colors_flags_dropped_white_channel() -> None:
+    from backend.designer_core.yamlimport import _import_colors
+    doc = {"color": [{"id": "warm_white", "red": "100%", "green": "100%",
+                       "blue": "100%", "white": "100%"}]}
+    issues = []
+    _import_colors(doc, issues)
+    assert any("white" in issue.message and issue.widget_id == "warm_white" for issue in issues)
+
+
+def test_import_colors_without_hex_or_components_defaults_to_white() -> None:
+    from backend.designer_core.yamlimport import _import_colors
+    colors = _import_colors({"color": [{"id": "mystery"}]}, [])
+    assert colors[0].hex == "FFFFFF"
 
 
 def test_percentage_sizes_stay_strings(imported) -> None:
@@ -179,8 +271,8 @@ def test_assets_are_marked_external_and_keep_their_paths(imported) -> None:
     assert len(images) == 13
     assert images["top_bg"].file_path == "images/topbg.png"
     assert all(i.external for i in images.values())
-    # `type: RGB565` has no model field; it must survive anyway.
-    assert images["top_bg"].extra == {"type": "RGB565"}
+    assert images["top_bg"].img_type == "RGB565"
+    assert images["top_bg"].extra == {}
 
     font = imported.project.fonts[0]
     assert font.id == "icons_44"
@@ -302,8 +394,11 @@ def test_probe_reports_what_an_import_would_do(source_text: str) -> None:
 
 #: Differences the exporter introduces on purpose. ``align: TOP_LEFT`` is
 #: LVGL's default placement, so omitting it is semantically identical.
+#: ``duration: 500ms -> 500`` is the time-literal normalisation - a bare
+#: int is milliseconds to ESPHome, so `500` and `500ms` compile identically.
 ACCEPTED_DIFFS = {
     ".widgets[content_climate].obj.widgets[sprinterbg_linie1_anim].animimg.align",
+    ".widgets[content_climate].obj.widgets[sprinterbg_linie1_anim].animimg.duration: '500ms' -> 500",
 }
 
 

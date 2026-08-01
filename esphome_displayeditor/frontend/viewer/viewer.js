@@ -7,6 +7,9 @@ const SUPPORTED_WIDGETS = new Set([
 const STYLE_BRANCHES = new Set([
   "states", "indicator", "knob", "items", "ticks", "selected", "scrollbar", "cursor",
 ]);
+const RUNTIME_STYLE_KEYS = new Set([
+  "bg_color", "text_color", "border_color", "opa", "bg_opa", "border_width", "radius",
+]);
 
 const clamp = (value, minimum, maximum) => (
   Math.min(Math.max(Number.isFinite(value) ? value : minimum, minimum), maximum)
@@ -14,6 +17,11 @@ const clamp = (value, minimum, maximum) => (
 
 export function cloneViewerProject(project) {
   return JSON.parse(JSON.stringify(project || {}));
+}
+
+export function viewerTextAlign(value) {
+  const align = String(value || "").trim().toUpperCase();
+  return ({ LEFT: "left", CENTER: "center", RIGHT: "right", AUTO: "start" })[align] || "";
 }
 
 function mergeStyle(target, source) {
@@ -109,6 +117,16 @@ function colorWithOpacity(color, opacity) {
   return `rgba(${red}, ${green}, ${blue}, ${clamp(opacity, 0, 1)})`;
 }
 
+export function viewerGradientBackground(project, style) {
+  const background = resolveViewerColor(project, style?.bg_color);
+  const gradient = resolveViewerColor(project, style?.bg_grad_color);
+  const direction = String(style?.bg_grad_dir || "").toUpperCase();
+  if (!background || !gradient || !["HOR", "VER"].includes(direction)) return "";
+  const cssDirection = direction === "HOR" ? "to right" : "to bottom";
+  const opacity = viewerOpacity(style?.bg_opa);
+  return `linear-gradient(${cssDirection}, ${colorWithOpacity(background, opacity)}, ${colorWithOpacity(gradient, opacity)})`;
+}
+
 function viewerFont(project, reference) {
   if (!reference) return null;
   const raw = String(reference);
@@ -190,7 +208,6 @@ function viewerSurfaces(project, activePageId) {
 
 function applyStyleObject(node, project, style) {
   const background = resolveViewerColor(project, style.bg_color);
-  const gradient = resolveViewerColor(project, style.bg_grad_color);
   const border = resolveViewerColor(project, style.border_color);
   const shadow = resolveViewerColor(project, style.shadow_color);
   const text = resolveViewerColor(project, style.text_color);
@@ -199,15 +216,14 @@ function applyStyleObject(node, project, style) {
   const shadowOpacity = viewerOpacity(style.shadow_opa);
 
   if (background) node.style.backgroundColor = colorWithOpacity(background, backgroundOpacity);
-  if (background && gradient && ["HOR", "VER"].includes(String(style.bg_grad_dir).toUpperCase())) {
-    const direction = String(style.bg_grad_dir).toUpperCase() === "HOR" ? "to right" : "to bottom";
-    node.style.backgroundImage = `linear-gradient(${direction}, ${colorWithOpacity(background, backgroundOpacity)}, ${colorWithOpacity(gradient, backgroundOpacity)})`;
-  }
+  const gradientBackground = viewerGradientBackground(project, style);
+  if (gradientBackground) node.style.backgroundImage = gradientBackground;
   if (border) node.style.borderColor = border;
   if (style.border_width !== undefined) node.style.borderWidth = `${Math.max(0, Number(style.border_width) || 0)}px`;
   if (style.radius !== undefined) node.style.borderRadius = `${Math.max(0, Number(style.radius) || 0)}px`;
   if (text) node.style.color = text;
-  if (style.text_align) node.style.textAlign = String(style.text_align).toLowerCase();
+  const textAlign = viewerTextAlign(style.text_align);
+  if (textAlign) node.style.textAlign = textAlign;
   const font = viewerFont(project, style.text_font);
   if (font?.family) node.style.fontFamily = JSON.stringify(font.family);
   if (font?.size) node.style.fontSize = `${font.size}px`;
@@ -400,7 +416,14 @@ function safeLiteral(value) {
   return value === null || ["string", "number", "boolean"].includes(typeof value);
 }
 
-export function applyViewerAction(project, action, runtime = {}) {
+function viewerConditionValue(condition, context) {
+  const expression = String(condition?.lambda || "").replace(/\s+/g, "").toLowerCase();
+  if (expression === "returnx;") return { supported: true, value: Boolean(context.x) };
+  if (expression === "return!x;") return { supported: true, value: !Boolean(context.x) };
+  return { supported: false, value: false };
+}
+
+export function applyViewerAction(project, action, runtime = {}, context = {}) {
   if (!action || typeof action !== "object" || Array.isArray(action)) {
     return { handled: false, changed: false, message: "Ungültiger Aktionseintrag übersprungen." };
   }
@@ -409,6 +432,33 @@ export function applyViewerAction(project, action, runtime = {}) {
     return { handled: false, changed: false, message: "Mehrdeutiger Aktionseintrag übersprungen." };
   }
   const [name, payload] = entries[0];
+
+  if (name === "if") {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return { handled: false, changed: false, message: "Ungültige Bedingung übersprungen." };
+    }
+    const condition = viewerConditionValue(payload.condition, context);
+    if (!condition.supported) {
+      return { handled: false, changed: false, message: "Diese Bedingung wird im Browser nicht ausgeführt." };
+    }
+    const selected = condition.value ? payload.then : payload.else;
+    const actions = selected === undefined ? [] : Array.isArray(selected) ? selected : [selected];
+    let changed = false;
+    let warning = false;
+    const messages = [];
+    actions.forEach((nested) => {
+      const result = applyViewerAction(project, nested, runtime, context);
+      changed ||= result.changed;
+      warning ||= Boolean(result.warning || !result.handled);
+      messages.push(result.message);
+    });
+    return {
+      handled: true,
+      changed,
+      warning,
+      message: `if (${condition.value ? "wahr" : "falsch"})${messages.length ? `: ${messages.join("; ")}` : ""}`,
+    };
+  }
 
   if (name === "lvgl.page.show") {
     const id = pageActionId(payload);
@@ -481,18 +531,20 @@ export function applyViewerAction(project, action, runtime = {}) {
   }
 
   const updateKeys = {
-    "lvgl.widget.update": new Set(["hidden", "text", "value", "state_checked"]),
-    "lvgl.label.update": new Set(["text"]),
-    "lvgl.slider.update": new Set(["value"]),
-    "lvgl.bar.update": new Set(["value", "start_value", "min_value", "max_value", "mode", "animated"]),
+    "lvgl.widget.update": new Set(["hidden", "text", "value", "state_checked", ...RUNTIME_STYLE_KEYS]),
+    "lvgl.label.update": new Set(["text", ...RUNTIME_STYLE_KEYS]),
+    "lvgl.button.update": new Set(["text", ...RUNTIME_STYLE_KEYS]),
+    "lvgl.slider.update": new Set(["value", ...RUNTIME_STYLE_KEYS]),
+    "lvgl.bar.update": new Set(["value", "start_value", "min_value", "max_value", "mode", "animated", ...RUNTIME_STYLE_KEYS]),
     "lvgl.arc.update": new Set([
       "value", "min_value", "max_value", "mode", "start_angle", "end_angle",
-      "rotation", "adjustable", "change_rate",
+      "rotation", "adjustable", "change_rate", ...RUNTIME_STYLE_KEYS,
     ]),
-    "lvgl.switch.update": new Set(["state_checked"]),
+    "lvgl.switch.update": new Set(["state_checked", ...RUNTIME_STYLE_KEYS]),
   };
   const updateWidgetTypes = {
     "lvgl.label.update": "label",
+    "lvgl.button.update": "button",
     "lvgl.slider.update": "slider",
     "lvgl.bar.update": "bar",
     "lvgl.arc.update": "arc",
@@ -536,6 +588,10 @@ export function applyViewerAction(project, action, runtime = {}) {
           return;
         }
         if (key === "hidden") widget.hidden = value;
+        else if (RUNTIME_STYLE_KEYS.has(key)) {
+          widget.style_tree ||= {};
+          widget.style_tree[key] = value;
+        }
         else {
           widget.properties ||= {};
           if (booleanUpdateKeys.has(key)) widget.properties[key] = value;
@@ -1046,18 +1102,34 @@ export class ViewerController {
     });
   }
 
-  runEvent(widget, eventName) {
+  runEvent(widget, eventName, context = {}) {
     const raw = widget.events?.[eventName];
     if (raw === undefined || raw === null) return false;
     const actions = Array.isArray(raw) ? raw : [raw];
     this.recordEvent("trigger", `${widget.id || widget.widget_type}: ${eventName}`);
     let changed = false;
     actions.forEach((action) => {
-      const result = applyViewerAction(this.project, action, this.runtime);
+      const result = applyViewerAction(this.project, action, this.runtime, context);
       changed ||= result.changed;
       this.recordEvent(result.handled && !result.warning ? "action" : "warning", result.message);
     });
     return changed;
+  }
+
+  refreshActionVisuals(transientWidget = null, transientStates = []) {
+    this.display.querySelectorAll("[data-widget-id]").forEach((node) => {
+      const widget = findWidget(this.project, node.dataset.widgetId);
+      if (!widget) return;
+      node.hidden = Boolean(widget.hidden);
+      const states = widget.properties?.state_checked ? ["checked"] : [];
+      if (document.activeElement === node) states.push("focused");
+      if (widget === transientWidget) states.push(...transientStates);
+      applyStyle(node, this.project, widget, states);
+      if (["label", "button"].includes(widget.widget_type)) {
+        const text = node.querySelector(".viewer-widget-text");
+        if (text) text.textContent = textContent(widget);
+      }
+    });
   }
 
   bindWidget(node, widget) {
@@ -1066,6 +1138,9 @@ export class ViewerController {
       node.classList.add("viewer-interactive");
       node.tabIndex = 0;
       node.setAttribute("role", "button");
+      if (widget.properties?.checkable) {
+        node.setAttribute("aria-pressed", String(Boolean(widget.properties?.state_checked)));
+      }
       const baseStyle = node.getAttribute("style") || "";
       const setTransientStates = (...extraStates) => {
         node.setAttribute("style", baseStyle);
@@ -1074,21 +1149,37 @@ export class ViewerController {
         states.push(...extraStates);
         applyStyle(node, this.project, widget, states);
       };
-      const press = () => {
-        setTransientStates("pressed");
-        node.classList.add("viewer-pressed");
-      };
-      const release = () => {
+      const actionContext = () => ({ x: Boolean(widget.properties?.state_checked) });
+      const releaseVisual = () => {
         setTransientStates();
         node.classList.remove("viewer-pressed");
       };
-      const activate = () => {
-        if (widget.properties?.checkable) {
+      const activate = ({ render = true } = {}) => {
+        let changed = false;
+        widget.properties ||= {};
+        if (widget.properties.checkable) {
           widget.properties.state_checked = !Boolean(widget.properties.state_checked);
           this.recordEvent("state", `${widget.id || "button"}: ${widget.properties.state_checked ? "aktiv" : "inaktiv"}`);
+          changed = this.runEvent(widget, "on_value", actionContext()) || changed;
         }
-        const changed = this.runEvent(widget, "on_click");
-        if (changed || widget.properties?.checkable) this.render();
+        changed = this.runEvent(widget, "on_change", actionContext()) || changed;
+        changed = this.runEvent(widget, "on_click", actionContext()) || changed;
+        if (render && (changed || widget.properties.checkable)) this.render();
+        return changed;
+      };
+      const press = ({ renderChanges = true } = {}) => {
+        setTransientStates("pressed");
+        node.classList.add("viewer-pressed");
+        const changed = this.runEvent(widget, "on_press", actionContext());
+        if (changed && renderChanges) {
+          this.refreshActionVisuals(widget, ["pressed"]);
+        }
+        return changed;
+      };
+      const release = () => {
+        releaseVisual();
+        const changed = this.runEvent(widget, "on_release", actionContext());
+        if (changed) this.refreshActionVisuals(widget);
       };
       node.addEventListener("focus", () => setTransientStates());
       node.addEventListener("blur", () => {
@@ -1097,19 +1188,20 @@ export class ViewerController {
       });
       node.addEventListener("pointerdown", press);
       node.addEventListener("pointerup", release);
-      node.addEventListener("pointercancel", release);
-      node.addEventListener("pointerleave", release);
-      node.addEventListener("click", activate);
+      node.addEventListener("pointercancel", releaseVisual);
+      node.addEventListener("pointerleave", releaseVisual);
+      node.addEventListener("click", () => activate());
       node.addEventListener("keydown", (event) => {
-        if (["Enter", " "].includes(event.key)) {
+        if (["Enter", " "].includes(event.key) && !event.repeat) {
           event.preventDefault();
-          press();
+          press({ renderChanges: false });
         }
       });
       node.addEventListener("keyup", (event) => {
         if (["Enter", " "].includes(event.key)) {
           event.preventDefault();
-          release();
+          releaseVisual();
+          this.runEvent(widget, "on_release", actionContext());
           activate();
         }
       });
@@ -1133,8 +1225,9 @@ export class ViewerController {
         widget.properties ||= {};
         widget.properties.state_checked = !Boolean(widget.properties.state_checked);
         this.recordEvent("state", `${widget.id || "switch"}: ${widget.properties.state_checked ? "an" : "aus"}`);
-        const valueChanged = this.runEvent(widget, "on_value");
-        const clickChanged = this.runEvent(widget, "on_click");
+        const context = { x: Boolean(widget.properties.state_checked) };
+        const valueChanged = this.runEvent(widget, "on_value", context);
+        const clickChanged = this.runEvent(widget, "on_click", context);
         this.render();
         return valueChanged || clickChanged;
       };
@@ -1166,7 +1259,7 @@ export class ViewerController {
       });
       input.addEventListener("change", () => {
         this.recordEvent("state", `${widget.id || "slider"}: ${input.value}`);
-        const changed = this.runEvent(widget, "on_value");
+        const changed = this.runEvent(widget, "on_value", { x: Number(input.value) });
         if (changed) this.render();
       });
       return;
@@ -1184,8 +1277,9 @@ export class ViewerController {
       });
       input.addEventListener("change", () => {
         this.recordEvent("state", `${widget.id || "arc"}: ${input.value}`);
-        const valueChanged = this.runEvent(widget, "on_value");
-        const changeChanged = this.runEvent(widget, "on_change");
+        const context = { x: Number(input.value) };
+        const valueChanged = this.runEvent(widget, "on_value", context);
+        const changeChanged = this.runEvent(widget, "on_change", context);
         if (valueChanged || changeChanged) this.render();
       });
     }

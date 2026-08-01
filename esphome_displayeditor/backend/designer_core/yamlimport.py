@@ -138,6 +138,30 @@ def _normalise_color(value: Any) -> Any:
     return value
 
 
+#: Keys ESPHome accepts as a time literal (``500ms``, ``1s``, ``2min``) rather
+#: than a bare number of milliseconds - a handful of animation-timing fields,
+#: not every numeric key (``anim_speed`` is a px/sec rate, not a duration).
+_DURATION_KEYS = {"duration", "anim_time", "anim_duration"}
+_TIME_LITERAL = re.compile(r"^(\d+(?:\.\d+)?)\s*(ms|s|min|h)$", re.IGNORECASE)
+_TIME_UNIT_TO_MS = {"ms": 1, "s": 1000, "min": 60_000, "h": 3_600_000}
+
+
+def _normalise_duration(value: Any) -> Any:
+    """``duration: 500ms`` is a plain string to any YAML parser - ESPHome's
+    own time-literal shorthand, not a bare number. Converted to milliseconds
+    so a numeric UI control and re-export both see an int, the same way
+    ``_normalise_color`` turns a bare YAML int back into hex text."""
+    if not isinstance(value, str):
+        return value
+    match = _TIME_LITERAL.match(value.strip())
+    if not match:
+        return value
+    amount = float(match.group(1))
+    unit = match.group(2).lower()
+    milliseconds = amount * _TIME_UNIT_TO_MS[unit]
+    return int(milliseconds) if milliseconds.is_integer() else milliseconds
+
+
 def _normalise_style_values(tree: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in tree.items():
@@ -240,11 +264,21 @@ def _classify_widget_body(node: WidgetNode, body: dict[str, Any],
             continue
 
         if key in content_keys:
-            node.properties[key] = _normalise_color(value) if key.endswith("_color") else value
+            if key.endswith("_color"):
+                node.properties[key] = _normalise_color(value)
+            elif key in _DURATION_KEYS:
+                node.properties[key] = _normalise_duration(value)
+            else:
+                node.properties[key] = value
             continue
 
         if key in LVGL_STYLE_KEYS:
-            node.style_tree[key] = _normalise_color(value) if key.endswith("_color") else value
+            if key.endswith("_color"):
+                node.style_tree[key] = _normalise_color(value)
+            elif key in _DURATION_KEYS:
+                node.style_tree[key] = _normalise_duration(value)
+            else:
+                node.style_tree[key] = value
             continue
 
         issues.append(ImportIssue(
@@ -318,10 +352,11 @@ def _import_images(doc: dict[str, Any], issues: list[ImportIssue]) -> list[Image
         entry.resize = str(raw.get("resize", ""))
         entry.dither = str(raw.get("dither", ""))
         entry.transparency = str(raw.get("transparency", "opaque"))
+        entry.img_type = str(raw.get("type", ""))
         entry.external = True
         entry.extra = {k: v for k, v in raw.items()
                        if k not in {"id", "file", "resize", "dither", "transparency",
-                                    "platform"}}
+                                    "type", "platform"}}
         if entry.extra:
             issues.append(ImportIssue(
                 "C", f"Image '{entry.id}': keys {sorted(entry.extra)} preserved verbatim.",
@@ -363,16 +398,53 @@ def _import_fonts(doc: dict[str, Any], issues: list[ImportIssue]) -> list[FontLi
     return entries
 
 
-def _import_colors(doc: dict[str, Any]) -> list[ColorLibraryEntry]:
+def _parse_color_channel(value: Any) -> int:
+    """ESPHome's ``PERCENTAGE`` type for red/green/blue/white: a ``"83%"``
+    string, or a bare fraction like ``0.83``."""
+    if isinstance(value, str) and value.strip().endswith("%"):
+        try:
+            return round(clamp01(float(value.strip()[:-1]) / 100) * 255)
+        except ValueError:
+            return 0
+    try:
+        fraction = float(value)
+    except (TypeError, ValueError):
+        return 0
+    return round(clamp01(fraction) * 255)
+
+
+def clamp01(value: float) -> float:
+    return min(1.0, max(0.0, value))
+
+
+def _import_colors(doc: dict[str, Any], issues: list[ImportIssue]) -> list[ColorLibraryEntry]:
     entries = []
-    for raw in doc.get("color") or []:
+    for index, raw in enumerate(doc.get("color") or []):
         if not isinstance(raw, dict):
             continue
-        value = raw.get("hex", "FFFFFF")
-        # An unquoted six-digit hex reads back as an int, exactly like a colour.
-        if isinstance(value, int):
+        color_id = str(raw.get("id", ""))
+        value = raw.get("hex")
+        if value is None and any(key in raw for key in ("red", "green", "blue", "white")):
+            # ESPHome's `color:` also accepts red/green/blue(/white) instead
+            # of `hex:`. The model only stores a plain RGB hex, so this is
+            # converted rather than lost outright (the old behaviour: no
+            # `hex:` key meant a silent fallback to white, "FFFFFF"). `white`
+            # has no RGB-hex equivalent and is dropped - that loss is real,
+            # just far better than losing the whole colour.
+            red = _parse_color_channel(raw.get("red", 0))
+            green = _parse_color_channel(raw.get("green", 0))
+            blue = _parse_color_channel(raw.get("blue", 0))
+            value = f"{red:02X}{green:02X}{blue:02X}"
+            if "white" in raw:
+                issues.append(ImportIssue(
+                    "C", f"Color '{color_id}': white channel has no RGB-hex "
+                    "equivalent here and was dropped.", f"color[{index}]", color_id))
+        elif isinstance(value, int):
+            # An unquoted six-digit hex reads back as an int, exactly like a colour.
             value = f"{value:06X}"
-        entries.append(ColorLibraryEntry(id=str(raw.get("id", "")), hex=str(value).upper()))
+        elif value is None:
+            value = "FFFFFF"
+        entries.append(ColorLibraryEntry(id=color_id, hex=str(value).upper()))
     return entries
 
 
@@ -473,7 +545,7 @@ def import_esphome_yaml(text: str, *, source_name: str = "",
 
     project.images = _import_images(doc, issues)
     project.fonts = _import_fonts(doc, issues)
-    project.colors = _import_colors(doc)
+    project.colors = _import_colors(doc, issues)
     project.styles = _import_styles(lvgl, issues)
     for entry in [*project.styles, *project.fonts, *project.images, *project.colors]:
         if entry.id:

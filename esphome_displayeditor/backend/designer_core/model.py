@@ -287,17 +287,22 @@ class ImageLibraryEntry:
     resize: str = ""
     dither: str = ""
     transparency: str = "opaque"
+    #: ESPHome's image colour format (``BINARY``, ``TRANSPARENT_BINARY``,
+    #: ``GRAYSCALE``, ``RGB565``, ``RGB``, ``RGBA``). Empty = ESPHome's own
+    #: default for the target's colour depth.
+    img_type: str = ""
     #: The asset belongs to the ESPHome project this was imported from, not to
     #: this designer. Its path is emitted verbatim, never copied into an
     #: assets/ folder, and never opened by the add-on - which is why it is
     #: exempt from the local-file rule guarding against arbitrary host reads.
     external: bool = False
-    #: Keys this build does not model (``type: RGB565``, ...), kept verbatim.
+    #: Keys this build does not model, kept verbatim.
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "file_path": self.file_path, "resize": self.resize,
                 "dither": self.dither, "transparency": self.transparency,
+                "img_type": self.img_type,
                 "external": self.external, "extra": _copy(self.extra)}
 
     @staticmethod
@@ -307,6 +312,7 @@ class ImageLibraryEntry:
         e.resize = d.get("resize", "")
         e.dither = d.get("dither", "")
         e.transparency = d.get("transparency", "opaque")
+        e.img_type = d.get("img_type", "")
         e.external = bool(d.get("external", False))
         e.extra = _copy(d.get("extra", {}))
         return e

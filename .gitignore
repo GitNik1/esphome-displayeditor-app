@@ -11,3 +11,5 @@ dist/
 .env
 .venv/
 *.log
+
+build-and-start.bat
