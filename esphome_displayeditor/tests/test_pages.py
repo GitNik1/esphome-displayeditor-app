@@ -132,6 +132,46 @@ def test_stored_core_payload_can_be_materialized_again(tmp_path) -> None:
     assert restored["top_layer"]["widgets"][0]["id"] == "header_label"
 
 
+def test_edited_surface_payload_is_persisted_and_exported(tmp_path) -> None:
+    service = DesignerService(tmp_path)
+    payload = service.import_yaml(PAGES_YAML)["project"]
+    page = payload["pages"][0]
+    page["id"] = "dashboard_page"
+    page["synthetic_id"] = False
+    page["skip"] = True
+    page["layout"] = {"type": "GRID", "grid_rows": [40, "FR(1)"]}
+    page["style_tree"]["bg_color"] = "203040"
+    page["widgets"].append({
+        "id": "added_label",
+        "widget_type": "label",
+        "properties": {"text": "Neu"},
+        "children": [],
+    })
+    payload["page_wrap"] = True
+    payload["top_layer"] = None
+
+    project, issues = service.validate(payload)
+    assert not [issue for issue in issues if issue["severity"] == "error"]
+    restored = service.project_payload(project)
+    assert restored["pages"][0]["id"] == "dashboard_page"
+    assert restored["pages"][0]["skip"] is True
+    assert restored["pages"][0]["layout"] == {
+        "type": "GRID", "grid_rows": [40, "FR(1)"]}
+    assert restored["pages"][0]["style_tree"]["bg_color"] == "203040"
+    assert restored["pages"][0]["widgets"][-1]["properties"]["text"] == "Neu"
+    assert restored["page_wrap"] is True
+    assert restored["top_layer"] is None
+
+    lvgl = yaml.safe_load(service.export_yaml(payload)["yaml"])["lvgl"]
+    assert lvgl["pages"][0]["id"] == "dashboard_page"
+    assert lvgl["pages"][0]["skip"] is True
+    assert lvgl["pages"][0]["layout"]["type"] == "GRID"
+    assert lvgl["pages"][0]["bg_color"] == 0x203040
+    assert lvgl["pages"][0]["widgets"][-1]["label"]["text"] == "Neu"
+    assert lvgl["page_wrap"] is True
+    assert "top_layer" not in lvgl
+
+
 def test_version_three_root_widget_project_remains_unchanged() -> None:
     old = {
         "format": "esphome-lvgl-designer-project",
@@ -157,6 +197,7 @@ def test_designer_validation_includes_materialized_pages_and_layers(tmp_path) ->
     _validated, issues = service.validate(payload)
     assert not [issue for issue in issues if issue["severity"] == "error"]
 
-    payload["extra_lvgl"]["pages"][0]["id"] = "header_label"
+    payload["pages"][0]["id"] = "header_label"
+    payload["pages"][0]["synthetic_id"] = False
     _validated, issues = service.validate(payload)
     assert any("Duplicate id" in issue["message"] for issue in issues)

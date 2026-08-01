@@ -31,12 +31,15 @@
           <button class="button subtle compact" data-pane="properties">Eigenschaften</button>
         </nav>
         <aside class="panel palette-panel">
-          <div class="panel-heading">
-            <div><small>BAUSTEINE</small><h2>Widgets</h2></div>
-          </div>
-          <div id="palette" class="palette"></div>
-          <div class="tree-heading"><small>HIERARCHIE</small></div>
-          <div id="widget-tree" class="widget-tree empty">Noch keine Widgets</div>
+          <details class="designer-sidebar-details palette-details" open>
+            <summary>Bausteine (Widgets)</summary>
+            <div id="palette" class="palette"></div>
+          </details>
+
+          <details class="designer-sidebar-details hierarchy-details" open>
+            <summary>Hierarchie</summary>
+            <div id="widget-tree" class="widget-tree empty">Noch keine Widgets</div>
+          </details>
 
           <details class="theme-editor-details">
             <summary>Theme (Standardstil je Widget-Typ)</summary>
@@ -192,6 +195,58 @@
             <input id="project-file" class="hidden" type="file" accept=".lvgldesign,application/json">
             </div>
           </div>
+          <details class="project-management-bar">
+            <summary>Projektverwaltung</summary>
+            <div class="project-toolbar">
+              <label>Projektname
+                <input id="project-name" value="display.lvgldesign">
+              </label>
+              <label>App-Speicher
+                <select id="server-projects" aria-label="Gespeicherte Projekte"><option value="">Gespeicherte Projekte …</option></select>
+              </label>
+              <button id="load-server-project" class="button subtle" disabled>Laden</button>
+              <button id="save-server-project" class="button primary">In App speichern</button>
+              <button id="delete-server-project" class="button danger compact" disabled>Löschen</button>
+            </div>
+          </details>
+          <div class="surface-toolbar">
+            <label class="surface-picker">Arbeitsfläche
+              <select id="surface-select" aria-label="Aktive Seite oder Layer"></select>
+            </label>
+            <div class="surface-actions">
+              <button id="add-page" type="button" class="button subtle compact">+ Seite</button>
+              <button id="add-bottom-layer" type="button" class="button subtle compact">+ Bottom-Layer</button>
+              <button id="add-top-layer" type="button" class="button subtle compact">+ Top-Layer</button>
+              <button id="surface-up" type="button" class="button subtle compact" title="Seite nach oben verschieben">↑</button>
+              <button id="surface-down" type="button" class="button subtle compact" title="Seite nach unten verschieben">↓</button>
+              <button id="delete-surface" type="button" class="button danger compact">Entfernen</button>
+            </div>
+            <label id="page-wrap-field" class="checkbox-field">Seiten umlaufend
+              <input id="page-wrap" type="checkbox">
+            </label>
+            <label id="surface-skip-field" class="checkbox-field">Seite überspringen
+              <input id="surface-skip" type="checkbox">
+            </label>
+            <details id="surface-settings" class="surface-settings">
+              <summary>Seite/Layer bearbeiten</summary>
+              <div class="surface-settings-fields">
+                <label id="surface-id-field">ID
+                  <input id="surface-id" pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="page_1">
+                </label>
+                <label>Layout (JSON)
+                  <textarea id="surface-layout-json" rows="3" spellcheck="false">{}</textarea>
+                </label>
+                <label>Stil (JSON)
+                  <textarea id="surface-style-json" rows="3" spellcheck="false">{}</textarea>
+                </label>
+                <label>Zusätzliche ESPHome-Schlüssel (JSON)
+                  <textarea id="surface-extra-json" rows="3" spellcheck="false">{}</textarea>
+                </label>
+                <p id="surface-error" class="hint issue-error hidden"></p>
+                <button id="apply-surface" type="button" class="button primary compact">Übernehmen</button>
+              </div>
+            </details>
+          </div>
           <details class="background-bar">
             <summary>Referenzbild</summary>
             <div class="background-fields">
@@ -214,13 +269,6 @@
               <p class="hint warning-hint">Für den Export muss die Quelle eine <code>http(s)</code>-URL sein — lokale Dateien vom Host werden bewusst nicht eingelesen.</p>
             </div>
           </details>
-          <div class="project-toolbar">
-            <input id="project-name" value="display.lvgldesign" aria-label="Projektname">
-            <select id="server-projects" aria-label="Gespeicherte Projekte"><option value="">Gespeicherte Projekte …</option></select>
-            <button id="load-server-project" class="button subtle" disabled>Laden</button>
-            <button id="save-server-project" class="button primary">In App speichern</button>
-            <button id="delete-server-project" class="button danger compact" disabled>Löschen</button>
-          </div>
           <div class="canvas-stage">
             <div id="canvas-scaler" class="canvas-scaler">
               <div id="canvas" class="canvas" aria-label="LVGL-Zeichenfläche">
