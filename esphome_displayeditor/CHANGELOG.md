@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The configuration picker (import dialog, "Konfigurationen" tab) now only
+  lists YAML files directly in the ESPHome config root, not files in
+  subfolders such as `archive/` (ESPHome's own dashboard archives deleted or
+  renamed devices there) - those aren't active configs worth showing.
+  Reading a subfolder file by its explicit path still works unchanged.
 - Fixed new/renamed widget ids silently colliding with ids used by hardware
   entities elsewhere in an imported source config (`binary_sensor:`,
   `button:`, `switch:`, ...). The importer never reads those sections, so it

@@ -185,41 +185,44 @@ class FilesystemBackend:
                 os.close(descriptor)
 
     def list_configs(self) -> list[dict]:
+        """Top-level YAML files directly in the config root only - not
+        subfolders like ``archive/`` (ESPHome's own dashboard archives
+        deleted/renamed devices there) or any other nested directory. Those
+        aren't active device configs a user would want to import/edit here,
+        and ``read_config``/import still accept an explicit subfolder path
+        if one is typed in by hand - this only narrows what gets *listed*."""
         if not self.root.is_dir():
             return []
         result: list[dict] = []
-        for directory, dirnames, filenames in os.walk(self.root, followlinks=False):
-            directory_path = Path(directory)
-            dirnames[:] = [
-                name
-                for name in dirnames
-                if not name.startswith(".") and not (directory_path / name).is_symlink()
-            ]
-            for filename in filenames:
-                path = directory_path / filename
-                if filename.startswith(".") or path.is_symlink():
+        try:
+            entries = list(os.scandir(self.root))
+        except OSError:
+            return []
+        for entry in entries:
+            filename = entry.name
+            if filename.startswith(".") or entry.is_symlink() or not entry.is_file():
+                continue
+            path = Path(entry.path)
+            if path.suffix.lower() not in self._allowed_suffixes:
+                continue
+            if filename.lower() in {"secrets.yaml", "secrets.yml"}:
+                continue
+            try:
+                stat = entry.stat(follow_symlinks=False)
+                if stat.st_size > self.settings.max_file_size:
                     continue
-                if path.suffix.lower() not in self._allowed_suffixes:
-                    continue
-                relative = path.relative_to(self.root).as_posix()
-                if filename.lower() in {"secrets.yaml", "secrets.yml"}:
-                    continue
-                try:
-                    stat = path.stat()
-                    if stat.st_size > self.settings.max_file_size:
-                        continue
-                    content = self._read(path, missing_error="configuration_not_found")
-                except (OSError, ApiError):
-                    continue
-                draft_path = self._resolve(self.drafts, self._relative(relative))
-                result.append(
-                    {
-                        "name": relative,
-                        "size": stat.st_size,
-                        "revision": revision_for(content),
-                        "has_draft": draft_path.is_file() and not draft_path.is_symlink(),
-                    }
-                )
+                content = self._read(path, missing_error="configuration_not_found")
+            except (OSError, ApiError):
+                continue
+            draft_path = self._resolve(self.drafts, self._relative(filename))
+            result.append(
+                {
+                    "name": filename,
+                    "size": stat.st_size,
+                    "revision": revision_for(content),
+                    "has_draft": draft_path.is_file() and not draft_path.is_symlink(),
+                }
+            )
         return sorted(result, key=lambda item: item["name"].casefold())
 
     def read_config(self, name: str) -> dict:
