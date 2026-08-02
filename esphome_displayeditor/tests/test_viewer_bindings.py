@@ -23,8 +23,7 @@ def settings_for(tmp_path: Path, role: str = "administrator") -> Settings:
     config_root = tmp_path / "esphome"
     config_root.mkdir()
     return Settings(
-        profile="native_filesystem",
-        read_only=False,
+        access_level="write",
         max_file_size=1024 * 1024,
         protect_sensitive_paths=True,
         config_root=config_root,

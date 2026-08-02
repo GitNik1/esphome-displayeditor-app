@@ -68,9 +68,8 @@ def test_release_version_is_consistent() -> None:
     assert f"## {APP_VERSION}\n" in changelog
 
 
-def test_full_profile_has_fail_closed_builder_options() -> None:
+def test_default_access_level_has_fail_closed_builder_options() -> None:
     config = yaml.safe_load((APP_ROOT / "config.yaml").read_text(encoding="utf-8"))
 
-    assert config["options"]["builder_provider"] == "disabled"
-    assert config["options"]["profile"] != "full"
-    assert "full" in config["schema"]["profile"]
+    assert config["options"]["access_level"] != "write_with_builder"
+    assert "write_with_builder" in config["schema"]["access_level"]

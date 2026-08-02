@@ -382,6 +382,48 @@ def test_a_file_without_an_lvgl_block_is_rejected() -> None:
         import_esphome_yaml("esphome:\n  name: test\n")
 
 
+def test_a_bare_empty_lvgl_key_imports_as_an_empty_project() -> None:
+    """``lvgl:`` with nothing under it - e.g. right after enabling the
+    component in an existing device config, before adding any widgets -
+    parses as None, not `{}`. That's a real, empty lvgl: block, not a
+    missing one: it must import as an empty project, not be rejected with
+    the same error as a file that has no lvgl: key at all."""
+    result = import_esphome_yaml("esphome:\n  name: test\nlvgl:\n")
+    assert result.project.widgets == []
+
+
+def test_reserved_ids_collect_ids_from_outside_the_lvgl_block() -> None:
+    """A hardware entity's id (binary_sensor:, button:, ...) is never read or
+    modeled by this importer, but shares ESPHome's one flat id() namespace
+    with every widget here - so it must still be recorded, or a newly
+    created widget can silently reuse it (reported by a user importing a
+    real device config with a `binary_sensor: - id: button_1`)."""
+    text = (
+        "esphome:\n  name: test\n"
+        "binary_sensor:\n  - platform: gpio\n    id: button_1\n    pin: GPIO0\n"
+        "lvgl:\n  widgets:\n    - label:\n        id: greeting\n        text: Hi\n"
+    )
+    result = import_esphome_yaml(text)
+    assert "button_1" in result.project.reserved_ids
+    # The lvgl-owned label id must not also be treated as "external".
+    assert "greeting" not in result.project.reserved_ids
+
+
+def test_reserved_ids_exclude_pages_and_top_layer_widgets() -> None:
+    """Regression: pages:/top_layer:/bottom_layer: widgets live inside lvgl:
+    but aren't reachable via Project.all_widgets() (they're kept as raw,
+    unmodeled data) - they must still count as "owned" by lvgl, not get
+    misclassified as reserved/external ids."""
+    text = (
+        "esphome:\n  name: test\n"
+        "lvgl:\n  pages:\n    - id: main_page\n      widgets:\n"
+        "        - label:\n            id: page_label\n            text: Hi\n"
+    )
+    result = import_esphome_yaml(text)
+    assert "main_page" not in result.project.reserved_ids
+    assert "page_label" not in result.project.reserved_ids
+
+
 def test_probe_reports_what_an_import_would_do(source_text: str) -> None:
     stats = probe_esphome_yaml(source_text)
 

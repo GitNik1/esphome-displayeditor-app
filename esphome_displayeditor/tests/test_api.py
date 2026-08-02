@@ -21,8 +21,7 @@ def test_health_capabilities_and_write_authorization(tmp_path: Path) -> None:
         "esphome:\n  name: display\n", encoding="utf-8", newline=""
     )
     settings = Settings(
-        profile="native_filesystem",
-        read_only=False,
+        access_level="write",
         max_file_size=1024 * 1024,
         protect_sensitive_paths=True,
         config_root=config_root,
@@ -48,8 +47,7 @@ def test_health_capabilities_and_write_authorization(tmp_path: Path) -> None:
 
 def test_frontend_is_served(tmp_path: Path) -> None:
     settings = Settings(
-        profile="read_only",
-        read_only=True,
+        access_level="read",
         max_file_size=1024 * 1024,
         protect_sensitive_paths=True,
         config_root=tmp_path / "esphome",
@@ -110,8 +108,7 @@ def test_viewer_runtime_actions_and_style_priority() -> None:
 
 def test_designer_project_api_requires_revision_and_ingress_user(tmp_path: Path) -> None:
     settings = Settings(
-        profile="native_filesystem",
-        read_only=False,
+        access_level="write",
         max_file_size=1024 * 1024,
         protect_sensitive_paths=True,
         config_root=tmp_path / "esphome",

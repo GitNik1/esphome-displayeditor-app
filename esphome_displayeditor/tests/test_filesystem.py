@@ -14,8 +14,7 @@ def make_backend(tmp_path: Path, *, read_only: bool = False) -> FilesystemBacken
     config_root.mkdir(parents=True)
     data_root = tmp_path / "data"
     settings = Settings(
-        profile="read_only" if read_only else "native_filesystem",
-        read_only=read_only,
+        access_level="read" if read_only else "write",
         max_file_size=1024 * 1024,
         protect_sensitive_paths=True,
         config_root=config_root,
@@ -36,6 +35,24 @@ def test_list_read_and_hide_secrets(tmp_path: Path) -> None:
     assert document["revision"] == revision_for(document["content"])
     with pytest.raises(ApiError, match="protected"):
         backend.read_config("secrets.yaml")
+
+
+def test_list_configs_excludes_subfolders(tmp_path: Path) -> None:
+    """Only top-level YAML files are listed - not files in subfolders like
+    ``archive/`` (ESPHome's own dashboard archives deleted/renamed devices
+    there), so old/inactive configs don't clutter the import picker."""
+    backend = make_backend(tmp_path)
+    (backend.root / "living-room.yaml").write_text("esphome:\n  name: living-room\n", encoding="utf-8", newline="")
+    archive = backend.root / "archive"
+    archive.mkdir()
+    (archive / "old-device.yaml").write_text("esphome:\n  name: old-device\n", encoding="utf-8", newline="")
+
+    listed = backend.list_configs()
+
+    assert [item["name"] for item in listed] == ["living-room.yaml"]
+    # The subfolder file is still readable directly - only the listing is narrowed.
+    document = backend.read_config("archive/old-device.yaml")
+    assert "old-device" in document["content"]
 
 
 @pytest.mark.parametrize(

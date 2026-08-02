@@ -11,6 +11,16 @@ from pathlib import Path
 ROLES = ("viewer", "editor", "publisher", "installer", "administrator")
 _ROLE_LEVEL = {role: level for level, role in enumerate(ROLES)}
 
+#: Replaces the old profile/read_only/builder_provider trio, which together
+#: exposed 8 nominal combinations for only 4 actually distinct behaviours
+#: (e.g. "read-only" was reachable three different ways). One setting, one
+#: value per behaviour:
+#:   none              - no filesystem access at all (pure in-browser designer)
+#:   read              - read configs, no writes/drafts/publish/asset-write
+#:   write             - normal read+write, no Device Builder
+#:   write_with_builder - read+write plus the optional Device Builder backend
+ACCESS_LEVELS = ("none", "read", "write", "write_with_builder")
+
 CAPABILITY_MINIMUM_ROLE = {
     "configuration.list": "viewer",
     "configuration.read": "viewer",
@@ -45,10 +55,28 @@ def _bounded_int(options: dict, key: str, default: int, minimum: int, maximum: i
     return min(max(value, minimum), maximum)
 
 
+def _migrate_access_level(options: dict) -> str:
+    """Derives access_level from the deprecated profile/read_only/
+    builder_provider trio (8 nominal combinations, only 4 actually distinct
+    outcomes), so an add-on instance configured before the consolidation
+    keeps behaving exactly the same without a manual step."""
+    profile = str(options.get("profile", "native_filesystem"))
+    if profile not in {"native_filesystem", "native_only", "read_only", "full"}:
+        return "read"  # matches the old fail-closed default for an invalid profile
+    if profile == "native_only":
+        return "none"
+    read_only = bool(options.get("read_only", False)) or profile == "read_only"
+    if read_only:
+        return "read"
+    builder_provider = str(options.get("builder_provider", "disabled")).lower()
+    if profile == "full" and builder_provider == "device_builder":
+        return "write_with_builder"
+    return "write"
+
+
 @dataclass(frozen=True)
 class Settings:
-    profile: str
-    read_only: bool
+    access_level: str
     max_file_size: int
     protect_sensitive_paths: bool
     config_root: Path
@@ -60,7 +88,6 @@ class Settings:
     runtime_provider: str = "native"
     request_max_size: int = 12 * 1024 * 1024
     api_timeout_seconds: int = 300
-    builder_provider: str = "disabled"
     builder_url: str = "http://5c53de3b-esphome:6052"
     validation_max_age_seconds: int = 900
 
@@ -73,10 +100,15 @@ class Settings:
         except (OSError, ValueError, TypeError):
             pass
 
-        profile = str(options.get("profile", "native_filesystem"))
-        if profile not in {"native_filesystem", "native_only", "read_only", "full"}:
-            profile = "read_only"
-        read_only = bool(options.get("read_only", False)) or profile == "read_only"
+        if "access_level" in options:
+            access_level = str(options.get("access_level", "")).lower()
+            if access_level not in ACCESS_LEVELS:
+                access_level = "read"  # fail closed on a genuinely invalid value
+        elif any(key in options for key in ("profile", "read_only", "builder_provider")):
+            access_level = _migrate_access_level(options)
+        else:
+            access_level = "write"  # fresh install default: same as the old profile default
+
         max_kib = _bounded_int(options, "max_file_size_kib", 1024, 64, 4096)
         default_role = str(options.get("default_role", "viewer")).lower()
         if default_role not in ROLES:
@@ -94,15 +126,11 @@ class Settings:
         runtime_provider = str(options.get("runtime_provider", "native")).lower()
         if runtime_provider not in {"native", "disabled"}:
             runtime_provider = "disabled"
-        builder_provider = str(options.get("builder_provider", "disabled")).lower()
-        if builder_provider not in {"device_builder", "disabled"}:
-            builder_provider = "disabled"
         builder_url = str(
             options.get("builder_url", "http://5c53de3b-esphome:6052")
         ).strip()
         return cls(
-            profile=profile,
-            read_only=read_only,
+            access_level=access_level,
             max_file_size=max_kib * 1024,
             protect_sensitive_paths=bool(options.get("protect_sensitive_paths", True)),
             config_root=Path(os.getenv("ESPHOME_CONFIG_ROOT", "/homeassistant/esphome")),
@@ -123,7 +151,6 @@ class Settings:
             api_timeout_seconds=_bounded_int(
                 options, "api_timeout_seconds", 300, 10, 900
             ),
-            builder_provider=builder_provider,
             builder_url=builder_url,
             validation_max_age_seconds=_bounded_int(
                 options, "validation_max_age_seconds", 900, 30, 86400
@@ -148,10 +175,10 @@ def capabilities(
     *,
     builder_available: bool = False,
 ) -> dict[str, bool]:
-    writable = not settings.read_only
+    filesystem = settings.access_level != "none"
+    writable = settings.access_level in ("write", "write_with_builder")
     native_runtime = settings.runtime_provider == "native"
-    filesystem = settings.profile != "native_only"
-    builder = settings.profile == "full" and builder_available and writable
+    builder = settings.access_level == "write_with_builder" and builder_available
     available = {
         "configuration.list": filesystem,
         "configuration.read": filesystem,
@@ -162,23 +189,21 @@ def capabilities(
         "designer.project": True,
         "designer.export_yaml": True,
         # Import only reads a configuration and returns a project; it never
-        # writes anything, so it stays available in the read-only profile.
+        # writes anything, so it stays available at access_level "read".
         "designer.import_yaml": True,
         "designer.project_write": writable,
         # Writes a baked animation frame straight into the ESPHome config's
         # images/ folder - needs real filesystem access, same as any other
-        # write, and is unavailable in the native_only profile exactly like
+        # write, and is unavailable at access_level "none" exactly like
         # configuration writes are.
         "designer.asset_write": filesystem and writable,
-        # Read-only, so it stays available in the read-only profile exactly
+        # Read-only, so it stays available at access_level "read" exactly
         # like configuration.read - it lets the canvas show an imported
         # config's own images/fonts instead of only ever accepting http(s).
         "designer.asset_read": filesystem,
         "firmware.compile": builder,
         "firmware.upload": builder,
-        "builder.manage": settings.profile == "full"
-        and settings.builder_provider == "device_builder"
-        and writable,
+        "builder.manage": builder,
         "device.info": native_runtime,
         "device.entities": native_runtime,
         "device.states": native_runtime,

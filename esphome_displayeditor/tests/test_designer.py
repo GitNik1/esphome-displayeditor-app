@@ -223,6 +223,23 @@ def test_duplicate_ids_fail_validation(tmp_path: Path) -> None:
     assert any("Duplicate id" in issue["message"] for issue in issues)
 
 
+def test_widget_id_colliding_with_a_reserved_id_fails_validation(tmp_path: Path) -> None:
+    """``reserved_ids`` records ids used by hardware entities elsewhere in an
+    imported source config (binary_sensor:, button:, ...) that this designer
+    never models. A widget reusing one of those ids - e.g. the designer
+    auto-generating "button_1" for a new button, unaware a `binary_sensor:`
+    already claimed it - must fail validation just like any other duplicate
+    id, not silently produce a config ESPHome can't compile."""
+    project = project_with_button()
+    project["reserved_ids"] = ["button_1"]
+    project["widgets"][0]["id"] = "button_1"
+    _parsed, issues = DesignerService(tmp_path).validate(project)
+    assert any(
+        "Duplicate id" in issue["message"] and "button_1" in issue["message"]
+        for issue in issues
+    )
+
+
 def test_local_asset_paths_are_blocked(tmp_path: Path) -> None:
     project = project_with_button()
     project["images"] = [{"id": "logo", "file_path": "/etc/passwd"}]

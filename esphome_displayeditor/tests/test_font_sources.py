@@ -44,8 +44,7 @@ def settings(tmp_path: Path) -> Settings:
     root = tmp_path / "esphome"
     root.mkdir()
     return Settings(
-        profile="native_filesystem",
-        read_only=False,
+        access_level="write",
         max_file_size=1024,
         protect_sensitive_paths=True,
         config_root=root,

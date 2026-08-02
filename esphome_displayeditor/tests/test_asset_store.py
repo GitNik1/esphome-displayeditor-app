@@ -35,8 +35,7 @@ def _settings(tmp_path: Path, **overrides) -> Settings:
     config_root = tmp_path / "esphome"
     config_root.mkdir(exist_ok=True)
     defaults = dict(
-        profile="native_filesystem",
-        read_only=False,
+        access_level="write",
         max_file_size=1024 * 1024,
         protect_sensitive_paths=True,
         config_root=config_root,
@@ -170,7 +169,7 @@ def test_upload_is_denied_for_a_viewer(tmp_path: Path) -> None:
 
 
 def test_upload_unavailable_in_read_only_profile(tmp_path: Path) -> None:
-    client = _client(tmp_path, profile="read_only", read_only=True, default_role="administrator")
+    client = _client(tmp_path, access_level="read", default_role="administrator")
     response = _upload(client, "a.png", PNG_1X1)
     assert response.status_code in (403, 404)
     assert response.json()["error"] in ("capability_unavailable", "permission_denied")
@@ -293,7 +292,7 @@ def test_read_asset_http_endpoint_serves_the_file_without_a_user(tmp_path: Path)
 
 
 def test_read_asset_http_endpoint_unavailable_in_native_only_profile(tmp_path: Path) -> None:
-    settings = _settings(tmp_path, profile="native_only")
+    settings = _settings(tmp_path, access_level="none")
     (settings.config_root / "images").mkdir(parents=True, exist_ok=True)
     (settings.config_root / "images" / "panel_bg.png").write_bytes(PNG_1X1)
     client = TestClient(create_app(settings, serve_frontend=False))
@@ -306,7 +305,7 @@ def test_read_asset_http_endpoint_unavailable_in_native_only_profile(tmp_path: P
 def test_read_asset_http_endpoint_available_in_read_only_profile(tmp_path: Path) -> None:
     """Reading isn't gated by `writable` - the read-only profile must still
     be able to show an imported config's own assets."""
-    settings = _settings(tmp_path, profile="read_only", read_only=True)
+    settings = _settings(tmp_path, access_level="read")
     (settings.config_root / "images").mkdir(parents=True, exist_ok=True)
     (settings.config_root / "images" / "panel_bg.png").write_bytes(PNG_1X1)
     client = TestClient(create_app(settings, serve_frontend=False))

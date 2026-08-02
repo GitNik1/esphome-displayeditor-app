@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- Replaced the `profile`/`read_only`/`builder_provider` add-on options (8
+  nominal combinations, only 4 actually distinct outcomes - "read-only" was
+  reachable three different ways) with a single `access_level` setting
+  (`none`/`read`/`write`/`write_with_builder`). Instances configured before
+  this change keep working unchanged: the old options are still read and
+  mapped onto `access_level` automatically when it isn't set.
+- Added `translations/en.yaml` and `translations/de.yaml` so every add-on
+  option shows an explanatory description directly in the Home Assistant
+  configuration UI, automatically switching with HA's own interface
+  language.
+- The configuration picker (import dialog, "Konfigurationen" tab) now only
+  lists YAML files directly in the ESPHome config root, not files in
+  subfolders such as `archive/` (ESPHome's own dashboard archives deleted or
+  renamed devices there) - those aren't active configs worth showing.
+  Reading a subfolder file by its explicit path still works unchanged.
+- Fixed new/renamed widget ids silently colliding with ids used by hardware
+  entities elsewhere in an imported source config (`binary_sensor:`,
+  `button:`, `switch:`, ...). The importer never reads those sections, so it
+  had no way to know their ids were taken - auto-generating "button_1" for a
+  new button could reuse the exact id an existing `binary_sensor: - id:
+  button_1` already claimed, producing a config ESPHome can't compile.
+  Import now scans the whole source file (not just `lvgl:`/`font:`/`image:`/
+  `color:`) for every `id:` and records the rest as `reserved_ids`; new
+  widget ids, manual id edits, duplication and new pages all avoid them, and
+  export validation flags a collision as an error if one still occurs.
+- Fixed YAML import rejecting a config with a bare, empty `lvgl:` key (e.g.
+  right after enabling the component but before adding any widgets) with the
+  same "no lvgl: block" error as a file missing the key entirely. YAML parses
+  an empty `lvgl:` as `None`, not `{}` - it now imports correctly as an empty
+  starting project.
+- Added a tooltip explaining why "In App speichern"/"Löschen" are disabled
+  (requires at least the "editor" role - see the add-on's `default_role`/
+  `user_roles` configuration) instead of leaving the buttons silently inert.
+
 ## 0.14.0
 
 - Added an ESPHome-compatible Bild-Button palette preset built from the

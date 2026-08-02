@@ -27,8 +27,7 @@ def client(tmp_path: Path) -> TestClient:
     shutil.copy(FIXTURE, config_root / "p4-86-panel.yaml")
     (config_root / "secrets.yaml").write_text("wifi_password: hunter2\n", encoding="utf-8")
     settings = Settings(
-        profile="native_filesystem",
-        read_only=False,
+        access_level="write",
         max_file_size=4 * 1024 * 1024,
         protect_sensitive_paths=True,
         config_root=config_root,
@@ -130,8 +129,7 @@ def test_import_is_available_without_write_permission(tmp_path: Path) -> None:
     config_root.mkdir()
     shutil.copy(FIXTURE, config_root / "panel.yaml")
     settings = Settings(
-        profile="read_only",
-        read_only=True,
+        access_level="read",
         max_file_size=4 * 1024 * 1024,
         protect_sensitive_paths=True,
         config_root=config_root,
@@ -155,8 +153,7 @@ def test_importing_cannot_write_to_the_source(tmp_path: Path, monkeypatch) -> No
     before = source.read_bytes()
 
     settings = Settings(
-        profile="native_filesystem",
-        read_only=False,
+        access_level="write",
         max_file_size=4 * 1024 * 1024,
         protect_sensitive_paths=True,
         config_root=config_root,

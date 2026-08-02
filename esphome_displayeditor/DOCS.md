@@ -16,13 +16,24 @@ does not publish a LAN port.
 The `/data` directory is persistent and included in Home Assistant app
 backups. Active files are changed only by the explicit publish operation.
 
-## Profiles
+## Access levels
 
-`native_filesystem` enables configuration reading, drafts, YAML syntax checks,
-diffs, publishing and the Native API. `native_only` disables every YAML
-filesystem endpoint while retaining the Native API. `read_only` keeps YAML and
-Native API reads but disables all write operations. `full` adds the optional
-Device Builder functions when its handshake and ESPHome version are compatible.
+`access_level` is the single setting controlling what the editor may do with
+your ESPHome config folder and the optional Device Builder:
+
+- `none` - no filesystem access at all; only the in-browser designer and
+  (if `runtime_provider: native`) the Native API remain available.
+- `read` - configuration reading, YAML syntax checks and diffs, but no
+  drafts, publish, or asset writes.
+- `write` - the above plus drafts, publishing and asset uploads. The normal
+  day-to-day setting.
+- `write_with_builder` - adds the optional Device Builder functions when its
+  handshake and ESPHome version are compatible (also needs `builder_url` to
+  point at a reachable Device Builder).
+
+(Older `profile`/`read_only`/`builder_provider` options are still read and
+mapped onto `access_level` automatically if `access_level` itself isn't set,
+so an instance configured before this consolidation keeps working unchanged.)
 
 `runtime_provider: native` enables read-only, encrypted ESPHome Native API
 connections. Set it to `disabled` to switch off all device connections and
@@ -44,11 +55,11 @@ appearing in the app log.
 
 ## Optional Device Builder backend
 
-Builder operations are available only with `profile: full` and
-`builder_provider: device_builder`. `builder_url` must point to a local ESPHome
-Device Builder. The app accepts only ESPHome 2026.6 through 2026.8 and fails
-closed for every unknown version or protocol response. Filesystem and Native
-API functions remain available when the builder is unavailable.
+Builder operations are available only with `access_level: write_with_builder`.
+`builder_url` must point to a local ESPHome Device Builder. The app accepts
+only ESPHome 2026.6 through 2026.8 and fails closed for every unknown version
+or protocol response. Filesystem and Native API functions remain available
+when the builder is unavailable.
 
 The builder exposes only validation, compile, OTA install, job inspection,
 live job events and cancellation. Arbitrary builder commands and arbitrary
@@ -141,7 +152,7 @@ records, replace their encryption keys and request a reconnect. All roles can
 read device data when the Native API runtime is enabled; device control stays
 disabled for every role.
 
-Roles are hierarchical. A profile such as `read_only` still disables writes
+Roles are hierarchical. An access level of `read` still disables writes
 even for administrators.
 
 ## Designer projects

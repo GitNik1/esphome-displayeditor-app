@@ -205,6 +205,13 @@ class DesignerService:
 
         issues: list[dict] = []
         registry = IdRegistry()
+        # Ids used by hardware entities elsewhere in an imported source config
+        # (binary_sensor:, button:, switch:, ...) - not modeled here, but they
+        # share ESPHome's one flat id() namespace with every widget/style/
+        # font/image/color below, so a widget accidentally reusing one must
+        # be caught the same way as any other duplicate id.
+        for reserved_id in project.reserved_ids:
+            registry.claim(reserved_id, "a non-LVGL entity in the source config")
         count = 0
 
         def visit(nodes, depth: int = 0, parent_path: str = "widgets") -> None:

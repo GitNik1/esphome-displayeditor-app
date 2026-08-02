@@ -24,8 +24,7 @@ map:
 apparmor: true
 backup: cold
 options:
-  profile: native_filesystem
-  read_only: false
+  access_level: write
   max_file_size_kib: 1024
   protect_sensitive_paths: true
   default_role: viewer
@@ -35,12 +34,10 @@ options:
   runtime_provider: native
   request_max_size_kib: 12288
   api_timeout_seconds: 300
-  builder_provider: disabled
   builder_url: "http://5c53de3b-esphome:6052"
   validation_max_age_seconds: 900
 schema:
-  profile: list(native_filesystem|native_only|read_only|full)
-  read_only: bool
+  access_level: list(none|read|write|write_with_builder)
   max_file_size_kib: int(64,4096)
   protect_sensitive_paths: bool
   default_role: list(viewer|editor|publisher|installer|administrator)
@@ -52,6 +49,5 @@ schema:
   runtime_provider: list(native|disabled)
   request_max_size_kib: int(256,16384)
   api_timeout_seconds: int(10,900)
-  builder_provider: list(device_builder|disabled)
   builder_url: url
   validation_max_age_seconds: int(30,86400)

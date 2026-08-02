@@ -217,7 +217,13 @@ function allProjectWidgets() {
 }
 
 function uniqueProjectWidgetId(base) {
-  const ids = new Set(allProjectWidgets().map((widget) => widget.id));
+  // reserved_ids are ids used by hardware entities elsewhere in an imported
+  // source config (binary_sensor:, button:, ...) - never modeled here, but
+  // sharing ESPHome's one flat id() namespace with everything created here.
+  const ids = new Set([
+    ...allProjectWidgets().map((widget) => widget.id),
+    ...(state.project.reserved_ids || []),
+  ]);
   let number = 1;
   let candidate = `${base}_${number}`;
   while (ids.has(candidate)) {
@@ -305,7 +311,7 @@ async function initialize() {
     state.states = schemaData.states || [];
     renderStateChoices();
     $("#health").classList.toggle("ok", health.status === "ok");
-    $("#profile").textContent = `${system.profile} · ${system.user.role} · ${system.user.display_name || system.user.name || "Ingress"}`;
+    $("#profile").textContent = `${system.access_level} · ${system.user.role} · ${system.user.display_name || system.user.name || "Ingress"}`;
     $("#system-json").textContent = JSON.stringify({ system, ...capabilityData }, null, 2);
     renderPalette();
     const initialLoads = [loadServerProjects(), loadDevices(), loadViewerRuntimeSources()];
@@ -793,6 +799,36 @@ function bindDesigner() {
     control.addEventListener("focus", pushUndo);
     control.addEventListener("input", updateSelectedWidget);
   });
+  // Checked on blur rather than every keystroke, so an in-progress edit
+  // isn't reverted mid-type. Catches the same class of bug as the reserved
+  // ids in uniqueWidgetId(): typing an id a hardware entity (or another
+  // widget/style/font/image/color) already uses would otherwise silently
+  // produce a config ESPHome can't compile. The "input" handler above
+  // already committed each keystroke to widget.id, so this checks for
+  // *other* owners of the current id rather than reusing projectIdIsUsed()
+  // (which would always find the widget's own just-committed id).
+  let widgetIdBeforeEdit = null;
+  $("#prop-id").addEventListener("focus", (event) => {
+    widgetIdBeforeEdit = event.target.value;
+  });
+  $("#prop-id").addEventListener("blur", (event) => {
+    const widget = state.selectedWidget;
+    if (!widget) return;
+    const currentId = widget.id;
+    const collides = projectWidgetEntries().some((entry) => entry !== widget && entry.id === currentId)
+      || (state.project.reserved_ids || []).includes(currentId)
+      || [state.project.styles, state.project.fonts, state.project.images, colorLibrary()]
+        .some((entries) => (entries || []).some((entry) => entry.id === currentId));
+    if (collides) {
+      const previousId = widgetIdBeforeEdit || currentId;
+      toast(`Die ID „${currentId}“ wird bereits verwendet.`, true);
+      replaceProjectWidgetReferences(currentId, previousId);
+      widget.id = previousId;
+      event.target.value = previousId;
+      markProjectDirty();
+      renderCanvas();
+    }
+  });
   $("#prop-locked").addEventListener("change", () => toggleWidgetFlag("locked"));
   $("#prop-hidden").addEventListener("change", () => toggleWidgetFlag("hidden"));
   $("#style-state").addEventListener("change", changeActiveState);
@@ -1226,9 +1262,13 @@ async function loadServerProjects() {
 
 function updateServerProjectButtons() {
   const selected = Boolean($("#server-projects").value);
+  const canWrite = Boolean(state.capabilities["designer.project_write"]);
+  const writeHint = canWrite ? "" : "Erfordert mindestens die Rolle \"editor\" (siehe Add-on-Konfiguration: default_role/user_roles).";
   $("#load-server-project").disabled = !selected;
-  $("#delete-server-project").disabled = !selected || !state.capabilities["designer.project_write"];
-  $("#save-server-project").disabled = !state.capabilities["designer.project_write"];
+  $("#delete-server-project").disabled = !selected || !canWrite;
+  $("#delete-server-project").title = canWrite ? "" : writeHint;
+  $("#save-server-project").disabled = !canWrite;
+  $("#save-server-project").title = writeHint;
 }
 
 async function loadSelectedServerProject() {
@@ -1529,7 +1569,13 @@ function addWidget(schema) {
   pushUndo();
   const idBase = schema.type_key === "container" ? "container" : schema.type_key;
   let number = 1;
-  const ids = new Set(allProjectWidgets().map((widget) => widget.id));
+  // reserved_ids are ids used by hardware entities elsewhere in an imported
+  // source config (binary_sensor:, button:, ...) - never modeled here, but
+  // sharing ESPHome's one flat id() namespace with everything created here.
+  const ids = new Set([
+    ...allProjectWidgets().map((widget) => widget.id),
+    ...(state.project.reserved_ids || []),
+  ]);
   while (ids.has(`${idBase}_${number}`)) number += 1;
   const properties = {};
   for (const property of schema.properties) {
@@ -1604,6 +1650,7 @@ function uniquePageId() {
     ...(state.project.fonts || []).map((item) => item.id),
     ...(state.project.images || []).map((item) => item.id),
     ...(state.project.styles || []).map((item) => item.id),
+    ...(state.project.reserved_ids || []),
   ]);
   let number = 1;
   while (used.has(`page_${number}`)) number += 1;
@@ -2551,7 +2598,11 @@ function ensureImageEntry(id, filePath) {
 }
 
 function uniqueWidgetId(base) {
-  const ids = new Set(allWidgets().map((widget) => widget.id));
+  // reserved_ids are ids used by hardware entities elsewhere in an imported
+  // source config (binary_sensor:, button:, ...) - never modeled here, but
+  // sharing ESPHome's one flat id() namespace with everything this designer
+  // does create, so a freshly auto-generated widget id must avoid them too.
+  const ids = new Set([...allWidgets().map((widget) => widget.id), ...(state.project.reserved_ids || [])]);
   let n = 1;
   let candidate = `${base}_${n}`;
   while (ids.has(candidate)) { n += 1; candidate = `${base}_${n}`; }
@@ -3691,6 +3742,11 @@ function projectIdIsUsed(id, ignoredColorId = null) {
   if ((state.project.pages || []).some((page) => page.id === id)) return true;
   const libraries = [state.project.styles, state.project.fonts, state.project.images];
   if (libraries.some((entries) => (entries || []).some((entry) => entry.id === id))) return true;
+  // Ids used by hardware entities elsewhere in an imported source config
+  // (binary_sensor:, button:, ...) share ESPHome's one flat id() namespace
+  // with everything editable here, even though this designer never models
+  // those entities itself.
+  if ((state.project.reserved_ids || []).includes(id)) return true;
   return colorLibrary().some((entry) => entry.id === id && entry.id !== ignoredColorId);
 }
 
@@ -5412,7 +5468,10 @@ function widgetAllowsChildren(widget) {
 }
 
 function cloneWidgetSubtree(widget) {
-  const usedIds = new Set(allProjectWidgets().map((w) => w.id));
+  const usedIds = new Set([
+    ...allProjectWidgets().map((w) => w.id),
+    ...(state.project.reserved_ids || []),
+  ]);
   const assignIds = (node) => {
     let n = 1;
     let candidate = `${node.widget_type}_${n}`;

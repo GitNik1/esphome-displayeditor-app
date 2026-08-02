@@ -18,9 +18,7 @@ class BuilderManager:
         *,
         adapter: DeviceBuilderWebSocketAdapter | None = None,
     ) -> None:
-        self.enabled = (
-            settings.profile == "full" and settings.builder_provider == "device_builder"
-        )
+        self.enabled = settings.access_level == "write_with_builder"
         self.url = settings.builder_url
         self.adapter = adapter
         self.state = "disabled" if not self.enabled else "probing"
