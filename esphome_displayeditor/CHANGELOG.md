@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Replaced the `profile`/`read_only`/`builder_provider` add-on options (8
+  nominal combinations, only 4 actually distinct outcomes - "read-only" was
+  reachable three different ways) with a single `access_level` setting
+  (`none`/`read`/`write`/`write_with_builder`). Instances configured before
+  this change keep working unchanged: the old options are still read and
+  mapped onto `access_level` automatically when it isn't set.
+- Added `translations/en.yaml` and `translations/de.yaml` so every add-on
+  option shows an explanatory description directly in the Home Assistant
+  configuration UI, automatically switching with HA's own interface
+  language.
 - The configuration picker (import dialog, "Konfigurationen" tab) now only
   lists YAML files directly in the ESPHome config root, not files in
   subfolders such as `archive/` (ESPHome's own dashboard archives deleted or

@@ -71,22 +71,20 @@ class FakeBuilderAdapter:
         await callback({"event": "snapshot", "data": self.job})
 
 
-def make_settings(tmp_path: Path, *, profile: str = "full") -> Settings:
+def make_settings(tmp_path: Path, *, access_level: str = "write_with_builder") -> Settings:
     config_root = tmp_path / "esphome"
     config_root.mkdir()
     (config_root / "display.yaml").write_text(
         "esphome:\n  name: display\n", encoding="utf-8", newline=""
     )
     return Settings(
-        profile=profile,
-        read_only=False,
+        access_level=access_level,
         max_file_size=1024 * 1024,
         protect_sensitive_paths=True,
         config_root=config_root,
         data_root=tmp_path / "data",
         default_role="administrator",
         runtime_provider="disabled",
-        builder_provider="device_builder",
         builder_url="http://esphome-builder:6052",
     )
 
@@ -331,7 +329,7 @@ def test_publisher_can_validate_but_cannot_compile_or_install(tmp_path: Path) ->
 
 
 def test_native_only_reports_configuration_backend_disabled(tmp_path: Path) -> None:
-    settings = make_settings(tmp_path, profile="native_only")
+    settings = make_settings(tmp_path, access_level="none")
     manager = BuilderManager(settings, adapter=FakeBuilderAdapter())  # type: ignore[arg-type]
     with TestClient(
         create_app(settings, serve_frontend=False, builder_manager=manager)

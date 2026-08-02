@@ -20,11 +20,11 @@ class ApiError(Exception):
         self.details = details or {}
 
 
-def capability_unavailable(capability: str, profile: str) -> ApiError:
+def capability_unavailable(capability: str, access_level: str) -> ApiError:
     return ApiError(
         "capability_unavailable",
-        f"Capability '{capability}' is unavailable in the current profile.",
+        f"Capability '{capability}' is unavailable at the current access level.",
         403,
-        {"capability": capability, "profile": profile},
+        {"capability": capability, "access_level": access_level},
     )
 

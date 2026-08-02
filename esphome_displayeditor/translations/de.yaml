@@ -1,0 +1,79 @@
+configuration:
+  access_level:
+    name: Zugriffslevel
+    description: >-
+      Was der Editor mit deinem ESPHome-Konfigurationsordner und dem
+      optionalen Device Builder tun darf. "none" startet nur den Designer im
+      Browser (kein Dateizugriff). "read" kann Konfigurationen ansehen, aber
+      nie speichern oder veröffentlichen. "write" ist der normale
+      Alltagsbetrieb. "write_with_builder" ergänzt Kompilieren/OTA-Installation
+      über ein separates Device-Builder-Add-on (benötigt builder_url und
+      einen erreichbaren Device Builder).
+  max_file_size_kib:
+    name: Maximale Config-Dateigröße (KiB)
+    description: >-
+      Größte ESPHome-YAML-Datei, die der Editor öffnet. Größere Dateien
+      werden abgelehnt statt geladen.
+  protect_sensitive_paths:
+    name: secrets.yaml und packages schützen
+    description: >-
+      Wenn aktiv (empfohlen): secrets.yaml kann über den Editor nie gelesen
+      werden, und in packages/ sowie external_components/ kann nie
+      geschrieben werden. Nur deaktivieren, wenn dir bewusst ist, welchen
+      Schutz das aufhebt.
+  default_role:
+    name: Standard-Rolle
+    description: >-
+      Die Berechtigungsstufe, die jeder Home-Assistant-Nutzer erhält, sofern
+      er nicht einzeln unter "user_roles" gelistet ist. Rollen bauen
+      aufeinander auf: viewer < editor < publisher < installer <
+      administrator - jede höhere Stufe kann alles, was die darunter auch
+      kann.
+  user_roles:
+    name: Rollen pro Nutzer
+    description: >-
+      Vergibt bestimmten Home-Assistant-Nutzern eine andere Rolle als
+      default_role. user_id ist die Home-Assistant-Nutzer-ID (nicht der
+      Anzeigename) - zu finden auf der eigenen HA-Profilseite.
+  api_rate_limit_per_minute:
+    name: API-Limit (Leseanfragen/Minute)
+    description: >-
+      Begrenzt, wie viele Leseanfragen (Konfigurationen laden, Projekte,
+      Gerätestatus, ...) ein Nutzer pro Minute stellen darf.
+  write_rate_limit_per_minute:
+    name: API-Limit (Schreibanfragen/Minute)
+    description: >-
+      Begrenzt, wie viele Schreibanfragen (Entwürfe speichern,
+      veröffentlichen, Assets hochladen, ...) ein Nutzer pro Minute stellen
+      darf. Niedriger als das Lese-Limit, da Schreibvorgänge teurer und
+      seltener sind.
+  runtime_provider:
+    name: Native-API-Verbindungen
+    description: >-
+      "native" erlaubt dem Editor, sich über die verschlüsselte
+      ESPHome-Native-API mit Geräten zu verbinden, für Live-Vorschaudaten
+      und Geräteinfos. "disabled" schaltet das komplett ab - der
+      Geräte-Tab und Live-Viewer-Bindings stehen dann nicht zur Verfügung.
+  request_max_size_kib:
+    name: Maximale Anfragegröße (KiB)
+    description: >-
+      Größter Anfrage-Inhalt (z. B. ein hochgeladenes Bild oder eine
+      Schriftdatei), den das Backend akzeptiert.
+  api_timeout_seconds:
+    name: API-Timeout (Sekunden)
+    description: >-
+      Wie lange eine einzelne Backend-Operation (z. B. eine
+      ESPHome-Konfigurationsprüfung) laufen darf, bevor sie abgebrochen
+      wird.
+  builder_url:
+    name: Device-Builder-URL
+    description: >-
+      Adresse des ESPHome-Device-Builder-Add-ons für
+      Kompilier-/OTA-Installationsvorgänge. Nur relevant, wenn access_level
+      auf "write_with_builder" steht.
+  validation_max_age_seconds:
+    name: Gültigkeitsdauer der Validierung (Sekunden)
+    description: >-
+      Wie lange eine erfolgreiche "esphome config"-Prüfung einer bestimmten
+      Config-Revision gültig bleibt, bevor ein Kompilier-/Installationsjob
+      eine erneute Prüfung verlangt.

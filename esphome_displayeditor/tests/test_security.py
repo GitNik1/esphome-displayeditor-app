@@ -26,8 +26,7 @@ def make_settings(
         "esphome:\n  name: display\n", encoding="utf-8"
     )
     return Settings(
-        profile="read_only" if read_only else "native_filesystem",
-        read_only=read_only,
+        access_level="read" if read_only else "write",
         max_file_size=1024 * 1024,
         protect_sensitive_paths=True,
         config_root=config_root,
@@ -55,7 +54,7 @@ def test_hierarchical_role_capabilities(tmp_path: Path) -> None:
     assert not capabilities(settings, "administrator")["device.control"]
 
 
-def test_read_only_profile_overrides_administrator_role(tmp_path: Path) -> None:
+def test_read_access_level_overrides_administrator_role(tmp_path: Path) -> None:
     settings = make_settings(tmp_path, default_role="administrator", read_only=True)
 
     granted = capabilities(settings, "administrator")
@@ -64,10 +63,10 @@ def test_read_only_profile_overrides_administrator_role(tmp_path: Path) -> None:
     assert not granted["configuration.publish"]
 
 
-def test_native_only_profile_disables_filesystem_but_keeps_runtime(tmp_path: Path) -> None:
+def test_none_access_level_disables_filesystem_but_keeps_runtime(tmp_path: Path) -> None:
     settings = replace(
         make_settings(tmp_path, default_role="administrator"),
-        profile="native_only",
+        access_level="none",
     )
     granted = capabilities(settings, "administrator")
     assert not granted["configuration.list"]
@@ -125,7 +124,7 @@ def test_invalid_options_fail_closed(tmp_path: Path, monkeypatch) -> None:
     options.write_text(
         json.dumps(
             {
-                "profile": "unexpected",
+                "access_level": "unexpected",
                 "default_role": "root",
                 "api_rate_limit_per_minute": "broken",
                 "write_rate_limit_per_minute": None,
@@ -138,12 +137,26 @@ def test_invalid_options_fail_closed(tmp_path: Path, monkeypatch) -> None:
 
     settings = Settings.load()
 
-    assert settings.profile == "read_only"
-    assert settings.read_only is True
+    assert settings.access_level == "read"
     assert settings.default_role == "viewer"
     assert settings.api_rate_limit_per_minute == 240
     assert settings.write_rate_limit_per_minute == 60
     assert settings.runtime_provider == "disabled"
+
+
+def test_legacy_profile_options_are_migrated_to_access_level(tmp_path: Path, monkeypatch) -> None:
+    """An instance configured before the profile/read_only/builder_provider
+    consolidation must keep behaving the same way without a manual step."""
+    options = tmp_path / "legacy-options.json"
+    options.write_text(
+        json.dumps({"profile": "full", "read_only": False, "builder_provider": "device_builder"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ESPHOME_OPTIONS_PATH", str(options))
+
+    settings = Settings.load()
+
+    assert settings.access_level == "write_with_builder"
 
 
 def test_rate_limiter_has_separate_write_budget() -> None:

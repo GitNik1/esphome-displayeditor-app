@@ -361,7 +361,7 @@ def create_app(
         if not capabilities(
             settings, "administrator", builder_available=builder_manager.available
         ).get(capability, False):
-            raise capability_unavailable(capability, settings.profile)
+            raise capability_unavailable(capability, settings.access_level)
 
     def viewer_entity_id(item: dict[str, Any]) -> str | None:
         entity_type = str(item.get("type", "")).strip()
@@ -471,7 +471,7 @@ def create_app(
         user_id, role = request_identity(request)
         return {
             "version": application.version,
-            "profile": settings.profile,
+            "access_level": settings.access_level,
             "user": {
                 "id": user_id,
                 "name": request.headers.get("X-Remote-User-Name"),
@@ -480,7 +480,7 @@ def create_app(
             },
             "backends": {
                 "configuration": (
-                    "disabled" if settings.profile == "native_only" else "filesystem"
+                    "disabled" if settings.access_level == "none" else "filesystem"
                 ),
                 "runtime": settings.runtime_provider,
                 "builder": builder_manager.state,
@@ -492,7 +492,7 @@ def create_app(
     async def get_capabilities(request: Request) -> dict:
         _user_id, role = request_identity(request)
         return {
-            "profile": settings.profile,
+            "access_level": settings.access_level,
             "role": role,
             "capabilities": capabilities(
                 settings, role, builder_available=builder_manager.available
