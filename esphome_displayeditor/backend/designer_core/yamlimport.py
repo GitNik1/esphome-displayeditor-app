@@ -522,6 +522,21 @@ _KNOWN_LVGL_KEYS = {
 }
 
 
+def _collect_all_ids(node: Any, found: set[str]) -> None:
+    """Recursively collects every ``id:`` string anywhere in a parsed ESPHome
+    document - not just under ``lvgl:``. Used to seed ``Project.reserved_ids``
+    so the designer knows about ids other components already claimed, even
+    though it never reads or models those components themselves."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "id" and isinstance(value, str) and value:
+                found.add(value)
+            _collect_all_ids(value, found)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_all_ids(item, found)
+
+
 def import_esphome_yaml(text: str, *, source_name: str = "",
                         canvas_size: tuple[int, int] | None = None) -> ImportResult:
     """Turn an ESPHome config into a Project.
@@ -533,9 +548,17 @@ def import_esphome_yaml(text: str, *, source_name: str = "",
     """
     doc = load_lvgl_yaml(text)
 
+    if "lvgl" not in doc:
+        raise LvglImportError("The file has no 'lvgl:' block to import.")
     lvgl = doc.get("lvgl")
     if isinstance(lvgl, list):
         lvgl = lvgl[0] if lvgl else None
+    # `lvgl:` with nothing under it (a bare key, e.g. right after enabling the
+    # component and before adding any widgets) parses as None, not `{}` - that
+    # is a real, empty lvgl: block, not a missing one, and should import as an
+    # empty project rather than being rejected with a misleading error.
+    if lvgl is None:
+        lvgl = {}
     if not isinstance(lvgl, dict):
         raise LvglImportError("The file has no 'lvgl:' block to import.")
 
@@ -587,6 +610,28 @@ def import_esphome_yaml(text: str, *, source_name: str = "",
     project.export_sections = ["lvgl"]
     if source_name:
         project.import_source = {"name": source_name}
+
+    # ESPHome's id() codegen has one flat namespace across the *entire* file,
+    # not just the lvgl: block - a hardware entity like `binary_sensor: - id:
+    # button_1` shares it with every widget/style/font/image/color here, even
+    # though this importer never reads or models that entity itself. Without
+    # this, a newly created widget's auto-generated id (or a manually typed
+    # one) can silently collide with something the rest of the config already
+    # defined, since nothing else here ever sees those other ids.
+    #
+    # "Owned" is everything under the four top-level keys this importer
+    # actually reads (lvgl/font/image/color) - scanned directly rather than
+    # via project.styles/fonts/.../all_widgets(), since pages/top_layer/
+    # bottom_layer widgets and any font/image/color keys this build doesn't
+    # model are kept as raw, unmodeled data (extra_lvgl, extra) and would
+    # otherwise be missed, wrongly landing in reserved_ids as if external.
+    all_ids: set[str] = set()
+    _collect_all_ids(doc, all_ids)
+    owned_ids: set[str] = set()
+    _collect_all_ids(lvgl, owned_ids)
+    for key in ("font", "image", "color"):
+        _collect_all_ids(doc.get(key), owned_ids)
+    project.reserved_ids = sorted(all_ids - owned_ids)
 
     for message in registry.collisions():
         issues.append(ImportIssue("A", message))

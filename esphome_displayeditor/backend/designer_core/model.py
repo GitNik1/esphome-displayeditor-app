@@ -513,6 +513,14 @@ class Project:
     #: live for preview; "bake into image sequence" turns them into
     #: ImageLibraryEntry rows plus an image/animimg widget pair.
     glow_strokes: list[GlowStroke] = field(default_factory=list)
+    #: ``id:`` values used anywhere else in an imported source config -
+    #: hardware entities like ``binary_sensor:``/``button:``/``switch:`` that
+    #: this designer never models or edits, but whose ids still share
+    #: ESPHome's one flat id() namespace with every widget/style/font/image/
+    #: color here. Without this, a new widget's auto-generated id (or a
+    #: manually typed one) can silently collide with an entity the rest of
+    #: the config already defined, since nothing else here ever sees it.
+    reserved_ids: list[str] = field(default_factory=list)
 
     def all_widgets(self):
         """Yield every WidgetNode in the tree, depth-first."""
@@ -544,6 +552,7 @@ class Project:
             "export_sections": list(self.export_sections),
             "import_source": _copy(self.import_source),
             "glow_strokes": [s.to_dict() for s in self.glow_strokes],
+            "reserved_ids": list(self.reserved_ids),
         }
 
     @staticmethod
@@ -567,4 +576,5 @@ class Project:
             d.get("export_sections", ["color", "font", "image", "lvgl"]))
         p.import_source = _copy(d.get("import_source", {}))
         p.glow_strokes = [GlowStroke.from_dict(s) for s in d.get("glow_strokes", [])]
+        p.reserved_ids = [str(i) for i in d.get("reserved_ids", []) if str(i)]
         return p
