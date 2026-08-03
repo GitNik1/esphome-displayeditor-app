@@ -1,5 +1,6 @@
 import { computeLayout } from "../layout.js";
 import { drawDocument, hasFlow } from "../glowline/renderer.js";
+import { t } from "../i18n.js";
 
 const SUPPORTED_WIDGETS = new Set([
   "obj", "container", "label", "button", "switch", "slider", "bar", "arc", "image", "animimg",
@@ -425,21 +426,21 @@ function viewerConditionValue(condition, context) {
 
 export function applyViewerAction(project, action, runtime = {}, context = {}) {
   if (!action || typeof action !== "object" || Array.isArray(action)) {
-    return { handled: false, changed: false, message: "Ungültiger Aktionseintrag übersprungen." };
+    return { handled: false, changed: false, message: t("viewer.event.invalidAction") };
   }
   const entries = Object.entries(action);
   if (entries.length !== 1) {
-    return { handled: false, changed: false, message: "Mehrdeutiger Aktionseintrag übersprungen." };
+    return { handled: false, changed: false, message: t("viewer.event.ambiguousAction") };
   }
   const [name, payload] = entries[0];
 
   if (name === "if") {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      return { handled: false, changed: false, message: "Ungültige Bedingung übersprungen." };
+      return { handled: false, changed: false, message: t("viewer.event.invalidCondition") };
     }
     const condition = viewerConditionValue(payload.condition, context);
     if (!condition.supported) {
-      return { handled: false, changed: false, message: "Diese Bedingung wird im Browser nicht ausgeführt." };
+      return { handled: false, changed: false, message: t("viewer.event.conditionNotExecuted") };
     }
     const selected = condition.value ? payload.then : payload.else;
     const actions = selected === undefined ? [] : Array.isArray(selected) ? selected : [selected];
@@ -456,7 +457,7 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
       handled: true,
       changed,
       warning,
-      message: `if (${condition.value ? "wahr" : "falsch"})${messages.length ? `: ${messages.join("; ")}` : ""}`,
+      message: `if (${condition.value ? t("viewer.event.true") : t("viewer.event.false")})${messages.length ? `: ${messages.join("; ")}` : ""}`,
     };
   }
 
@@ -465,7 +466,7 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
     const page = (project.pages || []).find((entry) => entry.id === id);
     if (!page) return {
       handled: true, changed: false, warning: true,
-      message: `lvgl.page.show: Seite ${id || "ohne ID"} nicht gefunden.`,
+      message: t("viewer.event.pageNotFound", { id: id || t("viewer.event.noId") }),
     };
     const changed = runtime.activePageId !== page.id;
     runtime.activePageId = page.id;
@@ -477,7 +478,7 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
     const page = navigatePage(project, runtime, direction);
     if (!page) return {
       handled: true, changed: false, warning: true,
-      message: `${name}: keine erreichbare Seite.`,
+      message: t("viewer.event.noReachablePage", { name }),
     };
     const changed = runtime.activePageId !== page.id;
     runtime.activePageId = page.id;
@@ -498,9 +499,9 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
       }
     });
     if (!ids.length) return {
-      handled: true, changed: false, warning: true, message: `${name}: keine gültige Widget-ID.`,
+      handled: true, changed: false, warning: true, message: t("viewer.event.noValidWidgetId", { name }),
     };
-    const suffix = missing.length ? `; nicht gefunden: ${missing.join(", ")}` : "";
+    const suffix = missing.length ? t("viewer.event.notFoundSuffix", { ids: missing.join(", ") }) : "";
     return {
       handled: true, changed, warning: Boolean(missing.length),
       message: `${name}: ${ids.join(", ")}${suffix}`,
@@ -521,12 +522,12 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
         changed = true;
       }
     });
-    const detail = rejected.length ? `; nicht als animimg gefunden: ${rejected.join(", ")}` : "";
+    const detail = rejected.length ? t("viewer.event.notAnimimgSuffix", { ids: rejected.join(", ") }) : "";
     return {
       handled: true,
       changed,
       warning: Boolean(rejected.length || !ids.length),
-      message: `${name}: ${ids.join(", ") || "keine gültige Widget-ID"}${detail}`,
+      message: `${name}: ${ids.join(", ") || t("viewer.event.noValidWidgetIdFallback")}${detail}`,
     };
   }
 
@@ -563,30 +564,30 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
     const updates = updatePayloads(payload);
     updates.forEach((update) => {
       if (!safeLiteral(update.id)) {
-        notes.push("fehlende ID");
+        notes.push(t("viewer.event.missingId"));
         return;
       }
       const widget = findWidget(project, update.id);
       if (!widget) {
-        notes.push(`${update.id}: nicht gefunden`);
+        notes.push(t("viewer.event.updateNotFound", { id: update.id }));
         return;
       }
       if (updateWidgetTypes[name] && widget.widget_type !== updateWidgetTypes[name]) {
-        notes.push(`${update.id}: kein ${updateWidgetTypes[name]}-Widget`);
+        notes.push(t("viewer.event.notWidgetType", { id: update.id, type: updateWidgetTypes[name] }));
         return;
       }
       Object.entries(update).forEach(([key, value]) => {
         if (key === "id") return;
         if (!updateKeys[name].has(key) || !safeLiteral(value)) {
-          notes.push(`${widget.id}.${key}: nicht erlaubt`);
+          notes.push(t("viewer.event.notAllowed", { ref: `${widget.id}.${key}` }));
           return;
         }
         if (booleanUpdateKeys.has(key) && typeof value !== "boolean") {
-          notes.push(`${widget.id}.${key}: Boolescher Wert erwartet`);
+          notes.push(t("viewer.event.expectedBoolean", { ref: `${widget.id}.${key}` }));
           return;
         }
         if (numericUpdateKeys.has(key) && !Number.isFinite(Number(value))) {
-          notes.push(`${widget.id}.${key}: numerischer Wert erwartet`);
+          notes.push(t("viewer.event.expectedNumeric", { ref: `${widget.id}.${key}` }));
           return;
         }
         if (key === "hidden") widget.hidden = value;
@@ -603,12 +604,12 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
         changed = true;
       });
     });
-    if (!updates.length) notes.push("keine gültigen Update-Daten");
+    if (!updates.length) notes.push(t("viewer.event.noValidUpdateData"));
     const detail = notes.length ? ` (${notes.join("; ")})` : "";
     return { handled: true, changed, warning: Boolean(notes.length), message: `${name}${detail}` };
   }
 
-  return { handled: false, changed: false, message: `${name} wird im Browser nicht ausgeführt.` };
+  return { handled: false, changed: false, message: t("viewer.event.notExecutedInBrowser", { name }) };
 }
 
 function textContent(widget) {
@@ -875,9 +876,9 @@ function renderWidget(project, item, timers, warnings, controller) {
   applyStyle(node, project, widget, activeStates);
 
   if (!SUPPORTED_WIDGETS.has(widget.widget_type)) {
-    warnings.add(`Widgettyp „${widget.widget_type}“ wird noch nicht dargestellt.`);
+    warnings.add(t("viewer.event.unsupportedWidgetType", { type: widget.widget_type }));
     node.classList.add("unsupported");
-    node.textContent = `${widget.widget_type}: ${widget.id || "ohne ID"}`;
+    node.textContent = `${widget.widget_type}: ${widget.id || t("viewer.event.noId")}`;
     return node;
   }
 
@@ -1076,11 +1077,11 @@ export class ViewerController {
     const liveDevices = new Set(this.runtimeBindings.map((binding) => binding.device_id));
     const online = [...liveDevices].filter((id) => this.runtimeDevices.get(id)?.status === "ready").length;
     const live = this.runtimeBindings.length
-      ? ` · Live ${online}/${liveDevices.size} Gerät(e) · ${this.runtimeBindings.length} Bindung(en)`
+      ? t("viewer.status.liveSuffix", { online, total: liveDevices.size, bindings: this.runtimeBindings.length })
       : "";
     this.status.textContent = warningCount
-      ? `Browser-Simulation${live} · ${warningCount} Hinweis(e)`
-      : `Browser-Simulation${live} · nicht pixelgenau`;
+      ? `${t("viewer.status.prefix")}${live} · ${t("viewer.status.warnings", { count: warningCount })}`
+      : `${t("viewer.status.prefix")}${live} · ${t("viewer.status.pixelNote")}`;
     this.status.title = [
       ...this.renderWarnings,
       ...runtimeWarnings.map((entry) => entry.message),
@@ -1094,7 +1095,7 @@ export class ViewerController {
     if (!this.logEntries.length) {
       const empty = document.createElement("p");
       empty.className = "viewer-event-empty";
-      empty.textContent = "Noch keine Viewer-Ereignisse.";
+      empty.textContent = t("viewer.noEvents");
       this.eventLog.append(empty);
       return;
     }
@@ -1326,7 +1327,7 @@ export class ViewerController {
     this.pageControls.hidden = pages.length === 0;
     this.pageSelect.replaceChildren();
     pages.forEach((page) => {
-      const option = new Option(`${page.id}${page.skip ? " (überspringen)" : ""}`, page.id);
+      const option = new Option(`${page.id}${page.skip ? t("surface.pageSkippedSuffix") : ""}`, page.id);
       this.pageSelect.append(option);
     });
     if (pages.length) this.pageSelect.value = this.runtime.activePageId || pages[0].id;

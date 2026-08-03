@@ -3,6 +3,7 @@ import { boundingBox, nearestSegment } from "./glowline/geometry.js";
 import { drawDocument, flowBoundsDocument, hasFlow, strokePath } from "./glowline/renderer.js";
 import { format565, hsvToRgb, quantizeImageData, rgb565to888, rgb888to565 } from "./glowline/rgb565.js";
 import { MDI_CATALOG_VERSION, MDI_GLYPHS } from "./mdi-glyphs.js";
+import { applyStaticTranslations, getLanguage, setLanguage, t } from "./i18n.js";
 import {
   ViewerController,
   describeViewerArc,
@@ -153,7 +154,7 @@ function surfaceEntries() {
   const entries = [];
   const pages = state.project.pages;
   if (!pages.length || state.project.widgets.length) {
-    entries.push({ key: "root", kind: "root", label: "Stammfläche", surface: state.project });
+    entries.push({ key: "root", kind: "root", label: t("surface.root"), surface: state.project });
   }
   if (state.project.bottom_layer) {
     entries.push({ key: "bottom", kind: "bottom", label: "Bottom-Layer", surface: state.project.bottom_layer });
@@ -161,7 +162,7 @@ function surfaceEntries() {
   pages.forEach((page, index) => entries.push({
     key: `page:${page.id}`,
     kind: "page",
-    label: `Seite ${index + 1}: ${page.id}${page.skip ? " (übersprungen)" : ""}`,
+    label: t("surface.page", { n: index + 1, id: page.id }) + (page.skip ? t("surface.pageSkippedSuffix") : ""),
     surface: page,
     index,
   }));
@@ -177,7 +178,7 @@ function normaliseActiveSurface() {
     state.activeSurface = entries.find((entry) => entry.kind === "page")?.key || entries[0]?.key || "root";
   }
   return entries.find((entry) => entry.key === state.activeSurface)
-    || { key: "root", kind: "root", label: "Stammfläche", surface: state.project };
+    || { key: "root", kind: "root", label: t("surface.root"), surface: state.project };
 }
 
 function activeSurfaceEntry() {
@@ -295,14 +296,29 @@ function cloneProject(project = state.project) {
   return JSON.parse(JSON.stringify(project));
 }
 
+function bindLanguageSwitch() {
+  const select = $("#language-select");
+  select.value = getLanguage();
+  select.addEventListener("change", () => {
+    setLanguage(select.value);
+    // Widget/property labels come from the backend (?language=), and most of
+    // the app's own dynamic text is built once at render time - a full
+    // reload is the simplest way to apply a language switch consistently
+    // everywhere rather than re-running every render function by hand.
+    location.reload();
+  });
+}
+
 async function initialize() {
+  applyStaticTranslations();
+  bindLanguageSwitch();
   bindTabs();
   bindDesigner();
   bindConfigurations();
   bindDevices();
   try {
     const [health, system, capabilityData, schemaData] = await Promise.all([
-      api("health"), api("system"), api("capabilities"), api("designer/schemas?language=de"),
+      api("health"), api("system"), api("capabilities"), api(`designer/schemas?language=${getLanguage()}`),
     ]);
     state.system = system;
     state.capabilities = capabilityData.capabilities;
@@ -317,7 +333,7 @@ async function initialize() {
     const initialLoads = [loadServerProjects(), loadDevices(), loadViewerRuntimeSources()];
     if (state.capabilities["configuration.list"]) initialLoads.push(loadConfigurations());
     else {
-      $("#config-list").textContent = "Dateisystemzugriff ist in diesem Profil deaktiviert.";
+      $("#config-list").textContent = t("configs.filesystemDisabled");
       $("#refresh-configs").disabled = true;
     }
     await Promise.all(initialLoads);
@@ -327,7 +343,7 @@ async function initialize() {
       connectBuilderEvents();
     }
   } catch (error) {
-    $("#profile").textContent = "Backend nicht erreichbar";
+    $("#profile").textContent = t("app.tagline.unreachable");
     toast(error.message, true);
   }
   renderDesigner();
@@ -364,13 +380,13 @@ function bindDevices() {
 }
 
 const DEVICE_STATUS = {
-  configured: "Konfiguriert",
-  connecting: "Verbindung wird aufgebaut …",
-  ready: "Verbunden",
-  disconnected: "Getrennt",
-  auth_failed: "Authentifizierung fehlgeschlagen",
-  missing_key: "Verschlüsselungsschlüssel fehlt",
-  disabled: "Native API deaktiviert",
+  configured: t("devices.status.configured"),
+  connecting: t("devices.status.connecting"),
+  ready: t("devices.status.ready"),
+  disconnected: t("devices.status.disconnected"),
+  auth_failed: t("devices.status.authFailed"),
+  missing_key: t("devices.status.missingKey"),
+  disabled: t("devices.status.disabled"),
 };
 
 async function loadDevices() {
@@ -380,7 +396,7 @@ async function loadDevices() {
   $("#add-device").classList.toggle("hidden", !canManage);
   if (!canRead) {
     list.className = "device-list empty";
-    list.textContent = "Native API ist in diesem Profil nicht verfügbar.";
+    list.textContent = t("devices.apiUnavailable");
     return;
   }
   try {
@@ -403,7 +419,7 @@ function renderDeviceList() {
   list.className = "device-list";
   if (!state.devices.length) {
     list.classList.add("empty");
-    list.textContent = "Keine Geräte konfiguriert.";
+    list.textContent = t("devices.empty");
     resetDeviceDetails();
     return;
   }
@@ -431,13 +447,13 @@ function renderDeviceList() {
 }
 
 function resetDeviceDetails() {
-  $("#device-title").textContent = "Kein Gerät gewählt";
+  $("#device-title").textContent = t("devices.noneSelected");
   $("#device-connection").textContent = "–";
   ["edit-device", "remove-device", "reconnect-device"].forEach((id) => { $(`#${id}`).disabled = true; });
-  $("#device-info pre").textContent = "Keine Daten.";
-  $("#device-entities").replaceChildren(Object.assign(document.createElement("div"), { className: "empty", textContent: "Keine Entitäten." }));
-  $("#device-states").replaceChildren(Object.assign(document.createElement("div"), { className: "empty", textContent: "Keine Zustände." }));
-  $("#device-logs pre").textContent = "Keine Logs.";
+  $("#device-info pre").textContent = t("devices.noData");
+  $("#device-entities").replaceChildren(Object.assign(document.createElement("div"), { className: "empty", textContent: t("devices.noEntities") }));
+  $("#device-states").replaceChildren(Object.assign(document.createElement("div"), { className: "empty", textContent: t("devices.noStates") }));
+  $("#device-logs pre").textContent = t("devices.noLogs");
   state.deviceStates = [];
 }
 
@@ -460,7 +476,7 @@ async function loadDeviceDetails(deviceId) {
     if (state.selectedDevice !== deviceId) return;
     $("#device-info pre").textContent = Object.keys(info.info || {}).length
       ? JSON.stringify(info.info, null, 2)
-      : "Noch keine Geräteinformationen verfügbar.";
+      : t("devices.noInfoYet");
     renderDeviceTable($("#device-entities"), entities.entities || [], ["type", "name", "object_id", "key"]);
     state.deviceStates = states.states || [];
     renderDeviceTable($("#device-states"), state.deviceStates, ["type", "key", "available", "state"]);
@@ -473,7 +489,7 @@ async function loadDeviceDetails(deviceId) {
 function renderDeviceTable(container, rows, preferredColumns) {
   container.replaceChildren();
   if (!rows.length) {
-    container.append(Object.assign(document.createElement("div"), { className: "empty", textContent: "Noch keine Daten verfügbar." }));
+    container.append(Object.assign(document.createElement("div"), { className: "empty", textContent: t("devices.noDataYet") }));
     return;
   }
   const columns = preferredColumns.filter((column) => rows.some((row) => row[column] !== undefined));
@@ -503,13 +519,13 @@ function renderDeviceTable(container, rows, preferredColumns) {
 }
 
 function formatDeviceLogs(logs) {
-  if (!logs.length) return "Noch keine Logs verfügbar.";
+  if (!logs.length) return t("devices.noLogsYet");
   return logs.map((item) => `[${item.received_at || ""}] [${item.level || "INFO"}] ${item.message || ""}`).join("\n");
 }
 
 function openDeviceDialog(device = null) {
   state.editingDevice = device?.id || null;
-  $("#device-dialog-title").textContent = device ? "ESPHome-Gerät bearbeiten" : "ESPHome-Gerät hinzufügen";
+  $("#device-dialog-title").textContent = device ? t("dialog.device.editTitle") : t("dialog.device.addTitle");
   $("#device-id").value = device?.id || "";
   $("#device-id").disabled = Boolean(device);
   $("#device-name").value = device?.name || "";
@@ -546,7 +562,7 @@ async function saveDevice(event) {
     state.selectedDevice = body.id;
     $("#device-dialog").close();
     await loadDevices();
-    toast(editing ? "Gerät aktualisiert." : "Gerät hinzugefügt.");
+    toast(editing ? t("toast.device.updated") : t("toast.device.added"));
   } catch (error) {
     toast(error.message, true);
   }
@@ -556,19 +572,19 @@ async function reconnectSelectedDevice() {
   if (!state.selectedDevice) return;
   try {
     await api(`admin/devices/${encodeURIComponent(state.selectedDevice)}/reconnect`, { method: "POST" });
-    toast("Neuverbinden wurde gestartet.");
+    toast(t("toast.device.reconnectStarted"));
     await loadDevices();
   } catch (error) { toast(error.message, true); }
 }
 
 async function removeSelectedDevice() {
   const device = state.devices.find((item) => item.id === state.selectedDevice);
-  if (!device || !confirm(`Gerät „${device.name}“ entfernen? Der separat gespeicherte Schlüssel bleibt erhalten.`)) return;
+  if (!device || !confirm(t("confirm.device.remove", { name: device.name }))) return;
   try {
     await api(`admin/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
     state.selectedDevice = null;
     await loadDevices();
-    toast("Gerät entfernt.");
+    toast(t("toast.device.removed"));
   } catch (error) { toast(error.message, true); }
 }
 
@@ -585,7 +601,7 @@ function connectDeviceEvents() {
     if (event.type === "log" && event.device_id === state.selectedDevice) {
       const output = $("#device-logs pre");
       const line = formatDeviceLogs([event.log]);
-      output.textContent = output.textContent === "Noch keine Logs verfügbar." ? line : `${output.textContent}\n${line}`;
+      output.textContent = output.textContent === t("devices.noLogsYet") ? line : `${output.textContent}\n${line}`;
       output.textContent = output.textContent.split("\n").slice(-1000).join("\n");
       return;
     }
@@ -659,7 +675,7 @@ async function loadViewerBindings(name) {
     state.viewerBindings = result.bindings || [];
     state.viewerBindingsRevision = result.revision || null;
   } catch (error) {
-    toast("Live-Bindings konnten nicht geladen werden: " + error.message, true);
+    toast(t("toast.binding.loadFailed", { error: error.message }), true);
   }
 }
 
@@ -821,7 +837,7 @@ function bindDesigner() {
         .some((entries) => (entries || []).some((entry) => entry.id === currentId));
     if (collides) {
       const previousId = widgetIdBeforeEdit || currentId;
-      toast(`Die ID „${currentId}“ wird bereits verwendet.`, true);
+      toast(t("toast.id.alreadyUsed", { id: currentId }), true);
       replaceProjectWidgetReferences(currentId, previousId);
       widget.id = previousId;
       event.target.value = previousId;
@@ -895,7 +911,7 @@ function bindDesigner() {
   $("#close-dialog").addEventListener("click", () => $("#yaml-dialog").close());
   $("#copy-yaml").addEventListener("click", async () => {
     await navigator.clipboard.writeText($("#yaml-output").textContent);
-    toast("YAML wurde kopiert.");
+    toast(t("toast.yaml.copied"));
   });
   document.addEventListener("keydown", (event) => {
     if (!$("#designer").classList.contains("active")) return;
@@ -1000,7 +1016,7 @@ function fitCanvasToView() {
 }
 
 function newDesignerProject() {
-  if (state.projectDirty && !confirm("Ungespeicherte Änderungen verwerfen?")) return;
+  if (state.projectDirty && !confirm(t("confirm.discardUnsaved"))) return;
   stopFlowPreview();
   state.project = freshProject();
   state.activeSurface = "root";
@@ -1023,7 +1039,7 @@ async function openDesignerProject(event) {
   event.target.value = "";
   if (!file) return;
   if (file.size > 4 * 1024 * 1024) {
-    toast("Die Projektdatei ist zu groß.", true);
+    toast(t("toast.project.fileTooLarge"), true);
     return;
   }
   try {
@@ -1045,9 +1061,9 @@ async function openDesignerProject(event) {
     $("#project-name").value = normalizeProjectName(file.name);
     resetHistory();
     renderDesigner();
-    toast("Projekt geladen.");
+    toast(t("toast.project.loaded"));
   } catch (error) {
-    toast(`Projekt konnte nicht geladen werden: ${error.message}`, true);
+    toast(t("toast.project.loadFailed", { error: error.message }), true);
   }
 }
 
@@ -1064,9 +1080,9 @@ async function downloadDesignerProject() {
     link.download = normalizeProjectName($("#project-name").value);
     link.click();
     URL.revokeObjectURL(url);
-    toast("Projektdatei heruntergeladen.");
+    toast(t("toast.project.downloaded"));
   } catch (error) {
-    toast(`Projekt konnte nicht heruntergeladen werden: ${error.message}`, true);
+    toast(t("toast.project.downloadFailed", { error: error.message }), true);
   }
 }
 
@@ -1078,7 +1094,7 @@ const importState = { configuration: null, content: null, fileName: "", stats: n
 
 function openImportDialog() {
   const select = $("#import-config");
-  select.replaceChildren(new Option("Datei wählen …", ""));
+  select.replaceChildren(new Option(t("dialog.importYaml.pickFile"), ""));
   state.configurations.forEach((config) => select.append(new Option(config.name, config.name)));
   resetImportSelection();
   $("#import-dialog").showModal();
@@ -1110,7 +1126,7 @@ async function probePickedFile(event) {
   event.target.value = "";
   if (!file) return;
   if (file.size > 4 * 1024 * 1024) {
-    toast("Die Datei ist zu groß (max. 4 MB).", true);
+    toast(t("toast.file.tooLarge4MB"), true);
     return;
   }
   importState.configuration = null;
@@ -1145,12 +1161,12 @@ async function probeImport(payload) {
 }
 
 const CANVAS_SOURCE_LABELS = {
-  user: "manuell gesetzt",
-  display_dimensions: "aus display: übernommen",
-  display_model: "aus dem Display-Modell abgeleitet",
-  root_grid: "aus dem Wurzel-Grid berechnet",
-  bounding_box: "aus den Widget-Positionen geschätzt",
-  default: "Standardwert — bitte prüfen",
+  user: t("canvas.source.user"),
+  display_dimensions: t("canvas.source.displayDimensions"),
+  display_model: t("canvas.source.displayModel"),
+  root_grid: t("canvas.source.rootGrid"),
+  bounding_box: t("canvas.source.boundingBox"),
+  default: t("canvas.source.default"),
 };
 
 function renderImportSummary(stats) {
@@ -1161,12 +1177,15 @@ function renderImportSummary(stats) {
   const types = Object.entries(stats.widget_types)
     .map(([type, count]) => `${count}× ${type}`).join(", ");
   const lines = [
-    `${stats.widget_count} Widgets (${types})`,
-    `Bildgröße ${stats.canvas.width}×${stats.canvas.height} — ${
-      CANVAS_SOURCE_LABELS[stats.canvas.source] || stats.canvas.source}`,
+    t("import.summary.widgetsLine", { count: stats.widget_count, types }),
+    t("import.summary.canvasLine", {
+      width: stats.canvas.width,
+      height: stats.canvas.height,
+      source: CANVAS_SOURCE_LABELS[stats.canvas.source] || stats.canvas.source,
+    }),
   ];
   if (stats.images || stats.fonts || stats.styles) {
-    lines.push(`${stats.images} Bilder, ${stats.fonts} Schriften, ${stats.styles} Stile`);
+    lines.push(t("import.summary.assetsLine", { images: stats.images, fonts: stats.fonts, styles: stats.styles }));
   }
   lines.forEach((text) => {
     const row = document.createElement("div");
@@ -1176,14 +1195,14 @@ function renderImportSummary(stats) {
 
   if (stats.unsupported_types.length) {
     summary.append(warningRow(
-      `Ohne Editor-Unterstützung: ${stats.unsupported_types.join(", ")} — wird erhalten, aber nicht bearbeitbar.`));
+      t("import.summary.unsupportedTypes", { types: stats.unsupported_types.join(", ") })));
   }
   if (stats.preserved_keys.length) {
     summary.append(warningRow(
-      `${stats.preserved_keys.length} unbekannte Eigenschaften werden unverändert mitgeführt.`));
+      t("import.summary.preservedKeys", { count: stats.preserved_keys.length })));
   }
   if (stats.issues.A) {
-    summary.append(warningRow(`${stats.issues.A} blockierende Probleme.`, true));
+    summary.append(warningRow(t("import.summary.blockingIssues", { count: stats.issues.A }), true));
   }
 }
 
@@ -1195,7 +1214,7 @@ function warningRow(text, severe = false) {
 }
 
 async function runImport() {
-  if (state.projectDirty && !confirm("Ungespeicherte Änderungen verwerfen?")) return;
+  if (state.projectDirty && !confirm(t("confirm.discardUnsaved"))) return;
   const payload = importState.configuration
     ? { configuration: importState.configuration }
     : { content: importState.content };
@@ -1210,7 +1229,7 @@ async function runImport() {
     if (!result.valid) {
       // Keep the dialog open - the summary is the only place these are
       // visible, and adopting a project we know is broken helps nobody.
-      renderIssues($("#import-summary"), result.issues, "beim Import");
+      renderIssues($("#import-summary"), result.issues, t("issues.contextImport"));
       return;
     }
     stopFlowPreview();
@@ -1233,8 +1252,8 @@ async function runImport() {
     fitCanvasToView();
     $("#import-dialog").close();
     const warnings = result.issues.filter((issue) => issue.severity === "B").length;
-    toast(`${result.stats.widget_count} Widgets importiert.`
-      + (warnings ? ` ${warnings} Hinweis(e) — siehe YAML-Export.` : ""));
+    toast(t("toast.import.summary", { count: result.stats.widget_count })
+      + (warnings ? t("toast.import.warningsSuffix", { count: warnings }) : ""));
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -1247,7 +1266,7 @@ async function loadServerProjects() {
     const result = await api("designer/projects");
     const select = $("#server-projects");
     const selected = select.value;
-    select.replaceChildren(new Option("Gespeicherte Projekte …", ""));
+    select.replaceChildren(new Option(t("project.savedProjects"), ""));
     result.projects.forEach((project) => {
       const option = new Option(project.name, project.name);
       option.dataset.revision = project.revision;
@@ -1274,7 +1293,7 @@ function updateServerProjectButtons() {
 async function loadSelectedServerProject() {
   const name = $("#server-projects").value;
   if (!name) return;
-  if (state.projectDirty && !confirm("Ungespeicherte Änderungen verwerfen?")) return;
+  if (state.projectDirty && !confirm(t("confirm.discardUnsaved"))) return;
   try {
     const result = await api(`designer/projects/${encodeURIComponent(name)}`);
     stopFlowPreview();
@@ -1290,7 +1309,7 @@ async function loadSelectedServerProject() {
     $("#project-name").value = result.name;
     resetHistory();
     renderDesigner();
-    toast("Projekt aus App-Speicher geladen.");
+    toast(t("toast.project.loadedFromStorage"));
   } catch (error) {
     toast(error.message, true);
   }
@@ -1313,15 +1332,15 @@ async function saveServerProject() {
     await loadServerProjects();
     $("#server-projects").value = name;
     updateServerProjectButtons();
-    toast("Projekt sicher im App-Speicher gespeichert.");
+    toast(t("toast.project.savedToStorage"));
   } catch (error) {
-    toast(error.code === "project_exists" ? "Projekt existiert bereits. Bitte zuerst laden." : error.message, true);
+    toast(error.code === "project_exists" ? t("toast.project.alreadyExists") : error.message, true);
   }
 }
 
 async function deleteServerProject() {
   const name = $("#server-projects").value;
-  if (!name || !confirm(`Gespeichertes Projekt ${name} löschen?`)) return;
+  if (!name || !confirm(t("confirm.project.deleteStored", { name }))) return;
   const option = $("#server-projects").selectedOptions[0];
   const revision = state.projectName === name ? state.projectRevision : option.dataset.revision;
   try {
@@ -1336,7 +1355,7 @@ async function deleteServerProject() {
     }
     await loadServerProjects();
     renderDesignerStatus();
-    toast("Gespeichertes Projekt gelöscht.");
+    toast(t("toast.project.deletedFromStorage"));
   } catch (error) {
     toast(error.message, true);
   }
@@ -1438,8 +1457,8 @@ function renderPalette() {
       const imageButtonIcon = document.createElement("span");
       imageButtonIcon.className = "widget-icon";
       imageButtonIcon.textContent = "▧";
-      imageButton.append(imageButtonIcon, document.createTextNode("Bild-Button"));
-      imageButton.title = "Offizieller ESPHome Bild-Button aus button + image + label";
+      imageButton.append(imageButtonIcon, document.createTextNode(t("palette.imageButtonText")));
+      imageButton.title = t("palette.imageButtonTitle");
       imageButton.addEventListener("click", addImageButton);
       palette.append(imageButton);
     }
@@ -1449,8 +1468,8 @@ function renderPalette() {
   const glowIcon = document.createElement("span");
   glowIcon.className = "widget-icon";
   glowIcon.textContent = "∿";
-  glowButton.append(glowIcon, document.createTextNode("Glow-Linie"));
-  glowButton.title = "Neue Glow-Linie zeichnen";
+  glowButton.append(glowIcon, document.createTextNode(t("palette.glowLineText")));
+  glowButton.title = t("palette.glowLineTitle");
   glowButton.addEventListener("click", startNewLine);
   palette.append(glowButton);
 }
@@ -1512,7 +1531,7 @@ function migrateButtonTextToChildLabel(button) {
   });
   button.children ||= [];
   button.children.push(label);
-  toast("Button-Text wurde als Label-Kind übernommen, damit das ESPHome-YAML gültig bleibt.");
+  toast(t("toast.imgbtn.textMovedToLabel"));
   return label;
 }
 
@@ -1561,7 +1580,7 @@ function addImageButton() {
   state.selectedWidget = button;
   markProjectDirty();
   renderDesigner();
-  if (!firstImage) toast("Bild-Button angelegt. Bitte jetzt ein Normalbild auswählen.");
+  if (!firstImage) toast(t("toast.imgbtn.created"));
 }
 
 function addWidget(schema) {
@@ -1669,7 +1688,7 @@ function addPage() {
   if (!state.project.pages.length && state.project.widgets.length) {
     page.widgets = state.project.widgets;
     state.project.widgets = [];
-    toast("Widgets der Stammfläche wurden auf die erste Seite verschoben.");
+    toast(t("toast.page.rootWidgetsMoved"));
   }
   state.project.pages.push(page);
   state.activeSurface = `page:${page.id}`;
@@ -1704,13 +1723,14 @@ function deleteActiveSurface() {
   const entry = activeSurfaceEntry();
   if (entry.kind === "root") return;
   const widgetCount = allWidgets(entry.surface.widgets).length;
-  if (!confirm(`${entry.label} entfernen?${widgetCount ? ` ${widgetCount} Widget(s) werden dabei entfernt.` : ""}`)) return;
+  if (!confirm(t("confirm.surface.remove", { label: entry.label })
+    + (widgetCount ? t("confirm.surface.removeWidgetsSuffix", { count: widgetCount }) : ""))) return;
   pushUndo();
   if (entry.kind === "page") {
     const [removed] = state.project.pages.splice(entry.index, 1);
     if (!state.project.pages.length && removed.widgets.length) {
       state.project.widgets.push(...removed.widgets);
-      toast("Die letzte Seite wurde entfernt; ihre Widgets liegen wieder auf der Stammfläche.");
+      toast(t("toast.page.lastPageRemoved"));
     }
   } else {
     state.project[entry.kind === "top" ? "top_layer" : "bottom_layer"] = null;
@@ -1729,7 +1749,7 @@ function parseSurfaceObject(control, label) {
     throw new Error(`${label}: ${error.message}`);
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} muss ein JSON-Objekt sein.`);
+    throw new Error(t("validation.json.mustBeObject", { label }));
   }
   return value;
 }
@@ -1745,16 +1765,16 @@ function applySurfaceSettings() {
   const entry = activeSurfaceEntry();
   const errorNode = $("#surface-error");
   try {
-    const layout = parseSurfaceObject($("#surface-layout-json"), "Layout");
-    const styleTree = parseSurfaceObject($("#surface-style-json"), "Stil");
-    const extra = parseSurfaceObject($("#surface-extra-json"), "Zusätzliche Schlüssel");
+    const layout = parseSurfaceObject($("#surface-layout-json"), t("validation.surface.fieldLayout"));
+    const styleTree = parseSurfaceObject($("#surface-style-json"), t("validation.surface.fieldStyle"));
+    const extra = parseSurfaceObject($("#surface-extra-json"), t("validation.surface.fieldExtra"));
     let nextId = "";
     if (entry.kind === "page") {
       nextId = $("#surface-id").value.trim();
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(nextId)) {
-        throw new Error("Die Seiten-ID muss eine gültige ESPHome-ID sein.");
+        throw new Error(t("validation.page.invalidId"));
       }
-      if (pageIdIsUsed(nextId, entry.surface)) throw new Error(`Die ID „${nextId}“ wird bereits verwendet.`);
+      if (pageIdIsUsed(nextId, entry.surface)) throw new Error(t("toast.id.alreadyUsed", { id: nextId }));
     }
     pushUndo();
     const previousId = entry.surface.id;
@@ -1770,7 +1790,7 @@ function applySurfaceSettings() {
     errorNode.classList.add("hidden");
     markProjectDirty();
     renderDesigner();
-    toast("Seiten-/Layer-Einstellungen übernommen.");
+    toast(t("toast.surface.settingsApplied"));
   } catch (error) {
     errorNode.textContent = error.message;
     errorNode.classList.remove("hidden");
@@ -1880,8 +1900,8 @@ function renderCanvas() {
 
   const totalWidgetCount = allProjectWidgets().length;
   $("#widget-count").textContent = (state.project.pages || []).length
-    ? `${state.project.pages.length} Seiten · ${totalWidgetCount} Widgets`
-    : `${totalWidgetCount} Widgets`;
+    ? t("designer.status.pagesAndWidgets", { pages: state.project.pages.length, widgets: totalWidgetCount })
+    : t("designer.status.widgetCount", { count: totalWidgetCount });
   applyZoom();
   renderGlowCanvas();
   renderGlowHandles();
@@ -1939,7 +1959,7 @@ async function loadBackgroundPreview(event) {
   event.target.value = "";
   if (!file) return;
   if (file.size > 8 * 1024 * 1024) {
-    toast("Das Vorschaubild ist zu groß (max. 8 MB).", true);
+    toast(t("toast.preview.tooLarge8MB"), true);
     return;
   }
   const reader = new FileReader();
@@ -1947,9 +1967,9 @@ async function loadBackgroundPreview(event) {
     state.backgroundPreview = reader.result;
     $("#bg-preview-clear").disabled = false;
     renderCanvas();
-    toast("Vorschaubild geladen (nur im Editor sichtbar).");
+    toast(t("toast.preview.loaded"));
   };
-  reader.onerror = () => toast("Vorschaubild konnte nicht gelesen werden.", true);
+  reader.onerror = () => toast(t("toast.preview.readFailed"), true);
   reader.readAsDataURL(file);
 }
 
@@ -1960,8 +1980,8 @@ function clearBackgroundPreview() {
 }
 
 function renderDesignerStatus() {
-  const name = state.projectName || "Lokales Projekt";
-  $("#designer-status").textContent = `${state.projectDirty ? "● Ungespeichert · " : ""}${name}`;
+  const name = state.projectName || t("designer.status.localProject");
+  $("#designer-status").textContent = `${state.projectDirty ? t("designer.status.unsavedPrefix") : ""}${name}`;
 }
 
 // --- Glow lines (ported GlowLine editor) ------------------------------------
@@ -2044,7 +2064,7 @@ function uniqueStrokeId() {
 
 function startNewLine() {
   if (activeSurfaceEntry().kind !== "root") {
-    toast("Glow-Linien sind projektweit und können auf Seiten/Layern nicht bearbeitet werden.", true);
+    toast(t("toast.glow.projectWide"), true);
     return;
   }
   // Capture the intended parent before switching modes - entering lines mode
@@ -2298,7 +2318,7 @@ function renderGlowHandles() {
     handle.className = `glow-handle${index === 0 ? " first" : ""}`;
     handle.style.left = `${point[0]}px`;
     handle.style.top = `${point[1]}px`;
-    handle.title = index === 0 ? "Erster Punkt (schließt die Linie beim Zeichnen)" : `Punkt ${index + 1}`;
+    handle.title = index === 0 ? t("glow.firstPointTitle") : t("glow.pointNTitle", { index: index + 1 });
     handle.addEventListener("pointerdown", (event) => {
       event.stopPropagation();
       if (state.lineTool === "draw") return; // the canvas handler places points instead
@@ -2308,7 +2328,7 @@ function renderGlowHandles() {
       event.preventDefault();
       event.stopPropagation();
       if (stroke.points.length <= 2) {
-        toast("Eine Linie braucht mindestens zwei Punkte.", true);
+        toast(t("toast.glow.needsTwoPoints"), true);
         return;
       }
       pushUndo();
@@ -2335,7 +2355,7 @@ function toggleFlowPreview() {
     return;
   }
   if (!hasFlow({ strokes: state.project.glow_strokes || [] })) {
-    toast("Keine Linie hat einen aktiven Fluss.", true);
+    toast(t("toast.glow.noActiveFlow"), true);
     return;
   }
   $("#line-preview").classList.add("active");
@@ -2639,11 +2659,11 @@ async function bakeSelectedStroke() {
   const stroke = state.selectedStroke;
   if (!stroke) return;
   if ((stroke.points || []).length < 2) {
-    toast("Diese Linie hat noch keine Geometrie.", true);
+    toast(t("toast.glow.noGeometry"), true);
     return;
   }
   if (!state.capabilities["designer.asset_write"]) {
-    toast("Fehlende Berechtigung: Bilder können nicht in die Konfiguration geschrieben werden.", true);
+    toast(t("toast.glow.noWritePermission"), true);
     return;
   }
 
@@ -2657,7 +2677,7 @@ async function bakeSelectedStroke() {
   button.disabled = true;
 
   try {
-    toast("Bilder werden erzeugt …");
+    toast(t("toast.glow.generatingImages"));
     const staticBlob = await renderStrokeFrame(doc, staticRect,
       { withLines: true, withFlow: false, phase: 0 });
     const staticPath = await uploadBakedFrame(`${baseName}_static.png`, staticBlob);
@@ -2701,9 +2721,9 @@ async function bakeSelectedStroke() {
     }
     markProjectDirty();
     renderDesigner();
-    toast(`${1 + (animimgWidget ? 1 : 0)} Widget(s) mit ${1 + frameCount} Bild(ern) angelegt.`);
+    toast(t("toast.glow.baked", { widgets: 1 + (animimgWidget ? 1 : 0), images: 1 + frameCount }));
   } catch (error) {
-    toast(`Bildsequenz konnte nicht erzeugt werden: ${error.message}`, true);
+    toast(t("toast.glow.bakeFailed", { error: error.message }), true);
   } finally {
     button.disabled = false;
   }
@@ -2775,7 +2795,7 @@ function renderWidget(item) {
       const fallback = document.createElement("span");
       fallback.textContent = `${imageReference || widget.id} ⚠`;
       picture.replaceWith(fallback);
-      node.title = "Bild konnte im Editor nicht geladen werden.";
+      node.title = t("canvas.imageLoadFailedTitle");
     });
     node.append(picture);
   } else if (!(widget.widget_type === "button" && widget.children?.length
@@ -2877,7 +2897,7 @@ function beginDrag(event, widget, node, box) {
     // A parent grid or flex arrangement owns this position. Writing an x/y
     // here would be an offset fighting the layout, not a move - so the
     // position is edited through the grid cell fields instead.
-    toast("Position wird vom Layout des Elternteils bestimmt.");
+    toast(t("toast.widget.positionManagedByParent"));
     return;
   }
   pushUndo();
@@ -2971,10 +2991,10 @@ function renderProperties() {
 }
 
 const ACTION_TRIGGER_LABELS = {
-  on_click: "Klick",
-  on_press: "Drücken",
-  on_release: "Loslassen",
-  on_value: "Schalterzustand",
+  on_click: t("actions.trigger.click"),
+  on_press: t("actions.trigger.press"),
+  on_release: t("actions.trigger.release"),
+  on_value: t("actions.trigger.valueShort"),
 };
 
 function directImageButtonParts(widget) {
@@ -3012,7 +3032,7 @@ function eventImageSource(widget, trigger, imageId, condition = "always") {
 }
 
 function populateImageChoice(control, value) {
-  control.replaceChildren(new Option("— nicht gesetzt —", ""));
+  control.replaceChildren(new Option(t("imgbtn.notSet"), ""));
   imageLibrary().forEach((entry) => control.append(new Option(entry.id, entry.id)));
   if (value && !imageEntry(value)) control.append(new Option(`${value} (fehlt)`, value));
   control.value = value || "";
@@ -3085,7 +3105,7 @@ function applyImageButtonSettings() {
   const checked = $("#image-button-checked").value;
   const error = $("#image-button-error");
   if (!normal) {
-    error.textContent = "Bitte ein Normalbild auswählen.";
+    error.textContent = t("imgbtn.selectNormalImage");
     error.classList.remove("hidden");
     return;
   }
@@ -3124,7 +3144,7 @@ function applyImageButtonSettings() {
   error.classList.add("hidden");
   markProjectDirty();
   renderDesigner();
-  toast("Bild-Button aktualisiert.");
+  toast(t("toast.imgbtn.updated"));
 }
 
 function actionObjectEntry(action) {
@@ -3152,34 +3172,34 @@ function generatedActionCondition(action) {
 function describeWidgetAction(action) {
   const conditional = generatedActionCondition(action);
   if (conditional) {
-    const prefix = conditional.condition === "checked" ? "Wenn eingeschaltet: " : "Wenn ausgeschaltet: ";
+    const prefix = conditional.condition === "checked" ? t("action.desc.whenChecked") : t("action.desc.whenUnchecked");
     const inner = describeWidgetAction(conditional.action);
     return { ...inner, text: `${prefix}${inner.text}` };
   }
   const entry = actionObjectEntry(action);
-  if (!entry) return { text: "Nicht grafisch unterstützte Aktion", targetIds: [], supported: false };
+  if (!entry) return { text: t("action.desc.unsupported"), targetIds: [], supported: false };
   const [name, payload] = entry;
   const targetIds = actionIdsForEditor(payload);
   if (["lvgl.widget.show", "lvgl.widget.hide"].includes(name)) {
     return {
-      text: `${name.endsWith(".show") ? "Anzeigen" : "Ausblenden"}: ${targetIds.join(", ") || "ohne Ziel"}`,
+      text: `${name.endsWith(".show") ? t("action.desc.show") : t("action.desc.hide")}: ${targetIds.join(", ") || t("action.desc.noTarget")}`,
       targetIds,
       supported: Boolean(targetIds.length),
     };
   }
   if (name === "lvgl.page.show") {
-    return { text: `Seite öffnen: ${targetIds.join(", ") || "ohne Ziel"}`, targetIds: [], supported: Boolean(targetIds.length) };
+    return { text: `${t("action.desc.openPage")}${targetIds.join(", ") || t("action.desc.noTarget")}`, targetIds: [], supported: Boolean(targetIds.length) };
   }
   if (["lvgl.widget.update", "lvgl.label.update", "lvgl.button.update", "lvgl.image.update"].includes(name)
       && payload && typeof payload === "object" && !Array.isArray(payload)) {
     const fields = Object.keys(payload).filter((key) => key !== "id");
     return {
-      text: `Ändern: ${targetIds.join(", ") || "ohne Ziel"}${fields.length ? ` · ${fields.join(", ")}` : ""}`,
+      text: `${t("action.desc.change")}${targetIds.join(", ") || t("action.desc.noTarget")}${fields.length ? ` · ${fields.join(", ")}` : ""}`,
       targetIds,
       supported: Boolean(targetIds.length && fields.length),
     };
   }
-  return { text: `${name} · nur im YAML bearbeitbar`, targetIds, supported: false };
+  return { text: t("action.desc.yamlOnly", { name }), targetIds, supported: false };
 }
 
 function renderWidgetActions(widget) {
@@ -3215,7 +3235,7 @@ function renderWidgetActions(widget) {
   if (!count) {
     const empty = document.createElement("p");
     empty.className = "widget-action-empty";
-    empty.textContent = "Noch keine Aktionen angelegt.";
+    empty.textContent = t("actions.empty");
     list.append(empty);
   }
   renderWidgetActionBuilder(widget);
@@ -3269,11 +3289,11 @@ function addWidgetAction() {
     error.classList.remove("hidden");
   };
   if (!targetId) {
-    fail(type === "page_show" ? "Das Projekt enthält keine auswählbare Seite." : "Bitte ein Ziel-Widget auswählen.");
+    fail(type === "page_show" ? t("validation.action.noPage") : t("validation.action.noTargetWidget"));
     return;
   }
   if (trigger === "on_value" && !widget.properties?.checkable) {
-    fail("Für Schalterzustände zuerst die Einrastfunktion des Buttons aktivieren.");
+    fail(t("validation.action.needsCheckable"));
     return;
   }
 
@@ -3300,7 +3320,7 @@ function addWidgetAction() {
       if (value) payload[key] = key.endsWith("_color") ? normaliseActionColor(value) : value;
     });
     if (Object.keys(payload).length === 1) {
-      fail("Mindestens Text, Bildquelle, Farbe, Rahmenfarbe oder Deckkraft angeben.");
+      fail(t("validation.action.needsAtLeastOneField"));
       return;
     }
     const actionName = targetWidget?.widget_type === "label"
@@ -3432,15 +3452,15 @@ function renderRuntimeBinding(widget) {
   );
 
   const deviceControl = $("#runtime-binding-device");
-  deviceControl.replaceChildren(new Option("— Gerät wählen —", ""));
+  deviceControl.replaceChildren(new Option(t("binding.devicePlaceholder"), ""));
   (state.viewerRuntimeSources.devices || []).forEach((device) => {
-    const suffix = device.status === "ready" ? " · verbunden" : " · " + (DEVICE_STATUS[device.status] || device.status);
+    const suffix = device.status === "ready" ? t("binding.deviceConnectedSuffix") : " · " + (DEVICE_STATUS[device.status] || device.status);
     deviceControl.append(new Option(device.name + suffix, device.id));
   });
   if (binding?.device_id && !(state.viewerRuntimeSources.devices || []).some(
     (device) => device.id === binding.device_id,
   )) {
-    deviceControl.append(new Option(binding.device_id + " · nicht verfügbar", binding.device_id));
+    deviceControl.append(new Option(t("binding.deviceUnavailable", { id: binding.device_id }), binding.device_id));
   }
   deviceControl.value = binding?.device_id || "";
   populateRuntimeEntityChoices(binding?.entity_id || "");
@@ -3460,10 +3480,10 @@ function renderRuntimeBinding(widget) {
   $("#copy-runtime-binding").disabled = !binding;
   $("#paste-runtime-binding").disabled = !state.copiedRuntimeBinding;
   $("#runtime-binding-hint").textContent = !state.projectName
-    ? "Projekt zuerst in der App speichern; lokale Vorschauen bleiben ohne Sidecar."
+    ? t("binding.hint.saveProjectFirst")
     : state.projectDirty
-      ? "Projektänderungen zuerst speichern, damit Widget-ID und Binding zusammenpassen."
-      : "Die Zuordnung wird getrennt vom LVGL-Projekt gespeichert und steuert kein Gerät.";
+      ? t("binding.hint.saveChangesFirst")
+      : t("binding.hint.default");
   renderRuntimeBindingStatus();
 }
 
@@ -3473,7 +3493,7 @@ function populateRuntimeEntityChoices(selectedEntity = "") {
   const control = $("#runtime-binding-entity");
   const target = $("#runtime-binding-target").value;
   const current = selectedEntity || control.value;
-  control.replaceChildren(new Option("— Entity wählen —", ""));
+  control.replaceChildren(new Option(t("binding.entityPlaceholder"), ""));
   const matching = [...(device?.entities || [])].filter((entity) => (
     entityMatchesRuntimeTarget(entity, target, runtimeStateFor(device, entity.entity_id))
   ));
@@ -3490,7 +3510,7 @@ function populateRuntimeEntityChoices(selectedEntity = "") {
   if (current && !matching.some((entity) => entity.entity_id === current)) {
     const exists = (device?.entities || []).some((entity) => entity.entity_id === current);
     control.append(new Option(
-      current + (exists ? " · passt nicht zum Zieltyp" : " · derzeit nicht verfügbar"),
+      current + (exists ? t("binding.entityMismatchSuffix") : t("binding.entityUnavailableSuffix")),
       current,
     ));
   }
@@ -3513,12 +3533,12 @@ function renderRuntimeBindingStatus() {
   const binding = bindingFromControls();
   const health = runtimeBindingHealth(binding, state.viewerRuntimeSources);
   const labels = {
-    unconfigured: "Gerät und Entity auswählen.",
-    missing_device: "Gerät nicht mehr vorhanden.",
-    offline: "Gerät offline – letzter Wert wird nicht als live gewertet.",
-    missing_entity: "Entity liefert derzeit keinen Zustand.",
-    unavailable: "Entity ist momentan nicht verfügbar.",
-    stale: "Wert ist veraltet.",
+    unconfigured: t("binding.status.unconfigured"),
+    missing_device: t("binding.status.missingDevice"),
+    offline: t("binding.status.offline"),
+    missing_entity: t("binding.status.missingEntity"),
+    unavailable: t("binding.status.unavailable"),
+    stale: t("binding.status.stale"),
   };
   output.className = "runtime-binding-status";
   if (health.status === "online") {
@@ -3527,10 +3547,10 @@ function renderRuntimeBindingStatus() {
     const received = health.state.received_at
       ? ` · ${new Date(health.state.received_at).toLocaleTimeString("de", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
       : "";
-    output.textContent = `Online · ${String(health.state.state)}${unit}${received}`;
+    output.textContent = t("binding.status.online", { value: `${String(health.state.state)}${unit}${received}` });
     output.classList.add("online");
   } else {
-    output.textContent = labels[health.status] || "Status unbekannt.";
+    output.textContent = labels[health.status] || t("binding.status.unknown");
     output.classList.add(
       health.status === "stale" ? "stale"
         : health.status === "unavailable" ? "unavailable"
@@ -3559,7 +3579,7 @@ async function persistRuntimeBindings(bindings) {
     if (error.code === "revision_conflict") await loadViewerBindings(state.projectName);
     renderRuntimeBinding(state.selectedWidget);
     renderRuntimeBindingOrphans();
-    toast("Binding konnte nicht gespeichert werden: " + error.message, true);
+    toast(t("toast.binding.saveFailed", { error: error.message }), true);
     return false;
   }
 }
@@ -3570,11 +3590,11 @@ async function saveRuntimeBinding() {
   const deviceId = $("#runtime-binding-device").value;
   const entityId = $("#runtime-binding-entity").value;
   if (!widget || !state.projectName || state.projectDirty) {
-    toast("Projekt zuerst in der App speichern.", true);
+    toast(t("toast.binding.saveProjectFirst"), true);
     return;
   }
   if (!deviceId || !entityId) {
-    toast("Bitte Gerät und Entity auswählen.", true);
+    toast(t("toast.binding.selectDeviceEntity"), true);
     return;
   }
   const additional = [...$("#runtime-binding-additional-widgets").selectedOptions]
@@ -3586,8 +3606,8 @@ async function saveRuntimeBinding() {
   widgetIds.forEach((widgetId) => next.push(bindingFromControls(widgetId)));
   if (await persistRuntimeBindings(next)) {
     toast(widgetIds.length > 1
-      ? `Live-Binding auf ${widgetIds.length} Widgets angewendet.`
-      : "Live-Binding gespeichert.");
+      ? t("toast.binding.appliedMultiple", { count: widgetIds.length })
+      : t("toast.binding.saved"));
   }
 }
 
@@ -3598,7 +3618,7 @@ async function removeRuntimeBinding() {
   const next = state.viewerBindings.filter(
     (binding) => !(binding.widget_id === widget.id && binding.target === target),
   );
-  if (await persistRuntimeBindings(next)) toast("Live-Binding entfernt.");
+  if (await persistRuntimeBindings(next)) toast(t("toast.binding.removed"));
 }
 
 function copyRuntimeBinding() {
@@ -3610,21 +3630,21 @@ function copyRuntimeBinding() {
   if (!binding) return;
   state.copiedRuntimeBinding = { ...binding };
   $("#paste-runtime-binding").disabled = false;
-  toast("Binding kopiert. Ziel-Widget auswählen und einfügen.");
+  toast(t("toast.binding.copied"));
 }
 
 function pasteRuntimeBinding() {
   const widget = state.selectedWidget;
   const copied = state.copiedRuntimeBinding;
   if (!widget || !copied || !runtimeTargets(widget).some((target) => target.value === copied.target)) {
-    toast("Das kopierte Binding passt nicht zu diesem Widget-Typ.", true);
+    toast(t("toast.binding.pasteMismatch"), true);
     return;
   }
   $("#runtime-binding-target").value = copied.target;
   renderAdditionalRuntimeWidgets(widget, copied.target);
   if (![...$("#runtime-binding-device").options].some((option) => option.value === copied.device_id)) {
     $("#runtime-binding-device").append(new Option(
-      copied.device_id + " · nicht verfügbar", copied.device_id,
+      t("binding.deviceUnavailable", { id: copied.device_id }), copied.device_id,
     ));
   }
   $("#runtime-binding-device").value = copied.device_id;
@@ -3633,18 +3653,18 @@ function pasteRuntimeBinding() {
   $("#runtime-binding-fallback").value = copied.fallback || "";
   $("#runtime-binding-stale").value = copied.stale_after || 0;
   renderRuntimeBindingStatus();
-  toast("Binding eingefügt. Mit „Binding speichern“ übernehmen.");
+  toast(t("toast.binding.pasted"));
 }
 
 async function cleanupRuntimeBindings() {
   if (!runtimeCanWrite()) {
-    toast("Projektänderungen zuerst speichern.", true);
+    toast(t("toast.binding.saveChangesFirst"), true);
     return;
   }
   const valid = state.viewerBindings.filter((binding) => !bindingIsOrphan(binding));
   const removed = state.viewerBindings.length - valid.length;
   if (!removed) return;
-  if (await persistRuntimeBindings(valid)) toast(`${removed} verwaiste Binding(s) bereinigt.`);
+  if (await persistRuntimeBindings(valid)) toast(t("toast.binding.cleanedOrphans", { count: removed }));
 }
 
 function setCanvasRuntimeText(node, text) {
@@ -3666,7 +3686,7 @@ function applyDesignerRuntimePreview() {
     if (!widget || !node) return;
     const health = runtimeBindingHealth(binding, state.viewerRuntimeSources);
     node.classList.add("runtime-preview");
-    node.title = `Live-Binding: ${health.status}`;
+    node.title = t("binding.liveTitle", { status: health.status });
     if (binding.target === "text") {
       const text = health.status === "online"
         ? formatRuntimeValue(health.state.state, binding.value_format)
@@ -3756,7 +3776,7 @@ function resetColorLibraryForm() {
   $("#color-library-hex").value = "";
   $("#color-library-picker").value = "#00a000";
   $("#color-library-error").classList.add("hidden");
-  $("#save-color-library-entry").textContent = "Farbe hinzufügen";
+  $("#save-color-library-entry").textContent = t("colorlib.form.add");
   $("#cancel-color-library-edit").classList.add("hidden");
 }
 
@@ -3768,7 +3788,7 @@ function editColorLibraryEntry(id) {
   $("#color-library-hex").value = normaliseLibraryHex(entry.hex) || "FFFFFF";
   $("#color-library-picker").value = `#${normaliseLibraryHex(entry.hex) || "FFFFFF"}`;
   $("#color-library-error").classList.add("hidden");
-  $("#save-color-library-entry").textContent = "Änderungen speichern";
+  $("#save-color-library-entry").textContent = t("colorlib.form.save");
   $("#cancel-color-library-edit").classList.remove("hidden");
   $("#color-library-id").focus();
 }
@@ -3783,15 +3803,15 @@ function saveColorLibraryEntry(event) {
     error.classList.remove("hidden");
   };
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
-    fail("Die ID muss mit einem Buchstaben oder _ beginnen und darf nur Buchstaben, Zahlen und _ enthalten.");
+    fail(t("validation.id.format"));
     return;
   }
   if (!hex) {
-    fail("Bitte eine Farbe als drei- oder sechsstelligen Hexwert angeben.");
+    fail(t("validation.color.needsHex"));
     return;
   }
   if (projectIdIsUsed(id, state.editingColorId)) {
-    fail(`Die ID ${id} wird bereits im Projekt verwendet.`);
+    fail(t("validation.id.usedInProject", { id }));
     return;
   }
 
@@ -3809,7 +3829,7 @@ function saveColorLibraryEntry(event) {
   markProjectDirty();
   resetColorLibraryForm();
   renderDesigner();
-  toast(`Farbe ${id} gespeichert.`);
+  toast(t("toast.color.saved", { id }));
 }
 
 function deleteColorLibraryEntry(id) {
@@ -3817,7 +3837,7 @@ function deleteColorLibraryEntry(id) {
   if (!entry) return;
   const references = colorReferenceLocations(id);
   if (references.length && !confirm(
-    `${id} wird ${references.length}-mal verwendet. Verwendungen durch ${entry.hex} ersetzen und Farbe löschen?`,
+    t("confirm.color.deleteWithRefs", { id, count: references.length, hex: entry.hex }),
   )) return;
   pushUndo();
   if (references.length) colorReferenceLocations(id, normaliseLibraryHex(entry.hex) || entry.hex);
@@ -3826,8 +3846,8 @@ function deleteColorLibraryEntry(id) {
   markProjectDirty();
   renderDesigner();
   toast(references.length
-    ? `Farbe ${id} gelöscht; ${references.length} Verwendung(en) wurden durch den Hexwert ersetzt.`
-    : `Farbe ${id} gelöscht.`);
+    ? t("toast.color.deletedWithRefs", { id, count: references.length })
+    : t("toast.color.deleted", { id }));
 }
 
 function renderColorLibrary() {
@@ -3849,13 +3869,13 @@ function renderColorLibrary() {
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "icon-button";
-    edit.title = `${entry.id} bearbeiten`;
+    edit.title = t("library.editTooltip", { id: entry.id });
     edit.textContent = "✎";
     edit.addEventListener("click", () => editColorLibraryEntry(entry.id));
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "icon-button";
-    remove.title = `${entry.id} löschen`;
+    remove.title = t("library.deleteTooltip", { id: entry.id });
     remove.textContent = "×";
     remove.addEventListener("click", () => deleteColorLibraryEntry(entry.id));
     row.append(swatch, name, edit, remove);
@@ -3864,7 +3884,7 @@ function renderColorLibrary() {
   if (!colorLibrary().length) {
     const empty = document.createElement("p");
     empty.className = "color-library-empty";
-    empty.textContent = "Noch keine Projektfarben angelegt.";
+    empty.textContent = t("colorlib.noProjectColors");
     list.append(empty);
   }
 
@@ -4098,12 +4118,12 @@ function parseGlyphInput(value) {
     if (codeMatch) {
       const codepoint = Number.parseInt(codeMatch[1], 16);
       if (codepoint > 0x10FFFF || (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
-        throw new Error(`${token} ist kein gültiger Unicode-Codepoint.`);
+        throw new Error(t("validation.glyph.invalidCodepoint", { token }));
       }
       glyphs.push(String.fromCodePoint(codepoint));
       return;
     }
-    if (/^mdi:/i.test(token)) throw new Error(`${token} ist nicht im lokalen MDI-Katalog enthalten.`);
+    if (/^mdi:/i.test(token)) throw new Error(t("validation.glyph.notInCatalog", { token }));
     glyphs.push(...Array.from(token));
   });
   return uniqueGlyphs(glyphs);
@@ -4174,7 +4194,7 @@ function renderIconCatalog() {
   if (!catalog.children.length) {
     const empty = document.createElement("p");
     empty.className = "glyph-selected-empty";
-    empty.textContent = "Keine passenden MDI-Einträge.";
+    empty.textContent = t("mdi.noMatches");
     catalog.append(empty);
   }
 }
@@ -4231,7 +4251,7 @@ function addGlyphInput() {
   const error = $("#glyph-input-error");
   try {
     const parsed = parseGlyphInput($("#glyph-input").value);
-    if (!parsed.length) throw new Error("Bitte mindestens eine Glyphe eingeben.");
+    if (!parsed.length) throw new Error(t("validation.glyph.needsOne"));
     insertMdiGlyphs(parsed.join(""));
     $("#glyph-input").value = "";
     error.classList.add("hidden");
@@ -4270,7 +4290,7 @@ function resetFontLibraryForm() {
   $("#font-library-size").value = "16";
   $("#font-library-bpp").value = "4";
   $("#font-library-error").classList.add("hidden");
-  $("#save-font-library-entry").textContent = "Schrift hinzufügen";
+  $("#save-font-library-entry").textContent = t("fontlib.form.add");
   $("#cancel-font-library-edit").classList.add("hidden");
   updateFontSourceFieldsVisibility();
 }
@@ -4295,7 +4315,7 @@ function editFontLibraryEntry(id) {
   $("#font-library-size").value = entry.size || 16;
   $("#font-library-bpp").value = String(entry.bpp || 4);
   $("#font-library-error").classList.add("hidden");
-  $("#save-font-library-entry").textContent = "Änderungen speichern";
+  $("#save-font-library-entry").textContent = t("fontlib.form.save");
   $("#cancel-font-library-edit").classList.remove("hidden");
   updateFontSourceFieldsVisibility();
   $("#font-library-id").focus();
@@ -4311,27 +4331,27 @@ function saveFontLibraryEntry(event) {
     error.classList.remove("hidden");
   };
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
-    fail("Die ID muss mit einem Buchstaben oder _ beginnen und darf nur Buchstaben, Zahlen und _ enthalten.");
+    fail(t("validation.id.format"));
     return;
   }
   if (projectIdIsUsed(id) && id !== state.editingFontId) {
-    fail(`Die ID ${id} wird bereits im Projekt verwendet.`);
+    fail(t("validation.id.usedInProject", { id }));
     return;
   }
   if (source === "builtin" && !$("#font-library-builtin-name").value.trim()) {
-    fail("Bitte den eingebauten Schriftnamen angeben (z. B. montserrat_16).");
+    fail(t("validation.font.needsBuiltinName"));
     return;
   }
   if (source === "gfonts" && !currentGfontsFamilyInput()) {
-    fail("Bitte eine Google-Fonts-Familie angeben.");
+    fail(t("validation.font.needsGfontsFamily"));
     return;
   }
   if (source === "file" && !$("#font-library-file-path").value.trim()) {
-    fail("Bitte einen Datei-Pfad angeben.");
+    fail(t("validation.font.needsFilePath"));
     return;
   }
   if (source === "web" && !isRemoteAsset($("#font-library-web-url").value.trim())) {
-    fail("Bitte eine http(s)-URL angeben.");
+    fail(t("validation.font.needsWebUrl"));
     return;
   }
 
@@ -4382,7 +4402,7 @@ function saveFontLibraryEntry(event) {
   markProjectDirty();
   resetFontLibraryForm();
   renderDesigner();
-  toast(`Schrift ${id} gespeichert.`);
+  toast(t("toast.font.saved", { id }));
 }
 
 function deleteFontLibraryEntry(id) {
@@ -4390,7 +4410,7 @@ function deleteFontLibraryEntry(id) {
   if (!entry) return;
   const references = fontReferenceLocations(id);
   if (references.length && !confirm(
-    `${id} wird ${references.length}-mal verwendet. Verwendungen entfernen und Schrift löschen?`,
+    t("confirm.font.deleteWithRefs", { id, count: references.length }),
   )) return;
   pushUndo();
   if (references.length) fontReferenceLocations(id, "");
@@ -4401,11 +4421,16 @@ function deleteFontLibraryEntry(id) {
   markProjectDirty();
   renderDesigner();
   toast(references.length
-    ? `Schrift ${id} gelöscht; ${references.length} Verwendung(en) entfernt.`
-    : `Schrift ${id} gelöscht.`);
+    ? t("toast.font.deletedWithRefs", { id, count: references.length })
+    : t("toast.font.deleted", { id }));
 }
 
-const FONT_SOURCE_LABELS = { builtin: "eingebaut", gfonts: "Google Fonts", file: "Datei", web: "Web" };
+const FONT_SOURCE_LABELS = {
+  builtin: t("fontlib.source.builtin"),
+  gfonts: t("fontlib.source.gfonts"),
+  file: t("fontlib.source.file"),
+  web: t("fontlib.source.web"),
+};
 const fontSourceStatuses = new Map();
 
 function fontSourceStatus(entry) {
@@ -4413,8 +4438,8 @@ function fontSourceStatus(entry) {
   if (status?.url === webFontUrl(entry)) return status;
   if (status) fontSourceStatuses.delete(entry.id);
   return isManagedWebFont(entry)
-    ? { state: "managed", label: "lokal fixiert" }
-    : { state: "unmanaged", label: "noch nicht lokal gespeichert" };
+    ? { state: "managed", label: t("fontlib.status.managed") }
+    : { state: "unmanaged", label: t("fontlib.status.unmanaged") };
 }
 
 async function checkFontSource(entry, manual = false) {
@@ -4422,7 +4447,7 @@ async function checkFontSource(entry, manual = false) {
   const metadata = fontSourceMetadata(entry) || {};
   const existing = fontSourceStatuses.get(entry.id);
   if (existing?.state === "checking") return;
-  fontSourceStatuses.set(entry.id, { state: "checking", label: "Prüfung läuft …", url: webFontUrl(entry) });
+  fontSourceStatuses.set(entry.id, { state: "checking", label: t("fontlib.status.checking"), url: webFontUrl(entry) });
   renderFontLibrary();
   try {
     const result = await api("designer/font-sources/check", {
@@ -4436,19 +4461,19 @@ async function checkFontSource(entry, manual = false) {
     });
     const changed = !isManagedWebFont(entry) || result.changed;
     fontSourceStatuses.set(entry.id, changed
-      ? { state: "changed", label: isManagedWebFont(entry) ? "Update verfügbar" : "lokale Version fehlt", url: webFontUrl(entry) }
-      : { state: "current", label: "Quelle unverändert", url: webFontUrl(entry) });
-    if (manual) toast(changed ? `Für ${entry.id} ist eine Aktualisierung verfügbar.` : `${entry.id} ist aktuell.`);
+      ? { state: "changed", label: isManagedWebFont(entry) ? t("fontlib.status.updateAvailable") : t("fontlib.status.localMissing"), url: webFontUrl(entry) }
+      : { state: "current", label: t("fontlib.status.unchanged"), url: webFontUrl(entry) });
+    if (manual) toast(changed ? t("toast.font.updateAvailableFor", { id: entry.id }) : t("toast.font.upToDate", { id: entry.id }));
   } catch (error) {
-    fontSourceStatuses.set(entry.id, { state: "error", label: "Prüfung fehlgeschlagen", url: webFontUrl(entry) });
-    if (manual) toast(`Prüfung fehlgeschlagen: ${error.message}`, true);
+    fontSourceStatuses.set(entry.id, { state: "error", label: t("fontlib.status.checkFailed"), url: webFontUrl(entry) });
+    if (manual) toast(t("toast.font.checkFailed", { error: error.message }), true);
   }
   renderFontLibrary();
 }
 
 async function updateFontSource(entry) {
   if ((entry.source_kind !== "web" && !isManagedWebFont(entry)) || !state.capabilities["designer.asset_write"]) return;
-  fontSourceStatuses.set(entry.id, { state: "checking", label: "Download läuft …", url: webFontUrl(entry) });
+  fontSourceStatuses.set(entry.id, { state: "checking", label: t("fontlib.status.downloading"), url: webFontUrl(entry) });
   renderFontLibrary();
   try {
     const result = await api("designer/font-sources/update", {
@@ -4462,20 +4487,19 @@ async function updateFontSource(entry) {
           body: JSON.stringify({ path: result.path, codepoints: selectedGlyphs.map(glyphCodepoint) }),
         });
         if (coverage.missing_count && !confirm(
-          `${coverage.missing_count} ausgewählte Glyphe(n) fehlen in der neuen Fontrevision. `
-          + "Trotzdem als aktive Revision übernehmen?",
+          t("confirm.font.missingGlyphs", { count: coverage.missing_count }),
         )) {
           fontSourceStatuses.set(entry.id, {
             state: "changed",
-            label: `Update enthält ${coverage.missing_count} fehlende Glyphe(n)`,
+            label: t("fontlib.status.missingGlyphs", { count: coverage.missing_count }),
             url: webFontUrl(entry),
           });
           renderFontLibrary();
-          toast("Die bisherige Fontrevision bleibt aktiv.", true);
+          toast(t("toast.font.revisionUnchanged"), true);
           return;
         }
       } catch (coverageError) {
-        toast(`Glyphenprüfung der neuen Revision fehlgeschlagen: ${coverageError.message}`, true);
+        toast(t("toast.font.glyphCheckFailed", { error: coverageError.message }), true);
       }
     }
     pushUndo();
@@ -4494,18 +4518,18 @@ async function updateFontSource(entry) {
       path: result.path,
     };
     fontLoadState.delete(entry.id);
-    fontSourceStatuses.set(entry.id, { state: "current", label: "lokal aktualisiert", url: sourceUrl });
+    fontSourceStatuses.set(entry.id, { state: "current", label: t("fontlib.status.updatedLocally"), url: sourceUrl });
     markProjectDirty();
     renderDesigner();
     if (!(state.project.export_sections || []).includes("font")) {
-      toast(`Lokal gespeichert als ${result.path}; die importierte Quell-YAML bleibt unverändert.`, false);
+      toast(t("toast.font.savedLocallyNoExport", { path: result.path }), false);
     } else {
-      toast(`${entry.id} wurde als ${result.path} lokal fixiert.`);
+      toast(t("toast.font.pinnedLocally", { id: entry.id, path: result.path }));
     }
   } catch (error) {
-    fontSourceStatuses.set(entry.id, { state: "error", label: "Update fehlgeschlagen", url: webFontUrl(entry) });
+    fontSourceStatuses.set(entry.id, { state: "error", label: t("fontlib.status.updateFailed"), url: webFontUrl(entry) });
     renderFontLibrary();
-    toast(`Font-Update fehlgeschlagen: ${error.message}`, true);
+    toast(t("toast.font.updateFailed", { error: error.message }), true);
   }
 }
 
@@ -4520,7 +4544,7 @@ function renderFontLibrary() {
     name.textContent = entry.id;
     const detail = document.createElement("small");
     const sourceLabel = isManagedWebFont(entry)
-      ? "Web (lokal fixiert)"
+      ? t("fontlib.sourceWebPinned")
       : (FONT_SOURCE_LABELS[entry.source_kind] || entry.source_kind);
     detail.textContent = `${sourceLabel} · ${entry.size}px`;
     name.append(detail);
@@ -4536,7 +4560,7 @@ function renderFontLibrary() {
         const check = document.createElement("button");
         check.type = "button";
         check.className = "icon-button";
-        check.title = `${entry.id}: Quelle jetzt prüfen`;
+        check.title = t("fontlib.checkTooltip", { id: entry.id });
         check.textContent = "↻";
         check.disabled = statusData.state === "checking";
         check.addEventListener("click", () => checkFontSource(entry, true));
@@ -4545,7 +4569,7 @@ function renderFontLibrary() {
           const update = document.createElement("button");
           update.type = "button";
           update.className = "button subtle compact";
-          update.textContent = isManagedWebFont(entry) ? "Update" : "Lokal";
+          update.textContent = isManagedWebFont(entry) ? t("fontlib.updateButton") : t("fontlib.localButton");
           update.disabled = statusData.state === "checking";
           update.addEventListener("click", () => updateFontSource(entry));
           actions.append(update);
@@ -4555,13 +4579,13 @@ function renderFontLibrary() {
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "icon-button";
-    edit.title = `${entry.id} bearbeiten`;
+    edit.title = t("library.editTooltip", { id: entry.id });
     edit.textContent = "✎";
     edit.addEventListener("click", () => editFontLibraryEntry(entry.id));
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "icon-button";
-    remove.title = `${entry.id} löschen`;
+    remove.title = t("library.deleteTooltip", { id: entry.id });
     remove.textContent = "×";
     remove.addEventListener("click", () => deleteFontLibraryEntry(entry.id));
     actions.append(edit, remove);
@@ -4574,23 +4598,23 @@ function renderFontLibrary() {
       && !fontSourceStatuses.has(entry.id)
       && state.capabilities["designer.asset_write"]
     ) {
-      fontSourceStatuses.set(entry.id, { state: "queued", label: "Prüfung vorgemerkt …", url: webFontUrl(entry) });
+      fontSourceStatuses.set(entry.id, { state: "queued", label: t("fontlib.checkQueued"), url: webFontUrl(entry) });
       queueMicrotask(() => checkFontSource(entry));
     }
   });
   if (!fontLibrary().length) {
     const empty = document.createElement("p");
     empty.className = "font-library-empty";
-    empty.textContent = "Noch keine Projektschriften angelegt.";
+    empty.textContent = t("fontlib.noProjectFonts");
     list.append(empty);
   }
 
   const defaultSelect = $("#default-font");
   const currentDefault = state.project.default_font || "";
-  defaultSelect.replaceChildren(new Option("— keine —", ""));
+  defaultSelect.replaceChildren(new Option(t("fontlib.defaultFontNone"), ""));
   fontLibrary().forEach((entry) => defaultSelect.append(new Option(entry.id, entry.id)));
   if (currentDefault && !fontLibrary().some((entry) => entry.id === currentDefault)) {
-    defaultSelect.append(new Option(`${currentDefault} (frei/unbekannt)`, currentDefault));
+    defaultSelect.append(new Option(t("fontlib.unknownFontSuffix", { id: currentDefault }), currentDefault));
   }
   defaultSelect.value = currentDefault;
 
@@ -4624,7 +4648,7 @@ async function addMdiIconFont() {
   const existing = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
   if (existing) {
     editFontLibraryEntry(existing.id);
-    toast(`${existing.id} verwendet bereits die MDI-Schriftart.`);
+    toast(t("toast.font.mdiAlreadyUsed", { id: existing.id }));
     return;
   }
   let id = MDI_WEBFONT_DEFAULT_ID;
@@ -4644,10 +4668,10 @@ async function addMdiIconFont() {
   renderDesigner();
 
   if (!state.capabilities["designer.asset_write"]) {
-    toast(`${id} als Web-Quelle angelegt. Für eine lokal fixierte Kopie fehlt die Schreibberechtigung.`, true);
+    toast(t("toast.font.mdiCreatedNoWrite", { id }), true);
     return;
   }
-  toast(`${id} wird als lokale Fontrevision fixiert …`);
+  toast(t("toast.font.mdiPinning", { id }));
   await updateFontSource(entry);
 }
 
@@ -4666,9 +4690,9 @@ function bindFontLibrary() {
     try {
       const path = await uploadFontFile(file);
       $("#font-library-file-path").value = path;
-      toast(`Schriftdatei ${file.name} hochgeladen.`);
+      toast(t("toast.font.fileUploaded", { name: file.name }));
     } catch (error) {
-      toast(`Hochladen fehlgeschlagen: ${error.message}`, true);
+      toast(t("toast.font.uploadFailed", { error: error.message }), true);
     } finally {
       $("#font-library-file-input").value = "";
     }
@@ -4737,18 +4761,18 @@ function saveCurrentStyleAsNamed() {
   const widget = state.selectedWidget;
   if (!widget) return;
   if (!Object.keys(widget.style_tree || {}).length) {
-    toast("Dieses Widget hat noch keinen eigenen Stil zum Speichern.", true);
+    toast(t("toast.style.noStyleToSave"), true);
     return;
   }
   const suggestion = `style_${styleLibrary().length + 1}`;
-  const name = (prompt("Name für den neuen Stil:", suggestion) || "").trim();
+  const name = (prompt(t("prompt.style.name"), suggestion) || "").trim();
   if (!name) return;
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-    toast("Stilname muss mit einem Buchstaben beginnen (nur A-Z, 0-9, _).", true);
+    toast(t("toast.style.invalidName"), true);
     return;
   }
   if (styleLibrary().some((entry) => entry.id === name)) {
-    toast(`Ein Stil namens ${name} existiert bereits.`, true);
+    toast(t("toast.style.nameExists", { name }), true);
     return;
   }
   pushUndo();
@@ -4758,7 +4782,7 @@ function saveCurrentStyleAsNamed() {
   widget.style_refs = [name];
   markProjectDirty();
   renderDesigner();
-  toast(`Stil ${name} gespeichert und zugewiesen.`);
+  toast(t("toast.style.saved", { name }));
 }
 
 function renderDynamicProperties(widget) {
@@ -4843,8 +4867,8 @@ function appendPropertyControl(label, control, property, widget) {
     const iconButton = document.createElement("button");
     iconButton.type = "button";
     iconButton.className = "button subtle compact";
-    iconButton.title = "MDI-Icon aus dem Katalog in den Text einfügen";
-    iconButton.textContent = "Icon einfügen";
+    iconButton.title = t("mdi.insertTooltip");
+    iconButton.textContent = t("mdi.insertButton");
     iconButton.addEventListener("click", () => openIconInsertDialog(widget, control));
     row.append(iconButton);
     label.append(row);
@@ -4856,7 +4880,7 @@ function appendPropertyControl(label, control, property, widget) {
     row.append(control);
     const format = document.createElement("select");
     format.className = "image-ref-format";
-    format.title = "Bildformat (type:)";
+    format.title = t("properties.imageFormatTitle");
     IMAGE_TYPE_OPTIONS.forEach(([value, text]) => format.append(new Option(text, value)));
     const syncFormat = () => {
       const entry = imageEntry(control.value);
@@ -4894,7 +4918,7 @@ function appendPropertyControl(label, control, property, widget) {
   const picker = document.createElement("input");
   picker.type = "color";
   picker.className = "linked-color-picker";
-  picker.setAttribute("aria-label", `${property.label} auswählen`);
+  picker.setAttribute("aria-label", t("properties.colorPickerLabel", { label: property.label }));
   const resolved = resolveViewerColor(state.project, control.value);
   picker.value = resolved && /^#[0-9a-f]{6}$/i.test(resolved) ? resolved : "#000000";
   picker.addEventListener("input", () => {
@@ -4934,12 +4958,12 @@ function renderStateChoices() {
   const select = $("#style-state");
   select.replaceChildren(new Option("Normal", ""));
   const labels = {
-    checked: "Eingerastet (checked)",
-    pressed: "Gedrückt (pressed)",
-    disabled: "Deaktiviert (disabled)",
-    focused: "Fokussiert (focused)",
-    edited: "Bearbeitet (edited)",
-    scrolled: "Gescrollt (scrolled)",
+    checked: t("properties.state.checked"),
+    pressed: t("properties.state.pressed"),
+    disabled: t("properties.state.disabled"),
+    focused: t("properties.state.focused"),
+    edited: t("properties.state.edited"),
+    scrolled: t("properties.state.scrolled"),
   };
   state.states.forEach((name) => select.append(new Option(labels[name] || name, name)));
   select.value = state.activeState;
@@ -4948,15 +4972,15 @@ function renderStateChoices() {
   const widget = state.selectedWidget;
   if (!hint) return;
   if (widget?.widget_type !== "button") {
-    hint.textContent = "Der gewählte LVGL-Zustand wird direkt auf der Zeichenfläche angezeigt.";
+    hint.textContent = t("properties.stateHint.default");
   } else if (state.activeState === "pressed") {
-    hint.textContent = "Dieser Stil gilt nur, solange der Button gedrückt wird.";
+    hint.textContent = t("properties.stateHint.pressed");
   } else if (state.activeState === "checked") {
     hint.textContent = widget.properties?.checkable
-      ? "Dieser Stil gilt, wenn der Button eingerastet ist. Ein weiterer Klick schaltet zurück."
-      : "Für diesen Stil zusätzlich „Einrastfunktion (Schalter)“ aktivieren.";
+      ? t("properties.stateHint.checkedEnabled")
+      : t("properties.stateHint.checkedDisabled");
   } else {
-    hint.textContent = "Normal ist der Grundstil. Für eine Tastfarbe „Gedrückt“, für eine Schaltfarbe „Eingerastet“ wählen.";
+    hint.textContent = t("properties.stateHint.normal");
   }
 }
 
@@ -5199,10 +5223,10 @@ function displayableImageSource(id) {
 }
 
 function addImageSource() {
-  const url = (prompt("Bildquelle als http(s)-URL:", "https://") || "").trim();
+  const url = (prompt(t("prompt.image.url"), "https://") || "").trim();
   if (!url || url === "https://") return null;
   if (!isRemoteAsset(url)) {
-    toast("Nur http(s)-URLs werden unterstützt - lokale Dateien liest das Add-on bewusst nicht.", true);
+    toast(t("toast.image.onlyHttpUrls"), true);
     return null;
   }
   const base = (url.split("/").pop() || "bild").replace(/\.[^.]*$/, "");
@@ -5660,7 +5684,7 @@ function renderTree() {
   }
 
   if (!widgets.length && !strokes.length && !hasSurfaces) {
-    tree.textContent = "Noch keine Widgets";
+    tree.textContent = t("hierarchy.empty");
     return;
   }
 
@@ -5672,7 +5696,7 @@ function renderTree() {
     const label = document.createElement("span");
     label.className = "tree-label";
     label.textContent = `∿ ${stroke.name || stroke.id}`;
-    label.title = "Zur Bearbeitung der Glow-Linie auswählen";
+    label.title = t("tree.glow.editTooltip");
     label.addEventListener("click", () => {
       setCanvasMode("lines");
       setLineTool("select");
@@ -5683,9 +5707,9 @@ function renderTree() {
     const glyphs = document.createElement("span");
     glyphs.className = "tree-glyphs";
     glyphs.append(
-      treeGlyph(stroke, "hidden", stroke.hidden ? ICON_EYE_OFF : ICON_EYE, stroke.hidden ? "Einblenden" : "Ausblenden"),
-      treeGlyph(stroke, "locked", stroke.locked ? "🔒" : "🔓", stroke.locked ? "Entsperren" : "Sperren"),
-      treeActionGlyph(ICON_DUPLICATE, "Duplizieren", () => duplicateStroke(stroke)),
+      treeGlyph(stroke, "hidden", stroke.hidden ? ICON_EYE_OFF : ICON_EYE, stroke.hidden ? t("tree.show") : t("tree.hide")),
+      treeGlyph(stroke, "locked", stroke.locked ? "🔒" : "🔓", stroke.locked ? t("tree.unlock") : t("tree.lock")),
+      treeActionGlyph(ICON_DUPLICATE, t("tree.duplicate"), () => duplicateStroke(stroke)),
     );
 
     item.append(label, glyphs);
@@ -5700,7 +5724,7 @@ function renderTree() {
 
     const label = document.createElement("span");
     label.className = "tree-label";
-    label.textContent = `${widget.id} · ${directImageButtonParts(widget) ? "Bild-Button (button)" : widget.widget_type}`;
+    label.textContent = `${widget.id} · ${directImageButtonParts(widget) ? t("tree.imageButtonLabel") : widget.widget_type}`;
     label.addEventListener("click", () => {
       if (state.canvasMode !== "widgets") setCanvasMode("widgets");
       state.selectedWidget = widget;
@@ -5710,9 +5734,9 @@ function renderTree() {
     const glyphs = document.createElement("span");
     glyphs.className = "tree-glyphs";
     glyphs.append(
-      treeGlyph(widget, "hidden", widget.hidden ? ICON_EYE_OFF : ICON_EYE, widget.hidden ? "Einblenden" : "Ausblenden"),
-      treeGlyph(widget, "locked", widget.locked ? "🔒" : "🔓", widget.locked ? "Entsperren" : "Sperren"),
-      treeActionGlyph(ICON_DUPLICATE, "Duplizieren", () => duplicateWidget(widget)),
+      treeGlyph(widget, "hidden", widget.hidden ? ICON_EYE_OFF : ICON_EYE, widget.hidden ? t("tree.show") : t("tree.hide")),
+      treeGlyph(widget, "locked", widget.locked ? "🔒" : "🔓", widget.locked ? t("tree.unlock") : t("tree.lock")),
+      treeActionGlyph(ICON_DUPLICATE, t("tree.duplicate"), () => duplicateWidget(widget)),
     );
 
     item.append(label, glyphs);
@@ -5727,8 +5751,8 @@ function renderTree() {
     item.style.paddingLeft = `${9 + depth * 16}px`;
     const label = document.createElement("span");
     label.className = "tree-label";
-    label.textContent = `${widget.id} · ${directImageButtonParts(widget) ? "Bild-Button (button)" : widget.widget_type}`;
-    label.title = "Arbeitsfläche auswählen, um dieses Widget zu bearbeiten.";
+    label.textContent = `${widget.id} · ${directImageButtonParts(widget) ? t("tree.imageButtonLabel") : widget.widget_type}`;
+    label.title = t("tree.readonly.editHint");
     item.append(label);
     tree.append(item);
     appendReadOnlyNodes(widget.children, depth + 1);
@@ -5739,8 +5763,8 @@ function renderTree() {
     header.className = `tree-item tree-surface${active ? " active" : ""}`;
     const label = document.createElement("span");
     label.className = "tree-label";
-    label.textContent = `${title}${skipped ? " · überspringen" : ""}`;
-    label.title = active ? "Aktive Arbeitsfläche" : "Diese Arbeitsfläche bearbeiten";
+    label.textContent = `${title}${skipped ? t("tree.surface.skipSuffix") : ""}`;
+    label.title = active ? t("tree.surface.active") : t("tree.surface.editHint");
     label.addEventListener("click", () => selectSurface(key));
     header.append(label);
     tree.append(header);
@@ -5750,10 +5774,10 @@ function renderTree() {
   if (!hasSurfaces) {
     appendNodes(state.project.widgets);
   } else {
-    if (state.project.widgets.length) appendSurface("root", "Stammfläche", state.project);
+    if (state.project.widgets.length) appendSurface("root", t("surface.root"), state.project);
     if (state.project.bottom_layer) appendSurface("bottom", "Bottom-Layer", state.project.bottom_layer);
     (state.project.pages || []).forEach((page) => {
-      appendSurface(`page:${page.id}`, `Seite: ${page.id}`, page, { skipped: page.skip });
+      appendSurface(`page:${page.id}`, t("surface.pageLabel", { id: page.id }), page, { skipped: page.skip });
     });
     if (state.project.top_layer) appendSurface("top", "Top-Layer", state.project.top_layer);
   }
@@ -5795,7 +5819,7 @@ function treeActionGlyph(iconHtml, title, onClick) {
 }
 
 async function exportDesignerYaml() {
-  $("#designer-status").textContent = "Projekt wird geprüft …";
+  $("#designer-status").textContent = t("designer.status.checking");
   try {
     const result = await api("designer/projects/export-yaml", {
       method: "POST", body: JSON.stringify({ project: state.project }),
@@ -5805,14 +5829,14 @@ async function exportDesignerYaml() {
     $("#yaml-dialog").showModal();
     renderDesignerStatus();
   } catch (error) {
-    $("#designer-status").textContent = "Export fehlgeschlagen";
+    $("#designer-status").textContent = t("designer.status.exportFailed");
     renderExportIssues(error.details?.issues || []);
     toast(error.message, true);
   }
 }
 
 function renderExportIssues(issues) {
-  renderIssues($("#yaml-issues"), issues, "beim Export");
+  renderIssues($("#yaml-issues"), issues, t("issues.contextExport"));
 }
 
 function isBlockingIssue(issue) {
@@ -5832,14 +5856,14 @@ function renderIssues(container, issues, context = "") {
 
   const heading = document.createElement("strong");
   heading.textContent = notable.length
-    ? `${notable.length} Hinweis(e) ${context}`.trim()
-    : `${preserved} Eigenschaft(en) unverändert übernommen`;
+    ? `${t("issues.notableCount", { count: notable.length })} ${context}`.trim()
+    : t("issues.preservedOnly", { count: preserved });
   container.append(heading);
 
   if (notable.length && preserved) {
     const note = document.createElement("div");
     note.className = "import-warning";
-    note.textContent = `Zusätzlich ${preserved} Eigenschaft(en) unverändert übernommen.`;
+    note.textContent = t("issues.preservedAdditional", { count: preserved });
     container.append(note);
   }
   if (!notable.length) return;
@@ -5911,10 +5935,10 @@ function updateYamlEditorUi() {
   const status = $("#yaml-dirty-status");
   status.classList.toggle("dirty", state.yamlDirty);
   status.textContent = !state.activeConfig
-    ? "Keine Datei geladen"
+    ? t("configs.noFileLoaded")
     : state.yamlDirty
-      ? "Ungespeicherte Änderungen"
-      : state.hasDraft ? "Gespeicherter Entwurf" : "Aktiver Stand";
+      ? t("configs.unsavedChanges")
+      : state.hasDraft ? t("configs.savedDraft") : t("configs.activeState");
   updateYamlCursorStatus();
 }
 
@@ -5922,7 +5946,7 @@ function updateYamlCursorStatus() {
   const editor = $("#yaml-editor");
   const before = editor.value.slice(0, editor.selectionStart);
   const lines = before.split("\n");
-  $("#yaml-cursor-status").textContent = `Zeile ${lines.length}, Spalte ${lines.at(-1).length + 1}`;
+  $("#yaml-cursor-status").textContent = t("configs.cursorStatus", { line: lines.length, column: lines.at(-1).length + 1 });
 }
 
 function findYamlMatch(direction) {
@@ -5964,7 +5988,7 @@ async function loadConfigurations() {
     list.replaceChildren();
     list.classList.toggle("empty", result.configurations.length === 0);
     if (!result.configurations.length) {
-      list.textContent = "Keine ESPHome-YAML-Dateien gefunden.";
+      list.textContent = t("configs.noFilesFound");
       return;
     }
     result.configurations.forEach((configuration) => {
@@ -5990,7 +6014,7 @@ async function loadConfiguration(configuration) {
     state.yamlDirty
     && state.activeConfig
     && state.activeConfig !== configuration.name
-    && !confirm("Ungespeicherte YAML-Änderungen verwerfen und eine andere Datei laden?")
+    && !confirm(t("confirm.yaml.discardAndLoad"))
   ) return;
   try {
     const active = await api(`configurations/${encodedName(configuration.name)}`);
@@ -6037,7 +6061,7 @@ async function saveDraft() {
     $("#publish").disabled = !state.capabilities["configuration.publish"];
     updateBuilderButtons();
     updateYamlEditorUi();
-    toast("Entwurf gespeichert.");
+    toast(t("toast.draft.saved"));
     await loadConfigurations();
   } catch (error) { toast(error.message, true); }
 }
@@ -6048,7 +6072,9 @@ async function checkYaml() {
     const source = state.hasDraft ? "draft" : "active";
     const result = await api(`configurations/${encodedName(state.activeConfig)}/check-yaml?source=${source}`, { method: "POST" });
     const output = $("#config-output");
-    output.textContent = result.valid ? `✓ YAML-Syntax gültig\nRevision: ${result.revision}` : `Fehler in Zeile ${result.line}, Spalte ${result.column}\n${result.error}`;
+    output.textContent = result.valid
+      ? t("config.output.yamlValid", { revision: result.revision })
+      : t("config.output.yamlError", { line: result.line, column: result.column, error: result.error });
     output.classList.remove("hidden");
   } catch (error) { toast(error.message, true); }
 }
@@ -6058,7 +6084,7 @@ async function showDiff() {
   try {
     const result = await api(`configurations/${encodedName(state.activeConfig)}/diff`);
     const output = $("#config-output");
-    output.textContent = result.diff || "Keine Unterschiede.";
+    output.textContent = result.diff || t("config.output.noDifferences");
     output.classList.remove("hidden");
   } catch (error) { toast(error.message, true); }
 }
@@ -6099,13 +6125,13 @@ async function saveMergedDraft() {
     updateBuilderButtons();
     updateYamlEditorUi();
     await loadConfigurations();
-    toast("Zusammengeführtes YAML als Entwurf gespeichert.");
+    toast(t("toast.draft.mergedSaved"));
   } catch (error) { toast(error.message, true); }
 }
 
 async function publishDraft() {
   if (!state.activeConfig || !state.hasDraft) return;
-  if (!confirm(`Entwurf für ${state.activeConfig} in die aktive ESPHome-Konfiguration veröffentlichen?`)) return;
+  if (!confirm(t("confirm.config.publish", { name: state.activeConfig }))) return;
   try {
     const result = await api(`configurations/${encodedName(state.activeConfig)}/publish`, {
       method: "POST", body: JSON.stringify({ expected_revision: state.activeRevision }),
@@ -6120,7 +6146,7 @@ async function publishDraft() {
     $("#publish").disabled = true;
     updateBuilderButtons();
     updateYamlEditorUi();
-    toast("Konfiguration atomar veröffentlicht.");
+    toast(t("toast.config.published"));
     await loadConfigurations();
   } catch (error) { toast(error.message, true); }
 }
@@ -6135,15 +6161,15 @@ function updateBuilderButtons() {
 async function validateEspHome() {
   if (!state.activeConfig || state.hasDraft) return;
   const output = $("#config-output");
-  output.textContent = "ESPHome-Validierung läuft …";
+  output.textContent = t("config.output.validating");
   output.classList.remove("hidden");
   try {
     const result = await api(`configurations/${encodedName(state.activeConfig)}/validate`, { method: "POST" });
     const lines = Array.isArray(result.output) ? result.output.join("\n") : "";
-    const validity = result.valid ? `\nBuild-Freigabe: ${result.expires_in_seconds} Sekunden` : "";
-    output.textContent = `${result.valid ? "✓ ESPHome-Konfiguration gültig" : "ESPHome-Validierung fehlgeschlagen"}\nRevision: ${result.revision}${validity}\n\n${lines}`.trim();
+    const validity = result.valid ? t("config.output.buildApprovalSuffix", { seconds: result.expires_in_seconds }) : "";
+    output.textContent = `${result.valid ? t("config.output.espValid") : t("config.output.espInvalid")}\nRevision: ${result.revision}${validity}\n\n${lines}`.trim();
   } catch (error) {
-    output.textContent = `${error.code || "Fehler"}: ${error.message}`;
+    output.textContent = `${error.code || t("config.output.errorFallback")}: ${error.message}`;
     toast(error.message, true);
   }
 }
@@ -6169,7 +6195,9 @@ async function compileConfiguration() {
     delete state.builderRequestKeys[request.slot];
     state.builderJobs[result.job.job_id] = result.job;
     renderBuilderJobs();
-    toast(result.idempotent_replay ? `Kompilierjob ${result.job.job_id} wiederhergestellt.` : `Kompilierjob ${result.job.job_id} gestartet.`);
+    toast(result.idempotent_replay
+      ? t("toast.builder.jobRestored", { id: result.job.job_id })
+      : t("toast.builder.jobStarted", { id: result.job.job_id }));
   } catch (error) { toast(error.message, true); }
   finally {
     state.builderRequestsRunning.delete("compile");
@@ -6179,7 +6207,7 @@ async function compileConfiguration() {
 
 async function installConfiguration() {
   if (!state.activeConfig || state.hasDraft) return;
-  if (!confirm(`Firmware für ${state.activeConfig} jetzt über OTA kompilieren und installieren?`)) return;
+  if (!confirm(t("confirm.firmware.installOta", { name: state.activeConfig }))) return;
   const request = builderRequestKey("install");
   state.builderRequestsRunning.add("install");
   updateBuilderButtons();
@@ -6216,7 +6244,7 @@ function renderBuilderJobs() {
   panel.classList.toggle("hidden", !state.capabilities["firmware.compile"]);
   list.replaceChildren();
   if (!jobs.length) {
-    list.textContent = "Keine Jobs.";
+    list.textContent = t("configs.noJobs");
     return;
   }
   jobs.forEach((job) => {
@@ -6224,9 +6252,9 @@ function renderBuilderJobs() {
     row.className = "builder-job";
     const description = document.createElement("div");
     const title = document.createElement("strong");
-    title.textContent = `${job.configuration || "—"} · ${job.job_type || "Job"}`;
+    title.textContent = `${job.configuration || "—"} · ${job.job_type || t("configs.jobFallback")}`;
     const meta = document.createElement("small");
-    meta.textContent = `${job.status || "unbekannt"}${Number.isFinite(job.progress) ? ` · ${job.progress}%` : ""} · ${job.job_id}`;
+    meta.textContent = `${job.status || t("configs.statusUnknown")}${Number.isFinite(job.progress) ? ` · ${job.progress}%` : ""} · ${job.job_id}`;
     description.append(title, meta);
     if (job.last_output) {
       const log = document.createElement("pre");
@@ -6238,7 +6266,7 @@ function renderBuilderJobs() {
     if (["queued", "running"].includes(job.status)) {
       const cancel = document.createElement("button");
       cancel.className = "button subtle compact";
-      cancel.textContent = "Abbrechen";
+      cancel.textContent = t("configs.cancelJob");
       cancel.addEventListener("click", async () => {
         try {
           await api(`jobs/${encodeURIComponent(job.job_id)}/cancel`, { method: "POST" });

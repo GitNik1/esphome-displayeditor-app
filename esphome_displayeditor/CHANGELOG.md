@@ -2,6 +2,103 @@
 
 ## Unreleased
 
+- Documented the minimum required versions: `config.yaml` now declares
+  `homeassistant: "2026.7.0"`, and `README.md`/`DOCS.md` note the same
+  minimum for ESPHome itself, since the generated `lvgl:` YAML and the
+  Device Builder handshake rely on syntax that isn't guaranteed on older
+  ESPHome releases. Also fixed a leftover German preset name ("Bild-Button"
+  → "Image button") in `README.md`.
+- Translated the remaining example placeholder text across `index.html`
+  (color/font library IDs, widget-action color/opacity fields, live-binding
+  format/fallback examples, glow-line name, device dialog id/display-name,
+  and the icon-picker's input/search fields) - not just the "z. B." ("e.g.")
+  prefix but the example content itself where it was a German word (e.g.
+  `status_gruen` → `status_green`, `Wohnzimmer Display` → `Living Room
+  Display`, `Kühlerfluss` → `Coolant flow`). Left untouched: placeholders
+  that were already language-neutral (hex codes, IP addresses, ID patterns,
+  URLs) and the language switcher's own "Deutsch"/"English" option labels.
+- Wired `frontend/viewer/viewer.js` (the read-only browser preview engine)
+  up to the English UI option - the last German-only surface in the
+  frontend. It now imports `t()` from `i18n.js` and uses it for the
+  viewer's own event-log messages (`applyViewerAction()`'s action/condition
+  results, e.g. "skipped an invalid/ambiguous action", "page/widget not
+  found", "expected a boolean/numeric value"), the status line's live
+  binding/warning counts, the empty event-log message, the unsupported
+  widget-type warning, and the page-select "skipped" suffix. Verified the
+  existing `tests/frontend/viewer_runtime.test.mjs` still passes (no test
+  asserted on the literal German message text) and exercised
+  `applyViewerAction()` live in the browser in English mode. With this,
+  every German string in the frontend that isn't a literal example value
+  (placeholder text like "z. B. status_gruen") or a language name in the
+  language switcher itself now goes through `t()`.
+- Translated the remaining static HTML in `index.html` that had never been
+  wired to the English UI option: form labels across the theme editor,
+  color/font library, background bar, surface settings, device dialog,
+  merge dialog, and viewer dialog; tooltips and `aria-label`s on the
+  viewer's zoom/page controls, the YAML search buttons, and several
+  color/action pickers; the import-YAML dialog's mixed-markup hint (split
+  into prefix/`<code>`/`<strong>`/suffix pieces so the inline formatting
+  survives translation); and a handful of palette/canvas strings in
+  `app.js` (the image-button and glow-line palette entries, the
+  image-load-failure tooltip, the live-binding tooltip, and the
+  page/widget count in the designer status line). Verified live in the
+  browser that no label lost its paired `<input>`/checkbox in the process
+  (a real risk when adding `data-i18n` to an element with a nested control
+  instead of wrapping the text in its own `<span>`). The only remaining
+  German-only surface in the entire frontend is `frontend/viewer/viewer.js`
+  (the read-only browser preview's own event-log messages) - a separate,
+  not-yet-started module that doesn't import `i18n.js` at all yet.
+- Closed out the remaining gaps in the frontend's English UI option: the
+  inline validation messages inside the widget-action, color/font-library,
+  page/surface-settings, and glyph-input forms; every dynamically-rebuilt
+  tooltip and button label found across the properties panel, font/color
+  library, hierarchy tree, and live-binding editor (e.g. the font library's
+  per-entry "Update"/"Local" action, "Web (pinned locally)" source label,
+  show/hide/lock/duplicate tree icons, binding health status text); the
+  import-summary and export/validation issues panels (widget/canvas/asset
+  counts, unsupported-type and preserved-property notes); and the
+  YAML-check/diff/ESPHome-validation output panel's result text. `app.js`
+  no longer has any hardcoded German UI strings left - everything now goes
+  through `t()`. Still German-only by design and out of scope for this
+  round: the ~63 `toast()` calls' interpolated German sentences were
+  already translated in an earlier pass, but the audit log and a handful of
+  developer-facing debug/tooling strings were not investigated.
+- Translated every toast notification, browser `confirm()`/`prompt()` dialog
+  text with a literal German string (as opposed to a passed-through server
+  error message), and the remaining designer/export status labels. `t()` now
+  accepts an optional params object (e.g. `t("toast.color.saved", { id })`)
+  so these messages can carry interpolated values like widget/color/font ids,
+  counts, and error text.
+- Extended the English UI option (language switcher in the header, persisted
+  per browser) considerably beyond the initial pass: the Devices tab, the
+  Configurations tab (including the YAML editor toolbar/status line and
+  firmware job list), the System tab, and every dialog (YAML import, add/
+  edit device, generated-YAML output, merge, icon insert, viewer) are now
+  covered, on top of the always-visible shell - header, nav, palette/
+  properties headings, main toolbar, project bar, font/color library
+  sections, workspace surface/reference-image bars, and the properties
+  panel's core fields - plus every widget-type and property label
+  throughout the properties panel, which already had complete English
+  translations on the backend (`widgetschema.py`) that the frontend simply
+  wasn't requesting yet. Also fixed several dropdown placeholder options
+  and dialog titles that are rebuilt by JavaScript on every open (e.g. the
+  import file picker's first option, the device dialog's add/edit title)
+  and were bypassing the static translation markup entirely. A second pass
+  covered the remaining property-panel sections (image button, action/
+  event builder incl. its own dynamic trigger-label lookup, live-binding
+  editor, unknown-keys section) and the full glow-line editor (drawing
+  toolbar, color wheel, line/glow/flow/image-sequence fields), including a
+  few more dynamically-rebuilt placeholders (widget tree empty state,
+  actions empty state, binding device/entity pickers) that had the same
+  bypass issue. A third pass covered the firmware Builder's job list (job
+  type/status fallback labels, cancel button), the Native API device status
+  labels, and the Font Library's source-kind and status labels, including
+  the transient states shown while a source is being checked or updated
+  (checking, update available, missing locally, unchanged, check/update
+  failed, downloading, updated locally). The audit log and the app's toast
+  notifications are still German-only and can be extended the same way:
+  `frontend/i18n.js` has the lookup/fallback mechanism and
+  `data-i18n`/`data-i18n-attr` markup pattern already in place.
 - Replaced the `profile`/`read_only`/`builder_provider` add-on options (8
   nominal combinations, only 4 actually distinct outcomes - "read-only" was
   reachable three different ways) with a single `access_level` setting

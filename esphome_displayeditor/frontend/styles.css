@@ -23,6 +23,8 @@ button { color: inherit; }
 .brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; color: #071313; font-weight: 800; background: linear-gradient(135deg, var(--accent), #7de5c9); }
 .brand strong, .brand small { display: block; }
 .brand small { margin-top: 2px; color: var(--muted); }
+.language-switch { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.language-switch select { width: auto; background: #0c1420; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
 .health { color: var(--muted); display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .health span { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 10px currentColor; }
 .health.ok span { background: var(--accent); }

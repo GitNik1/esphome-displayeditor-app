@@ -6,6 +6,7 @@ url: https://github.com/GitNik1/esphome-displayeditor-app
 arch:
   - amd64
   - aarch64
+homeassistant: "2026.7.0"
 startup: application
 boot: auto
 init: false
