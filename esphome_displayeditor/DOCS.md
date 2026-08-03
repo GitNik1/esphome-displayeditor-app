@@ -4,6 +4,13 @@ The app combines a visual LVGL layout designer with controlled editing of
 ESPHome YAML files. It is available only through Home Assistant Ingress and
 does not publish a LAN port.
 
+## Requirements
+
+- Home Assistant 2026.7.0 or newer.
+- ESPHome 2026.7.0 or newer. The generated YAML, the `lvgl:` import, and the
+  optional Device Builder handshake rely on LVGL widget and action syntax
+  that isn't guaranteed to exist on older ESPHome releases.
+
 ## Storage
 
 - Active ESPHome files: `/homeassistant/esphome`

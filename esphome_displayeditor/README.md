@@ -4,6 +4,8 @@ Visual LVGL designer with an isolated read-only browser Viewer, controlled
 ESPHome YAML editor, encrypted read-only Native API monitor and optional
 fail-closed Device Builder integration for Home Assistant.
 
+Requires Home Assistant 2026.7.0+ and ESPHome 2026.7.0+.
+
 Firmware jobs are bound to the SHA-256 revision of a recent successful
 ESPHome validation. Per-configuration locks prevent parallel compile/install
 jobs, while an `Idempotency-Key` makes a browser retry safe across application
@@ -21,7 +23,7 @@ accepted; every unsupported automation is skipped and shown in its event log.
 ESPHome `pages`, `page_wrap`, `skip`, `top_layer` and `bottom_layer` are
 preserved structurally and can be navigated without leaving the Viewer.
 
-The Designer palette also provides an ESPHome-compatible **Bild-Button**
+The Designer palette also provides an ESPHome-compatible **Image button**
 preset. It creates the official LVGL composition of a `button` with child
 `image` and `label` widgets; it never exports a non-existent `imagebutton`
 YAML type. Its property section selects the normal, pressed and checked image
