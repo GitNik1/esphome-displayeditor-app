@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Changed the license from plain MIT to MIT with a Commons Clause
+  restriction: free to use and modify, including commercially, but selling
+  the software or offering it as a paid hosted/consulting service isn't
+  permitted. Added a "Support and license" section to `README.md` and
+  `DOCS.md` linking the GitHub issue tracker and the full `LICENSE` text.
+
 ## 0.15.0
 
 - Documented the minimum required versions: `config.yaml` now declares

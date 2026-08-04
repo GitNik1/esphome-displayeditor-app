@@ -51,3 +51,12 @@ children, because ESPHome does not allow `text:` together with `widgets:`.
                 id: image_button_1_image
                 src: button_on
 ```
+
+## Support and license
+
+Bugs and feature requests: [GitHub Issues](https://github.com/GitNik1/esphome-displayeditor-app/issues).
+
+Licensed under MIT with a [Commons Clause](https://commonsclause.com/)
+restriction - free to use and modify, including commercially, but not to
+sell or offer as a paid hosted/consulting service. See
+[`LICENSE`](../LICENSE) for the full text.

@@ -184,3 +184,16 @@ state-changing requests.
 `request_max_size_kib` rejects oversized request bodies before parsing and
 `api_timeout_seconds` bounds HTTP and Device Builder operations. Native API
 and Device Builder targets accept only private addresses and local DNS names.
+
+## Support
+
+Found a bug or have a feature request? Open an issue on the
+[GitHub repository](https://github.com/GitNik1/esphome-displayeditor-app/issues).
+
+## License
+
+MIT with a [Commons Clause](https://commonsclause.com/) restriction: free to
+use, modify, and redistribute, including in a commercial setting, but selling
+the software itself, or offering it as a paid hosted/consulting service whose
+value derives substantially from it, is not permitted without a separate
+agreement with the licensor. See [`LICENSE`](../LICENSE) for the full text.
