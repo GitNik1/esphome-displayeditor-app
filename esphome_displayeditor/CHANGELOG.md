@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.15.0
+
 - Documented the minimum required versions: `config.yaml` now declares
   `homeassistant: "2026.7.0"`, and `README.md`/`DOCS.md` note the same
   minimum for ESPHome itself, since the generated `lvgl:` YAML and the
