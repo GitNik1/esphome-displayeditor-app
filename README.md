@@ -1,7 +1,40 @@
 # ESPHome Display Editor App Repository
 
 Home Assistant App repository for **ESPHome Display Editor**: a visual LVGL
-designer and controlled editor for ESPHome configuration files.
+designer and controlled editor for ESPHome configuration files. It runs
+entirely inside Home Assistant as an Ingress-only add-on, so no extra port is
+exposed on the network, and lets you build LVGL display layouts for ESP32
+devices by dragging and arranging widgets on a canvas instead of hand-writing
+YAML.
+
+## Features
+
+- **Drag-and-drop LVGL designer** — place, resize, nest and reorder widgets
+  (labels, buttons, images, sliders, containers, ...) on a canvas that
+  mirrors the real display resolution, with undo/redo, grid and flex layout
+  support, and live property editing.
+- **GlowLine animated flow lines** — draw glowing, animated lines directly on
+  the canvas as a dedicated widget type. Originally built for visualizing
+  **energy flow** (e.g. power, coolant or data flow between components on a
+  dashboard), a GlowLine is a filleted polyline or Catmull-Rom spline with a
+  multi-pass glow and moving flow markers (arrows or dashes) that show
+  direction and motion. Lines can be nested inside containers, locked,
+  hidden, and quantised through an RGB565 colour wheel that shows exactly
+  what an actual display will reproduce. "Als Bilder + Widgets anlegen"
+  bakes the animation into a seamlessly looping, RGB565-quantised PNG
+  sequence and wires it up as a matching `image` + `animimg` widget pair —
+  no manual YAML required.
+- **Safe, controlled YAML editing** — configuration drafts are validated and
+  diffed before anything is written back, so the designer never silently
+  overwrites your active ESPHome files.
+- **Persistent designer projects** with per-user roles, so multiple Home
+  Assistant users can work on separate or shared display projects.
+- **Encrypted, read-only device monitoring** via the ESPHome Native API:
+  device info, entities, current states and logs are visible in the
+  **Geräte** view (device commands remain intentionally disabled).
+- **Security by design** — Ingress-only request enforcement and API rate
+  limits, with configurable access levels ranging from fully read-only to
+  full write access with an optional Device Builder integration.
 
 ## Install in Home Assistant
 
