@@ -34,7 +34,7 @@ _LEGACY_STYLE_REMAP = {
 
 _BORDER_SIDE_FULL = ["TOP", "BOTTOM", "LEFT", "RIGHT"]
 
-_STYLE_PART_KEYS = {"indicator", "knob", "items", "ticks", "selected", "scrollbar", "cursor"}
+_STYLE_PART_KEYS = {"indicator", "knob", "items", "ticks", "selected", "scrollbar", "cursor", "list"}
 
 
 class ExportError(Exception):
@@ -223,8 +223,45 @@ def _widget_dict(node: WidgetNode, registry: IdRegistry, issues: list[ExportIssu
     _merge_passthrough(out, node.extra, issues, node.id)
 
     if node.children:
-        out["widgets"] = [{c.widget_type: _widget_dict(c, registry, issues)} for c in node.children]
+        if node.widget_type == "tileview":
+            out["tiles"] = [_tile_dict(c, registry, issues) for c in node.children]
+        elif node.widget_type == "tabview":
+            out["tabs"] = [_tab_dict(c, registry, issues) for c in node.children]
+        else:
+            out["widgets"] = [{c.widget_type: _widget_dict(c, registry, issues)} for c in node.children]
 
+    return out
+
+
+def _tab_dict(node: WidgetNode, registry: IdRegistry, issues: list[ExportIssue]) -> dict[str, Any]:
+    """One synthetic ``tab`` child of a ``tabview``, as one entry of its
+    ``tabs:`` list - see the ``tile``/``tileview`` comment in
+    widgetschema.py for the same pattern applied to ``tabview``. ``name`` is
+    ESPHome-required, so always emitted even when empty."""
+    out: dict[str, Any] = {"name": node.tab_title}
+    if node.id and not node.synthetic_id:
+        out["id"] = node.id
+    _merge_passthrough(out, node.extra, issues, node.id)
+    if node.children:
+        out["widgets"] = [{c.widget_type: _widget_dict(c, registry, issues)} for c in node.children]
+    return out
+
+
+def _tile_dict(node: WidgetNode, registry: IdRegistry, issues: list[ExportIssue]) -> dict[str, Any]:
+    """One synthetic ``tile`` child of a ``tileview``, as one entry of its
+    ``tiles:`` list - see the ``tile``/``tileview`` comment in
+    widgetschema.py. ``row``/``column`` are ESPHome-required, so always
+    emitted; ``dir`` is optional and only written when not its "ALL" default."""
+    out: dict[str, Any] = {}
+    if node.id and not node.synthetic_id:
+        out["id"] = node.id
+    out["column"] = node.tile_col
+    out["row"] = node.tile_row
+    if node.tile_dir and node.tile_dir != "ALL":
+        out["dir"] = node.tile_dir.split(",") if "," in node.tile_dir else node.tile_dir
+    _merge_passthrough(out, node.extra, issues, node.id)
+    if node.children:
+        out["widgets"] = [{c.widget_type: _widget_dict(c, registry, issues)} for c in node.children]
     return out
 
 

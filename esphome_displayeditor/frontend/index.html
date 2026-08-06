@@ -220,6 +220,7 @@
               <button id="add-page" type="button" class="button subtle compact" data-i18n="surface.addPage">+ Seite</button>
               <button id="add-bottom-layer" type="button" class="button subtle compact" data-i18n="surface.addBottomLayer">+ Bottom-Layer</button>
               <button id="add-top-layer" type="button" class="button subtle compact" data-i18n="surface.addTopLayer">+ Top-Layer</button>
+              <button id="add-msgbox" type="button" class="button subtle compact" data-i18n="surface.addMsgbox">+ Message box</button>
               <button id="surface-up" type="button" class="button subtle compact" data-i18n-attr="title:surface.moveUp" title="Seite nach oben verschieben">↑</button>
               <button id="surface-down" type="button" class="button subtle compact" data-i18n-attr="title:surface.moveDown" title="Seite nach unten verschieben">↓</button>
               <button id="delete-surface" type="button" class="button danger compact" data-i18n="surface.remove">Entfernen</button>
@@ -247,6 +248,20 @@
                 </label>
                 <p id="surface-error" class="hint issue-error hidden"></p>
                 <button id="apply-surface" type="button" class="button primary compact" data-i18n="surface.apply">Übernehmen</button>
+              </div>
+            </details>
+            <details id="msgbox-settings" class="surface-settings hidden">
+              <summary data-i18n="surface.msgboxEditSummary">Message box bearbeiten</summary>
+              <div class="surface-settings-fields">
+                <label><span data-i18n="surface.msgboxTitle">Titel</span>
+                  <input id="msgbox-title" type="text">
+                </label>
+                <label class="checkbox-field"><span data-i18n="surface.msgboxCloseButton">Schließen-Button</span>
+                  <input id="msgbox-close-button" type="checkbox">
+                </label>
+                <label><span data-i18n="surface.msgboxBodyText">Text</span>
+                  <textarea id="msgbox-body-text" rows="3"></textarea>
+                </label>
               </div>
             </details>
           </div>
@@ -317,6 +332,40 @@
             <div id="grid-cell-section" class="hidden">
               <div class="property-section" data-i18n="props.gridCell">Grid-Zelle</div>
               <div id="grid-cell-properties"></div>
+            </div>
+
+            <div id="tile-section" class="hidden">
+              <div class="property-section" data-i18n="props.tile">Kachel</div>
+              <div class="field-row">
+                <label><span data-i18n="props.tileRow">Zeile</span> <input id="tile-row" type="number" min="0"></label>
+                <label><span data-i18n="props.tileCol">Spalte</span> <input id="tile-col" type="number" min="0"></label>
+              </div>
+              <label><span data-i18n="props.tileDir">Wischrichtung</span>
+                <select id="tile-dir">
+                  <option value="ALL">ALL</option>
+                  <option value="HOR">HOR</option>
+                  <option value="VER">VER</option>
+                  <option value="LEFT">LEFT</option>
+                  <option value="RIGHT">RIGHT</option>
+                  <option value="TOP">TOP</option>
+                  <option value="BOTTOM">BOTTOM</option>
+                </select>
+              </label>
+            </div>
+
+            <div id="tileview-actions-section" class="hidden">
+              <div class="property-section" data-i18n="props.tileview">Kachelansicht</div>
+              <button id="add-tile" type="button" class="button subtle compact" data-i18n="tileview.addTile">+ Kachel hinzufügen</button>
+            </div>
+
+            <div id="tab-section" class="hidden">
+              <div class="property-section" data-i18n="props.tab">Tab</div>
+              <label><span data-i18n="props.tabTitle">Titel</span> <input id="tab-title" type="text"></label>
+            </div>
+
+            <div id="tabview-actions-section" class="hidden">
+              <div class="property-section" data-i18n="props.tabview">Tabs</div>
+              <button id="add-tab" type="button" class="button subtle compact" data-i18n="tabview.addTab">+ Tab hinzufügen</button>
             </div>
 
             <div class="property-section" data-i18n="props.style">Stil</div>

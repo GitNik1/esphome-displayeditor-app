@@ -41,8 +41,302 @@ def test_schema_exposes_desktop_widget_set(tmp_path: Path) -> None:
     schemas = service.schemas("de")
     keys = {widget["type_key"] for widget in schemas["widgets"]}
     assert {"obj", "container", "label", "button", "switch", "slider", "image"} <= keys
-    assert {"bar", "arc"} <= keys
+    assert {"bar", "arc", "checkbox", "dropdown", "roller", "textarea", "keyboard"} <= keys
+    assert {"tileview", "tile"} <= keys
+    assert {"tabview", "tab"} <= keys
+    assert {"led", "spinner", "qrcode", "spinbox"} <= keys
     assert "chart" not in keys
+    assert not {"buttonmatrix", "msgboxes", "line", "canvas"} & keys
+
+
+def test_tile_is_a_stub_not_offered_standalone_in_the_palette(tmp_path: Path) -> None:
+    service = DesignerService(tmp_path)
+    schemas = service.schemas("de")
+    by_key = {widget["type_key"]: widget for widget in schemas["widgets"]}
+    assert by_key["tile"]["is_stub"] is True
+    assert by_key["tileview"]["is_stub"] is False
+    assert by_key["tileview"]["child_role"] == "tile"
+    assert by_key["tab"]["is_stub"] is True
+    assert by_key["tabview"]["is_stub"] is False
+    assert by_key["tabview"]["child_role"] == "tab"
+
+
+def test_schema_widgets_are_categorised_input_or_display(tmp_path: Path) -> None:
+    service = DesignerService(tmp_path)
+    schemas = service.schemas("de")
+    categories = {widget["type_key"]: widget["category"] for widget in schemas["widgets"]}
+    assert categories["button"] == "input"
+    assert categories["switch"] == "input"
+    assert categories["slider"] == "input"
+    assert categories["checkbox"] == "input"
+    assert categories["arc"] == "input"
+    assert categories["dropdown"] == "input"
+    assert categories["roller"] == "input"
+    assert categories["textarea"] == "input"
+    assert categories["keyboard"] == "input"
+    assert categories["label"] == "display"
+    assert categories["image"] == "display"
+    assert categories["bar"] == "display"
+    assert categories["spinbox"] == "input"
+    assert categories["led"] == "display"
+    assert categories["spinner"] == "display"
+    assert categories["qrcode"] == "display"
+    assert set(categories.values()) <= {"input", "display"}
+
+
+def test_addon_checkbox_export_and_import_without_changing_core(tmp_path: Path) -> None:
+    service = DesignerService(tmp_path)
+    project = project_with_button()
+    project["widgets"] = [
+        {
+            "id": "night_mode", "widget_type": "checkbox", "x": 10, "y": 10,
+            "width": 150, "height": 24,
+            "properties": {"text": "Night mode", "state_checked": True},
+            "style_tree": {"indicator": {"bg_color": "20C7B7"}}, "children": [],
+        },
+    ]
+
+    exported = service.export_yaml(project)["yaml"]
+    assert "checkbox:" in exported
+    assert "text: Night mode" in exported
+    assert "state_checked: true" in exported
+    imported = service.import_yaml(f"lvgl:\n{exported.split('lvgl:', 1)[1]}")
+    assert imported["valid"]
+    widgets = {item["id"]: item for item in imported["project"]["widgets"]}
+    assert widgets["night_mode"]["properties"]["text"] == "Night mode"
+    assert widgets["night_mode"]["properties"]["state_checked"] is True
+    assert widgets["night_mode"]["style_tree"]["indicator"]["bg_color"] == "20C7B7"
+
+
+def test_addon_dropdown_and_roller_export_and_import_without_changing_core(tmp_path: Path) -> None:
+    service = DesignerService(tmp_path)
+    project = project_with_button()
+    project["widgets"] = [
+        {
+            "id": "room_select", "widget_type": "dropdown", "x": 10, "y": 10,
+            "width": 150, "height": 40,
+            "properties": {
+                "options": ["Living room", "Kitchen", "Bedroom"],
+                "selected_index": 1, "dir": "UP",
+            },
+            "style_tree": {"selected": {"bg_color": "20C7B7"}}, "children": [],
+        },
+        {
+            "id": "hour_roller", "widget_type": "roller", "x": 10, "y": 60,
+            "width": 100, "height": 90,
+            "properties": {
+                "options": ["00", "01", "02", "03"],
+                "selected_index": 2, "visible_row_count": 3, "mode": "INFINITE",
+            },
+            "style_tree": {}, "children": [],
+        },
+    ]
+
+    exported = service.export_yaml(project)["yaml"]
+    assert "dropdown:" in exported and "roller:" in exported
+    assert "- Living room" in exported and "- Kitchen" in exported
+    assert "selected_index: 1" in exported
+    assert "mode: INFINITE" in exported
+    imported = service.import_yaml(f"lvgl:\n{exported.split('lvgl:', 1)[1]}")
+    assert imported["valid"]
+    widgets = {item["id"]: item for item in imported["project"]["widgets"]}
+    assert widgets["room_select"]["properties"]["options"] == ["Living room", "Kitchen", "Bedroom"]
+    assert widgets["room_select"]["properties"]["selected_index"] == 1
+    assert widgets["room_select"]["style_tree"]["selected"]["bg_color"] == "20C7B7"
+    assert widgets["hour_roller"]["properties"]["options"] == ["00", "01", "02", "03"]
+    assert widgets["hour_roller"]["properties"]["visible_row_count"] == 3
+
+
+def test_addon_textarea_and_keyboard_export_and_import_without_changing_core(tmp_path: Path) -> None:
+    service = DesignerService(tmp_path)
+    project = project_with_button()
+    project["widgets"] = [
+        {
+            "id": "name_field", "widget_type": "textarea", "x": 10, "y": 10,
+            "width": 200, "height": 40,
+            "properties": {
+                "text": "", "placeholder_text": "Enter name", "one_line": True,
+                "max_length": 32,
+            },
+            "style_tree": {}, "children": [],
+        },
+        {
+            "id": "on_screen_keyboard", "widget_type": "keyboard", "x": 10, "y": 60,
+            "width": 320, "height": 160,
+            "properties": {"textarea": "name_field", "mode": "TEXT_UPPER"},
+            "style_tree": {}, "children": [],
+        },
+    ]
+
+    exported = service.export_yaml(project)["yaml"]
+    assert "textarea:" in exported and "keyboard:" in exported
+    assert "placeholder_text: Enter name" in exported
+    assert "one_line: true" in exported
+    assert "textarea: name_field" in exported
+    assert "mode: TEXT_UPPER" in exported
+    imported = service.import_yaml(f"lvgl:\n{exported.split('lvgl:', 1)[1]}")
+    assert imported["valid"]
+    widgets = {item["id"]: item for item in imported["project"]["widgets"]}
+    assert widgets["name_field"]["properties"]["placeholder_text"] == "Enter name"
+    assert widgets["name_field"]["properties"]["one_line"] is True
+    assert widgets["on_screen_keyboard"]["properties"]["textarea"] == "name_field"
+    assert widgets["on_screen_keyboard"]["properties"]["mode"] == "TEXT_UPPER"
+
+
+def test_addon_tileview_export_and_import_without_changing_core(tmp_path: Path) -> None:
+    service = DesignerService(tmp_path)
+    project = project_with_button()
+    project["widgets"] = [
+        {
+            "id": "main_tileview", "widget_type": "tileview", "x": 0, "y": 0,
+            "width": 300, "height": 300,
+            "properties": {}, "style_tree": {},
+            "children": [
+                {
+                    "id": "home_tile", "widget_type": "tile",
+                    "tile_row": 0, "tile_col": 0, "tile_dir": "ALL",
+                    "properties": {}, "style_tree": {},
+                    "children": [
+                        {
+                            "id": "home_label", "widget_type": "label",
+                            "properties": {"text": "Home"}, "style_tree": {},
+                            "children": [],
+                        },
+                    ],
+                },
+                {
+                    "id": "settings_tile", "widget_type": "tile",
+                    "tile_row": 0, "tile_col": 1, "tile_dir": "LEFT",
+                    "properties": {}, "style_tree": {},
+                    "children": [],
+                },
+            ],
+        },
+    ]
+
+    exported = service.export_yaml(project)["yaml"]
+    assert "tileview:" in exported
+    assert "tiles:" in exported and "widgets:" in exported
+    assert "column: 1" in exported
+    assert "dir: LEFT" in exported
+    assert "id: settings_tile" in exported
+    imported = service.import_yaml(f"lvgl:\n{exported.split('lvgl:', 1)[1]}")
+    assert imported["valid"]
+    tileview = imported["project"]["widgets"][0]
+    assert tileview["widget_type"] == "tileview"
+    tiles = {t["id"]: t for t in tileview["children"]}
+    assert tiles["home_tile"]["tile_row"] == 0
+    assert tiles["home_tile"]["tile_col"] == 0
+    assert tiles["home_tile"]["children"][0]["id"] == "home_label"
+    assert tiles["settings_tile"]["tile_col"] == 1
+    assert tiles["settings_tile"]["tile_dir"] == "LEFT"
+    assert tiles["settings_tile"]["children"] == []
+
+
+def test_addon_tabview_export_and_import_without_changing_core(tmp_path: Path) -> None:
+    service = DesignerService(tmp_path)
+    project = project_with_button()
+    project["widgets"] = [
+        {
+            "id": "main_tabview", "widget_type": "tabview", "x": 0, "y": 0,
+            "width": 300, "height": 300,
+            "properties": {"position": "TOP", "size": "10%"}, "style_tree": {},
+            "children": [
+                {
+                    "id": "home_tab", "widget_type": "tab", "tab_title": "Home",
+                    "properties": {}, "style_tree": {},
+                    "children": [
+                        {
+                            "id": "home_label", "widget_type": "label",
+                            "properties": {"text": "Home"}, "style_tree": {},
+                            "children": [],
+                        },
+                    ],
+                },
+                {
+                    "id": "settings_tab", "widget_type": "tab", "tab_title": "Settings",
+                    "properties": {}, "style_tree": {},
+                    "children": [],
+                },
+            ],
+        },
+    ]
+
+    exported = service.export_yaml(project)["yaml"]
+    assert "tabview:" in exported
+    assert "tabs:" in exported and "widgets:" in exported
+    assert "name: Home" in exported
+    assert "name: Settings" in exported
+    assert "id: settings_tab" in exported
+    assert "position: TOP" in exported
+    assert "size: 10%" in exported
+    imported = service.import_yaml(f"lvgl:\n{exported.split('lvgl:', 1)[1]}")
+    assert imported["valid"]
+    tabview = imported["project"]["widgets"][0]
+    assert tabview["widget_type"] == "tabview"
+    tabs = {t["id"]: t for t in tabview["children"]}
+    assert tabs["home_tab"]["tab_title"] == "Home"
+    assert tabs["home_tab"]["children"][0]["id"] == "home_label"
+    assert tabs["settings_tab"]["tab_title"] == "Settings"
+    assert tabs["settings_tab"]["children"] == []
+
+
+def test_addon_led_spinner_qrcode_spinbox_export_and_import_without_changing_core(
+    tmp_path: Path,
+) -> None:
+    service = DesignerService(tmp_path)
+    project = project_with_button()
+    project["widgets"] = [
+        {
+            "id": "status_led", "widget_type": "led", "x": 10, "y": 10,
+            "width": 20, "height": 20,
+            "properties": {"color": "FF0000", "brightness": "70%"},
+            "style_tree": {}, "children": [],
+        },
+        {
+            "id": "busy_spinner", "widget_type": "spinner", "x": 40, "y": 10,
+            "width": 40, "height": 40,
+            "properties": {
+                "arc_length": 60, "spin_time": "500ms",
+                "arc_color": "18BCF2", "arc_rounded": True,
+            },
+            "style_tree": {"indicator": {"arc_color": "31DE70"}}, "children": [],
+        },
+        {
+            "id": "lv_qr", "widget_type": "qrcode", "x": 90, "y": 10,
+            "width": 100, "height": 100,
+            "properties": {"text": "esphome.io", "size": 100, "dark_color": "steelblue"},
+            "style_tree": {}, "children": [],
+        },
+        {
+            "id": "spinbox_id", "widget_type": "spinbox", "x": 200, "y": 10,
+            "width": 120, "height": 40,
+            "properties": {"range_from": -10, "range_to": 40, "digits": 3, "decimal_places": 1},
+            "style_tree": {}, "children": [],
+        },
+    ]
+
+    exported = service.export_yaml(project)["yaml"]
+    assert "led:" in exported
+    assert "brightness: 70%" in exported
+    assert "spinner:" in exported
+    assert "arc_length: 60" in exported
+    assert "indicator:" in exported and "31DE70" in exported.upper()
+    assert "qrcode:" in exported
+    assert "text: esphome.io" in exported
+    assert "spinbox:" in exported
+    assert "range_from: -10" in exported
+
+    imported = service.import_yaml(f"lvgl:\n{exported.split('lvgl:', 1)[1]}")
+    assert imported["valid"]
+    by_id = {w["id"]: w for w in imported["project"]["widgets"]}
+    assert by_id["status_led"]["properties"]["brightness"] == "70%"
+    assert by_id["busy_spinner"]["properties"]["arc_length"] == 60
+    assert by_id["busy_spinner"]["properties"]["arc_rounded"] is True
+    assert by_id["busy_spinner"]["style_tree"]["indicator"]["arc_color"].upper() == "31DE70"
+    assert by_id["lv_qr"]["properties"]["text"] == "esphome.io"
+    assert by_id["spinbox_id"]["properties"]["digits"] == 3
+    assert by_id["spinbox_id"]["properties"]["range_from"] == -10
 
 
 def test_addon_bar_and_arc_export_and_import_without_changing_core(tmp_path: Path) -> None:

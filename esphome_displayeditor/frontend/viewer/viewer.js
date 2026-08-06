@@ -4,9 +4,11 @@ import { t } from "../i18n.js";
 
 const SUPPORTED_WIDGETS = new Set([
   "obj", "container", "label", "button", "switch", "slider", "bar", "arc", "image", "animimg",
+  "checkbox", "dropdown", "roller", "textarea", "keyboard", "tileview", "tabview",
+  "led", "spinner", "qrcode", "spinbox",
 ]);
 const STYLE_BRANCHES = new Set([
-  "states", "indicator", "knob", "items", "ticks", "selected", "scrollbar", "cursor",
+  "states", "indicator", "knob", "items", "ticks", "selected", "scrollbar", "cursor", "list",
 ]);
 const RUNTIME_STYLE_KEYS = new Set([
   "bg_color", "text_color", "border_color", "opa", "bg_opa", "border_width", "radius",
@@ -147,7 +149,30 @@ function imageSource(project, id) {
   return /^https?:\/\//i.test(source) ? source : null;
 }
 
-function allWidgetItems(project) {
+//: The `tile` a `tileview` currently shows - explicit `lvgl.tileview.select`
+//: choice if any, else the tile at row 0/col 0 (ESPHome's own default start
+//: position), else simply its first tile.
+function activeTileFor(tileviewWidget, activeTiles) {
+  const children = tileviewWidget.children || [];
+  if (!children.length) return null;
+  const explicitId = activeTiles?.[tileviewWidget.id];
+  const explicit = explicitId && children.find((tile) => tile.id === explicitId);
+  if (explicit) return explicit;
+  return children.find((tile) => (tile.tile_row || 0) === 0 && (tile.tile_col || 0) === 0)
+    || children[0];
+}
+
+//: The `tab` a `tabview` currently shows - explicit choice (tab-bar click or
+//: `lvgl.tabview.select`) if any, else its first tab (ESPHome's own default).
+function activeTabFor(tabviewWidget, activeTabs) {
+  const children = tabviewWidget.children || [];
+  if (!children.length) return null;
+  const explicitId = activeTabs?.[tabviewWidget.id];
+  const explicit = explicitId && children.find((tab) => tab.id === explicitId);
+  return explicit || children[0];
+}
+
+function allWidgetItems(project, activeTiles = {}, activeTabs = {}) {
   const boxes = computeLayout(project);
   const result = [];
   const visit = (widgets, ancestorHidden = false, parent = null) => {
@@ -159,8 +184,29 @@ function allWidgetItems(project) {
         width: Number(widget.width) || 100,
         height: Number(widget.height) || 40,
       };
+      // `tile`/`tab` are synthetic pseudo-widgets (see widgetschema.py) -
+      // they never get their own visible box. Only the tileview's/tabview's
+      // currently active tile/tab contributes its children to the render;
+      // the rest stay hidden, which is this MVP's stand-in for real swipe
+      // navigation (see the plan doc).
+      if (widget.widget_type === "tile" || widget.widget_type === "tab") {
+        visit(widget.children, hidden, parent);
+        return;
+      }
       result.push({ widget, box, hidden, parent });
-      visit(widget.children, hidden, widget);
+      if (widget.widget_type === "tileview") {
+        const active = activeTileFor(widget, activeTiles);
+        (widget.children || []).forEach((tile) => {
+          visit([tile], hidden || tile !== active, widget);
+        });
+      } else if (widget.widget_type === "tabview") {
+        const active = activeTabFor(widget, activeTabs);
+        (widget.children || []).forEach((tab) => {
+          visit([tab], hidden || tab !== active, widget);
+        });
+      } else {
+        visit(widget.children, hidden, widget);
+      }
     });
   };
   visit(project.widgets);
@@ -172,6 +218,10 @@ function viewerWidgetRoots(project) {
   (project.pages || []).forEach((page) => roots.push(...(page.widgets || [])));
   roots.push(...(project.bottom_layer?.widgets || []));
   roots.push(...(project.top_layer?.widgets || []));
+  (project.msgboxes || []).forEach((msgbox) => {
+    roots.push(...(msgbox.buttons || []));
+    roots.push(...(msgbox.header_buttons || []));
+  });
   return roots;
 }
 
@@ -273,13 +323,19 @@ function findWidget(project, id) {
     }
   };
   visit(viewerWidgetRoots(project));
-  return found;
+  if (found) return found;
+  // A message box itself is not a WidgetNode (see msgbox_support.py) - it
+  // only ever appears as a plain id target for lvgl.widget.show/.hide, so it
+  // is looked up separately, as the actual mutable object from
+  // project.msgboxes (not a copy), so `widget.hidden = ...` persists.
+  return (project.msgboxes || []).find((msgbox) => String(msgbox.id || "") === String(id)) || null;
 }
 
 const RUNTIME_TARGET_WIDGET = {
-  text: new Set(["label"]),
+  text: new Set(["label", "textarea"]),
   value: new Set(["slider", "bar", "arc"]),
-  state_checked: new Set(["switch"]),
+  state_checked: new Set(["switch", "checkbox"]),
+  selected_index: new Set(["dropdown", "roller"]),
 };
 
 export function runtimeBoolean(value) {
@@ -294,7 +350,7 @@ export function runtimeBoolean(value) {
 export function entityMatchesRuntimeTarget(entity, target, runtimeState = null) {
   if (!entity || target === "text") return Boolean(entity);
   const type = String(entity.type || "").toLowerCase();
-  if (target === "value") {
+  if (target === "value" || target === "selected_index") {
     if (["sensor", "number"].includes(type)) return true;
     const value = Number(runtimeState?.state);
     return runtimeState?.state !== "" && runtimeState?.state !== null
@@ -367,7 +423,7 @@ export function applyRuntimeBinding(
 
   let next;
   if (target === "text") next = formatRuntimeValue(runtimeState.state, binding.value_format);
-  else if (target === "value") {
+  else if (target === "value" || target === "selected_index") {
     next = Number(runtimeState.state);
     if (!Number.isFinite(next)) return false;
   } else {
@@ -415,6 +471,13 @@ function updatePayloads(payload) {
 
 function safeLiteral(value) {
   return value === null || ["string", "number", "boolean"].includes(typeof value);
+}
+
+//: The one exception to "actions only ever carry literal values": an
+//: options list is how ESPHome's own `lvgl.dropdown.update`/
+//: `lvgl.roller.update` replace a dropdown/roller's choices at runtime.
+function safeStringList(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function viewerConditionValue(condition, context) {
@@ -485,6 +548,93 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
     return { handled: true, changed, message: `${name}: ${page.id}` };
   }
 
+  if (name === "lvgl.tileview.select") {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return { handled: false, changed: false, message: t("viewer.event.invalidAction") };
+    }
+    const tileviewId = String(payload.id || "");
+    const tileview = findWidget(project, tileviewId);
+    if (!tileview || tileview.widget_type !== "tileview") {
+      return {
+        handled: true, changed: false, warning: true,
+        message: t("viewer.event.updateNotFound", { id: tileviewId || t("viewer.event.noId") }),
+      };
+    }
+    const children = tileview.children || [];
+    let target = payload.tile_id
+      ? children.find((tile) => tile.id === String(payload.tile_id))
+      : null;
+    if (!target && (payload.row !== undefined || payload.column !== undefined)) {
+      const row = Number(payload.row) || 0;
+      const column = Number(payload.column) || 0;
+      target = children.find((tile) => (tile.tile_row || 0) === row && (tile.tile_col || 0) === column);
+    }
+    if (!target) {
+      return {
+        handled: true, changed: false, warning: true,
+        message: t("viewer.event.updateNotFound", { id: tileviewId }),
+      };
+    }
+    runtime.activeTiles ||= {};
+    const changed = runtime.activeTiles[tileviewId] !== target.id;
+    runtime.activeTiles[tileviewId] = target.id;
+    return { handled: true, changed, message: `lvgl.tileview.select: ${target.id}` };
+  }
+
+  if (name === "lvgl.tabview.select") {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return { handled: false, changed: false, message: t("viewer.event.invalidAction") };
+    }
+    const tabviewId = String(payload.id || "");
+    const tabview = findWidget(project, tabviewId);
+    if (!tabview || tabview.widget_type !== "tabview") {
+      return {
+        handled: true, changed: false, warning: true,
+        message: t("viewer.event.updateNotFound", { id: tabviewId || t("viewer.event.noId") }),
+      };
+    }
+    const children = tabview.children || [];
+    const index = Number(payload.index);
+    const target = Number.isInteger(index) ? children[index] : undefined;
+    if (!target) {
+      return {
+        handled: true, changed: false, warning: true,
+        message: t("viewer.event.updateNotFound", { id: tabviewId }),
+      };
+    }
+    runtime.activeTabs ||= {};
+    const changed = runtime.activeTabs[tabviewId] !== target.id;
+    runtime.activeTabs[tabviewId] = target.id;
+    return { handled: true, changed, message: `lvgl.tabview.select: ${target.id}` };
+  }
+
+  if (["lvgl.spinbox.increment", "lvgl.spinbox.decrement"].includes(name)) {
+    const direction = name.endsWith(".increment") ? 1 : -1;
+    const ids = actionIds(payload);
+    let changed = false;
+    const rejected = [];
+    ids.forEach((id) => {
+      const widget = findWidget(project, id);
+      if (!widget || widget.widget_type !== "spinbox") {
+        rejected.push(id);
+        return;
+      }
+      widget.properties ||= {};
+      const decimals = Number(widget.properties.decimal_places) || 0;
+      const step = decimals > 0 ? 1 / (10 ** decimals) : 1;
+      widget.properties.value = Number(widget.properties.value || 0) + direction * step;
+      changed = true;
+    });
+    if (!ids.length) return {
+      handled: true, changed: false, warning: true, message: t("viewer.event.noValidWidgetId", { name }),
+    };
+    const detail = rejected.length ? t("viewer.event.notFoundSuffix", { ids: rejected.join(", ") }) : "";
+    return {
+      handled: true, changed, warning: Boolean(rejected.length),
+      message: `${name}: ${ids.join(", ")}${detail}`,
+    };
+  }
+
   if (["lvgl.widget.show", "lvgl.widget.hide"].includes(name)) {
     const hidden = name.endsWith(".hide");
     const ids = actionIds(payload);
@@ -543,6 +693,14 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
       "rotation", "adjustable", "change_rate", ...RUNTIME_STYLE_KEYS,
     ]),
     "lvgl.switch.update": new Set(["state_checked", ...RUNTIME_STYLE_KEYS]),
+    "lvgl.dropdown.update": new Set(["selected_index", "options", ...RUNTIME_STYLE_KEYS]),
+    "lvgl.roller.update": new Set(["selected_index", "options", ...RUNTIME_STYLE_KEYS]),
+    "lvgl.textarea.update": new Set(["text", ...RUNTIME_STYLE_KEYS]),
+    "lvgl.keyboard.update": new Set(["mode", "textarea", ...RUNTIME_STYLE_KEYS]),
+    "lvgl.led.update": new Set(["color", "brightness", ...RUNTIME_STYLE_KEYS]),
+    "lvgl.spinner.update": new Set(["arc_color", "arc_width", "arc_length", "arc_rounded", "spin_time"]),
+    "lvgl.qrcode.update": new Set(["text", "size", "dark_color", "light_color", ...RUNTIME_STYLE_KEYS]),
+    "lvgl.spinbox.update": new Set(["value"]),
   };
   const updateWidgetTypes = {
     "lvgl.label.update": "label",
@@ -552,12 +710,21 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
     "lvgl.bar.update": "bar",
     "lvgl.arc.update": "arc",
     "lvgl.switch.update": "switch",
+    "lvgl.dropdown.update": "dropdown",
+    "lvgl.roller.update": "roller",
+    "lvgl.textarea.update": "textarea",
+    "lvgl.keyboard.update": "keyboard",
+    "lvgl.led.update": "led",
+    "lvgl.spinner.update": "spinner",
+    "lvgl.qrcode.update": "qrcode",
+    "lvgl.spinbox.update": "spinbox",
   };
   const numericUpdateKeys = new Set([
     "value", "start_value", "min_value", "max_value", "start_angle", "end_angle",
-    "rotation", "change_rate",
+    "rotation", "change_rate", "selected_index", "size", "arc_width", "arc_length",
   ]);
-  const booleanUpdateKeys = new Set(["hidden", "state_checked", "animated", "adjustable"]);
+  const booleanUpdateKeys = new Set(["hidden", "state_checked", "animated", "adjustable", "arc_rounded"]);
+  const listUpdateKeys = new Set(["options"]);
   if (updateKeys[name]) {
     let changed = false;
     const notes = [];
@@ -578,7 +745,8 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
       }
       Object.entries(update).forEach(([key, value]) => {
         if (key === "id") return;
-        if (!updateKeys[name].has(key) || !safeLiteral(value)) {
+        const isListKey = listUpdateKeys.has(key);
+        if (!updateKeys[name].has(key) || (isListKey ? !safeStringList(value) : !safeLiteral(value))) {
           notes.push(t("viewer.event.notAllowed", { ref: `${widget.id}.${key}` }));
           return;
         }
@@ -599,6 +767,7 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
           widget.properties ||= {};
           if (booleanUpdateKeys.has(key)) widget.properties[key] = value;
           else if (numericUpdateKeys.has(key)) widget.properties[key] = Number(value);
+          else if (isListKey) widget.properties[key] = value.map(String);
           else widget.properties[key] = String(value ?? "");
         }
         changed = true;
@@ -797,6 +966,52 @@ function renderWidgetContent(project, widget, timers, activeStates = []) {
     applyPartStyle(knob, project, widget, "knob", activeStates);
     return indicator;
   }
+  if (widget.widget_type === "checkbox") {
+    const wrapper = document.createElement("span");
+    wrapper.className = "viewer-checkbox";
+    const indicator = document.createElement("span");
+    indicator.className = "viewer-checkbox-indicator";
+    if (widget.properties?.state_checked) indicator.classList.add("checked");
+    applyPartStyle(indicator, project, widget, "indicator", activeStates);
+    const text = document.createElement("span");
+    text.className = "viewer-widget-text";
+    text.textContent = textContent(widget);
+    wrapper.append(indicator, text);
+    return wrapper;
+  }
+  if (widget.widget_type === "dropdown" || widget.widget_type === "roller") {
+    const options = Array.isArray(widget.properties?.options) ? widget.properties.options : [];
+    const select = document.createElement("select");
+    select.className = widget.widget_type === "dropdown" ? "viewer-dropdown" : "viewer-roller";
+    options.forEach((label, index) => select.append(new Option(String(label), String(index))));
+    if (widget.widget_type === "roller") {
+      select.size = Math.max(1, Number(widget.properties?.visible_row_count) || 3);
+    }
+    const selectedIndex = clamp(Number(widget.properties?.selected_index) || 0, 0, Math.max(0, options.length - 1));
+    select.value = String(selectedIndex);
+    return select;
+  }
+  if (widget.widget_type === "textarea") {
+    const props = widget.properties || {};
+    const oneLine = Boolean(props.one_line);
+    const el = document.createElement(oneLine ? "input" : "textarea");
+    el.className = "viewer-textarea";
+    if (oneLine) el.type = props.password_mode ? "password" : "text";
+    el.value = String(props.text ?? "");
+    if (props.placeholder_text) el.placeholder = String(props.placeholder_text);
+    if (Number(props.max_length) > 0) el.maxLength = Number(props.max_length);
+    return el;
+  }
+  if (widget.widget_type === "keyboard") {
+    // The real device has no physical keyboard, but the browser Viewer's
+    // textarea is a normal HTML control - typing already works directly on
+    // it via the host's actual keyboard, so this only needs to exist as a
+    // visual placeholder, not a functional on-screen key-press simulator.
+    const box = document.createElement("span");
+    box.className = "viewer-keyboard";
+    box.textContent = "⌨";
+    return box;
+  }
   if (widget.widget_type === "slider") {
     const minimum = Number(widget.properties?.min_value) || 0;
     const maximum = Number(widget.properties?.max_value) || 100;
@@ -824,6 +1039,66 @@ function renderWidgetContent(project, widget, timers, activeStates = []) {
     track.append(fill, knob);
     control.append(track, input);
     return control;
+  }
+  if (widget.widget_type === "tabview") {
+    // Deliberately simplified MVP (see plan doc 3a.6): a real tab bar, but
+    // always along the top regardless of `position`, no swipe gesture
+    // support - the same "functionally correct base simulation, not a full
+    // LVGL rebuild" approach already used for `keyboard`/`tileview`.
+    const bar = document.createElement("span");
+    bar.className = "viewer-tabview-bar";
+    (widget.children || []).forEach((tab) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "viewer-tab-button";
+      button.dataset.tabId = tab.id || "";
+      button.textContent = tab.tab_title || tab.id || "";
+      bar.append(button);
+    });
+    return bar;
+  }
+  if (widget.widget_type === "led") {
+    const props = widget.properties || {};
+    const dot = document.createElement("span");
+    dot.className = "viewer-led";
+    const color = resolveViewerColor(project, props.color) || "#ff0000";
+    const brightness = viewerOpacity(props.brightness) ?? 1;
+    dot.style.background = color;
+    dot.style.opacity = String(Math.max(0.1, brightness));
+    return dot;
+  }
+  if (widget.widget_type === "spinner") {
+    // CSS-animated ring instead of the SVG arc machinery `arc` uses - a
+    // spinner never needs drag interaction or precise sweep math, only a
+    // colour and a rotation speed.
+    const props = widget.properties || {};
+    const ring = document.createElement("span");
+    ring.className = "viewer-spinner";
+    const color = resolveViewerColor(project, props.arc_color) || "#20c7b7";
+    ring.style.borderTopColor = color;
+    ring.style.borderRightColor = color;
+    const spinTime = String(props.spin_time || "2s");
+    ring.style.animationDuration = /^[\d.]+$/.test(spinTime) ? `${spinTime}ms` : spinTime;
+    return ring;
+  }
+  if (widget.widget_type === "qrcode") {
+    // No QR-generation library is bundled (self-contained artifact policy) -
+    // a labelled placeholder showing the encoded text is the same
+    // "functionally indicative, not pixel-real" simplification already used
+    // for `keyboard`.
+    const box = document.createElement("span");
+    box.className = "viewer-qrcode";
+    box.textContent = textContent(widget) || "QR";
+    return box;
+  }
+  if (widget.widget_type === "spinbox") {
+    const props = widget.properties || {};
+    const decimals = clamp(Number(props.decimal_places) || 0, 0, 6);
+    const value = Number(props.value) || 0;
+    const el = document.createElement("span");
+    el.className = "viewer-spinbox";
+    el.textContent = value.toFixed(decimals);
+    return el;
   }
   if (widget.widget_type === "bar") return renderBar(project, widget, activeStates);
   if (widget.widget_type === "arc") return renderArc(project, widget, activeStates);
@@ -884,12 +1159,80 @@ function renderWidget(project, item, timers, warnings, controller) {
 
   const content = renderWidgetContent(project, widget, timers, activeStates);
   if (content) node.append(content);
+  if (widget.widget_type === "tabview") {
+    const active = activeTabFor(widget, controller.runtime?.activeTabs);
+    node.querySelectorAll(".viewer-tab-button").forEach((button) => {
+      button.classList.toggle("active", Boolean(active) && button.dataset.tabId === active.id);
+    });
+  }
   if (activeStates.includes("disabled")) {
     node.classList.add("viewer-disabled");
     node.setAttribute("aria-disabled", "true");
   }
   controller.bindWidget(node, widget);
   return node;
+}
+
+//: Renders one button (a plain WidgetNode-shaped entry, see msgbox_support.py)
+//: as an in-flow flex child instead of an absolutely-positioned canvas box -
+//: a msgbox footer/header row auto-lays its buttons out, real x/y on the
+//: button entries is not meaningful there.
+function renderMsgboxButton(project, button, timers, warnings, controller) {
+  const box = { left: 0, top: 0, width: Number(button.width) || 90, height: Number(button.height) || 36 };
+  const node = renderWidget(project, { widget: button, box, hidden: false, parent: null }, timers, warnings, controller);
+  node.style.position = "static";
+  node.style.width = "auto";
+  node.style.height = "auto";
+  return node;
+}
+
+function renderMsgboxOverlay(project, msgbox, timers, warnings, controller) {
+  const dialog = document.createElement("div");
+  dialog.className = "viewer-msgbox";
+  dialog.dataset.widgetId = msgbox.id || "";
+  dialog.hidden = msgbox.hidden !== false;
+
+  const header = document.createElement("div");
+  header.className = "viewer-msgbox-header";
+  const title = document.createElement("span");
+  title.className = "viewer-msgbox-title";
+  title.textContent = String(msgbox.title || "");
+  header.append(title);
+  (msgbox.header_buttons || []).forEach((button) => {
+    header.append(renderMsgboxButton(project, button, timers, warnings, controller));
+  });
+  if (msgbox.close_button !== false) {
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "viewer-msgbox-close";
+    close.textContent = "✕";
+    close.addEventListener("click", () => {
+      msgbox.hidden = true;
+      controller.recordEvent("state", `${msgbox.id || "msgbox"}: ${t("viewer.event.stateInactive")}`);
+      controller.render();
+    });
+    header.append(close);
+  }
+  dialog.append(header);
+
+  const bodyText = msgbox.body?.text;
+  if (bodyText) {
+    const body = document.createElement("div");
+    body.className = "viewer-msgbox-body";
+    body.textContent = String(bodyText);
+    dialog.append(body);
+  }
+
+  if ((msgbox.buttons || []).length) {
+    const footer = document.createElement("div");
+    footer.className = "viewer-msgbox-footer";
+    msgbox.buttons.forEach((button) => {
+      footer.append(renderMsgboxButton(project, button, timers, warnings, controller));
+    });
+    dialog.append(footer);
+  }
+
+  return dialog;
 }
 
 function prepareCanvas(canvas, width, height) {
@@ -932,7 +1275,7 @@ export class ViewerController {
     this.timers = [];
     this.logEntries = [];
     this.renderWarnings = new Set();
-    this.runtime = { activePageId: "" };
+    this.runtime = { activePageId: "", activeTiles: {}, activeTabs: {} };
     this.runtimeBindings = [];
     this.runtimeStates = new Map();
     this.runtimeDevices = new Map();
@@ -951,6 +1294,9 @@ export class ViewerController {
     this.stopRuntimeTimer();
     this.sourceProject = cloneViewerProject(project);
     this.project = cloneViewerProject(this.sourceProject);
+    // Real ESPHome msgboxes always start hidden - there is no "visible at
+    // boot" config option, only lvgl.widget.show/.hide at runtime.
+    (this.project.msgboxes || []).forEach((msgbox) => { msgbox.hidden = true; });
     this.name = name;
     this.backgroundPreview = backgroundPreview;
     this.zoom = 1;
@@ -958,7 +1304,7 @@ export class ViewerController {
     this.rotationControl.value = "0";
     this.fitMode = true;
     this.logEntries = [];
-    this.runtime = { activePageId: this.project.pages?.[0]?.id || "" };
+    this.runtime = { activePageId: this.project.pages?.[0]?.id || "", activeTiles: {}, activeTabs: {} };
     this.runtimeBindings = cloneViewerProject(runtimeBindings);
     this.runtimeStates = new Map();
     this.runtimeDevices = new Map();
@@ -990,7 +1336,8 @@ export class ViewerController {
     if (!this.sourceProject) return;
     this.stopAnimations();
     this.project = cloneViewerProject(this.sourceProject);
-    this.runtime = { activePageId: this.project.pages?.[0]?.id || "" };
+    (this.project.msgboxes || []).forEach((msgbox) => { msgbox.hidden = true; });
+    this.runtime = { activePageId: this.project.pages?.[0]?.id || "", activeTiles: {}, activeTabs: {} };
     this.logEntries = [];
     this.applyAllRuntimeBindings({ render: false });
     this.renderEventLog();
@@ -1137,7 +1484,7 @@ export class ViewerController {
       if (document.activeElement === node) states.push("focused");
       if (widget === transientWidget) states.push(...transientStates);
       applyStyle(node, this.project, widget, states);
-      if (["label", "button"].includes(widget.widget_type)) {
+      if (["label", "button", "checkbox"].includes(widget.widget_type)) {
         const text = node.querySelector(".viewer-widget-text");
         if (text) text.textContent = textContent(widget);
       } else if (widget.widget_type === "image") {
@@ -1145,6 +1492,9 @@ export class ViewerController {
         const replacement = renderImage(this.project, widget, widget.properties?.src);
         if (content) content.replaceWith(replacement);
         else node.prepend(replacement);
+      } else if (widget.widget_type === "textarea") {
+        const el = node.querySelector(".viewer-textarea");
+        if (el && document.activeElement !== el) el.value = String(widget.properties?.text ?? "");
       }
     });
   }
@@ -1176,7 +1526,7 @@ export class ViewerController {
         widget.properties ||= {};
         if (widget.properties.checkable) {
           widget.properties.state_checked = !Boolean(widget.properties.state_checked);
-          this.recordEvent("state", `${widget.id || "button"}: ${widget.properties.state_checked ? "aktiv" : "inaktiv"}`);
+          this.recordEvent("state", `${widget.id || "button"}: ${widget.properties.state_checked ? t("viewer.event.stateActive") : t("viewer.event.stateInactive")}`);
           changed = this.runEvent(widget, "on_value", actionContext()) || changed;
         }
         changed = this.runEvent(widget, "on_change", actionContext()) || changed;
@@ -1241,7 +1591,7 @@ export class ViewerController {
       const activate = () => {
         widget.properties ||= {};
         widget.properties.state_checked = !Boolean(widget.properties.state_checked);
-        this.recordEvent("state", `${widget.id || "switch"}: ${widget.properties.state_checked ? "an" : "aus"}`);
+        this.recordEvent("state", `${widget.id || "switch"}: ${widget.properties.state_checked ? t("viewer.event.stateOn") : t("viewer.event.stateOff")}`);
         const context = { x: Boolean(widget.properties.state_checked) };
         const valueChanged = this.runEvent(widget, "on_value", context);
         const clickChanged = this.runEvent(widget, "on_click", context);
@@ -1255,6 +1605,93 @@ export class ViewerController {
           activate();
         }
       });
+      return;
+    }
+
+    if (widget.widget_type === "checkbox") {
+      node.classList.add("viewer-interactive");
+      node.tabIndex = 0;
+      node.setAttribute("role", "checkbox");
+      node.setAttribute("aria-checked", String(Boolean(widget.properties?.state_checked)));
+      const baseStyle = node.getAttribute("style") || "";
+      node.addEventListener("focus", () => {
+        node.setAttribute("style", baseStyle);
+        applyStyle(node, this.project, widget, [
+          ...(widget.properties?.state_checked ? ["checked"] : []), "focused",
+        ]);
+      });
+      node.addEventListener("blur", () => node.setAttribute("style", baseStyle));
+      const activate = () => {
+        widget.properties ||= {};
+        widget.properties.state_checked = !Boolean(widget.properties.state_checked);
+        this.recordEvent("state", `${widget.id || "checkbox"}: ${widget.properties.state_checked ? t("viewer.event.stateOn") : t("viewer.event.stateOff")}`);
+        const context = { x: Boolean(widget.properties.state_checked) };
+        const valueChanged = this.runEvent(widget, "on_value", context);
+        const clickChanged = this.runEvent(widget, "on_click", context);
+        this.render();
+        return valueChanged || clickChanged;
+      };
+      node.addEventListener("click", activate);
+      node.addEventListener("keydown", (event) => {
+        if (["Enter", " "].includes(event.key)) {
+          event.preventDefault();
+          activate();
+        }
+      });
+      return;
+    }
+
+    if (widget.widget_type === "tabview") {
+      node.classList.add("viewer-interactive");
+      node.querySelectorAll(".viewer-tab-button").forEach((button) => {
+        button.addEventListener("click", () => {
+          const tabId = button.dataset.tabId;
+          if (!tabId || this.runtime.activeTabs?.[widget.id] === tabId) return;
+          this.runtime.activeTabs ||= {};
+          this.runtime.activeTabs[widget.id] = tabId;
+          this.recordEvent("state", `${widget.id || "tabview"}: ${tabId}`);
+          const context = { tab: tabId };
+          this.runEvent(widget, "on_value", context);
+          this.runEvent(widget, "on_change", context);
+          this.render();
+        });
+      });
+      return;
+    }
+
+    if (widget.widget_type === "dropdown" || widget.widget_type === "roller") {
+      node.classList.add("viewer-interactive");
+      const select = node.querySelector(`select.viewer-${widget.widget_type}`);
+      if (!select) return;
+      select.addEventListener("change", () => {
+        widget.properties ||= {};
+        widget.properties.selected_index = Number(select.value);
+        this.recordEvent("state", `${widget.id || widget.widget_type}: ${select.value}`);
+        const context = { x: Number(select.value) };
+        const valueChanged = this.runEvent(widget, "on_value", context);
+        const changeChanged = this.runEvent(widget, "on_change", context);
+        if (valueChanged || changeChanged) this.render();
+      });
+      return;
+    }
+
+    if (widget.widget_type === "textarea") {
+      node.classList.add("viewer-interactive");
+      const el = node.querySelector(".viewer-textarea");
+      if (!el) return;
+      el.addEventListener("input", () => {
+        widget.properties ||= {};
+        widget.properties.text = el.value;
+        this.runEvent(widget, "on_value", { text: el.value });
+      });
+      if (Boolean(widget.properties?.one_line)) {
+        el.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            this.runEvent(widget, "on_ready", { text: el.value });
+          }
+        });
+      }
       return;
     }
 
@@ -1424,12 +1861,16 @@ export class ViewerController {
       layer.style.rowGap = "0";
       layer.style.columnGap = "0";
       const scopedProject = surfaceProject(this.project, surface);
-      allWidgetItems(scopedProject).forEach((item) => {
+      allWidgetItems(scopedProject, this.runtime.activeTiles, this.runtime.activeTabs).forEach((item) => {
         layer.append(renderWidget(scopedProject, item, this.timers, warnings, this));
       });
       this.display.append(layer);
     });
     this.display.append(glowFront);
+
+    (this.project.msgboxes || []).forEach((msgbox) => {
+      this.display.append(renderMsgboxOverlay(this.project, msgbox, this.timers, warnings, this));
+    });
 
     const visibleStrokes = (this.project.glow_strokes || []).filter((stroke) => !stroke.hidden);
     const backDocument = { strokes: visibleStrokes.filter((stroke) => !stroke.parent_id) };

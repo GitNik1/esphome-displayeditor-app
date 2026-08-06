@@ -2,6 +2,125 @@
 
 ## Unreleased
 
+- Added editor support for `msgboxes` (message box pop-ups). Unlike every
+  other widget type so far, a message box is not a widget-tree entry at
+  all - it is a top-level `lvgl:` key, structurally identical to
+  `pages`/`top_layer`/`bottom_layer`, for which an add-on-only adapter
+  (`backend/page_support.py`) already existed. This add feature follows the
+  same pattern in a new `backend/msgbox_support.py`: the shared,
+  desktop-compatible designer core is untouched (`msgboxes:` stays raw
+  passthrough in `Project.extra_lvgl`, exactly like pages already do), so
+  this is an add-on-only feature with no `test_core_sync.py` risk. A new
+  "+ Message box" button in the Workspace toolbar creates one; each message
+  box gets its own settings (title, close-button toggle, body text) plus
+  two switchable widget-editing surfaces - "Buttons" and "Header buttons" -
+  reusing the exact same canvas/hierarchy-tree/properties-panel machinery
+  already built for pages (the palette is restricted to `button` widgets
+  while one of these surfaces is active, since that is the only type real
+  ESPHome accepts there). In the browser Viewer, a message box renders as a
+  centered modal overlay, hidden by default (matching real ESPHome
+  behaviour - there is no "visible at boot" option) and toggled by the
+  already-generic `lvgl.widget.show`/`lvgl.widget.hide` actions; its own
+  close button (when enabled) hides it the same way. No new action type
+  was needed. See LVGL-VOLLSTAENDIGKEIT-UMSETZUNGSPLAN.md, sub-plan 3b, for
+  the full architecture writeup.
+- Added editor support for four Phase 3 LVGL widget types: `led`, `spinner`,
+  `qrcode` and `spinbox`. Unlike `buttonmatrix`/`line`/`canvas`
+  (left unregistered - each needs a fundamentally different, non-flat
+  editor), all four turned out to be plain flat-property widgets and needed
+  no new architecture, just schema registrations plus Viewer rendering:
+  `led` as a colour dot scaled by `brightness`, `spinner` as a CSS-animated
+  ring (colour/spin duration from `arc_color`/`spin_time`, no SVG sweep math
+  needed since it never takes drag input), `qrcode` as a labelled
+  placeholder showing the encoded text (no QR-generation library is bundled,
+  matching the self-contained-artifact policy), `spinbox` as a formatted
+  numeric readout (`value` formatted to `decimal_places`). `spinbox` also
+  gets `lvgl.spinbox.increment`/`.decrement` actions (its own action shape,
+  a single id rather than an update payload) alongside the regular
+  `lvgl.led.update`/`.spinner.update`/`.qrcode.update`/`.spinbox.update` in
+  the allowlist.
+- Added editor support for `tabview`, completing Phase 2's `tabview`/
+  `tileview` sub-plan. Same synthetic-pseudo-widget architecture as
+  `tileview`'s `tile` (see below): a `tab` pseudo-widget (`is_stub=True`,
+  not a real ESPHome LVGL type) holds one `tabs:` list entry, using the
+  pre-existing `WidgetNode.tab_title` field. `tabview` also gets two own
+  top-level properties, `position` (TOP/BOTTOM/LEFT/RIGHT) and `size`
+  (percentage string, e.g. `10%`). A "+ Add tab" button on the selected
+  `tabview` creates tabs, and a new properties-panel section edits a
+  selected tab's title. Unlike `tileview` (which has no chrome of its own
+  in the Viewer - only `lvgl.tileview.select` switches it), `tabview`
+  renders an actual clickable tab bar in the browser Viewer (always along
+  the top regardless of `position`, no swipe gestures - the same
+  deliberately-simplified MVP approach as `keyboard`/`tileview`); clicking
+  a tab switches the active one and fires `on_value`/`on_change` with the
+  tab id in variable `tab`, matching ESPHome's own trigger contract.
+  `lvgl.tabview.select` (by zero-based `index`) is in the action
+  allowlist for automation-driven switching. `meter` remains out of scope.
+- Added editor support for `tileview`, the first Phase 2 LVGL widget type.
+  Unlike every Phase 1 widget, a `tileview`'s tiles are a nested list of
+  sub-containers (each with its own `widgets:`), not flat properties, so this
+  needed a new architecture: a synthetic `tile` pseudo-widget (not a real
+  ESPHome LVGL type - it never appears in the palette or in `LVGL_WIDGET_TYPES`)
+  that holds one `tiles:` list entry, using the `WidgetNode.tile_row`/
+  `tile_col`/`tile_dir` fields and the `WidgetSchema.is_stub`/`child_role`
+  fields that turned out to already exist in the data model, unused, from an
+  earlier milestone. A "+ Add tile" button on the selected `tileview` creates
+  tiles (auto-picking a free column), and a new properties-panel section edits
+  a selected tile's row/column/swipe direction. In the browser Viewer, only
+  the active tile's children are shown (everything else stays hidden - no
+  swipe simulation in this MVP); `lvgl.tileview.select` (by `tile_id` or by
+  `row`+`column`) switches the active tile and is in the action allowlist.
+  `tabview` (the same nested-list shape, but tabs instead of tiles) is the
+  planned next step; `meter` remains out of scope for now.
+- Added editor support for `textarea` and `keyboard`, completing Phase 1 of
+  the LVGL widget coverage plan (7 widget types added this phase: `checkbox`,
+  `arc`, `bar`, `dropdown`, `roller`, `textarea`, `keyboard`). Both are
+  creatable from the palette and fully editable, including a new
+  `widget_ref` property kind - a picker filled with the project's matching
+  widget ids (filtered to `textarea` widgets for `keyboard`'s `textarea`
+  link), the "clear assignment UI" the plan called for. In the browser
+  Viewer, `textarea` renders as a native `<textarea>`/`<input>` (single-line
+  vs. multi-line depending on `one_line`, with `password_mode` mapped to
+  `type="password"`) that you type into directly with the host's real
+  keyboard; `keyboard` itself is deliberately a non-interactive visual
+  placeholder rather than a simulated on-screen key layout, since real
+  typing already works on the textarea without it - building a full
+  QWERTY/number/symbol layout with shift-state would be substantial effort
+  for something the Viewer doesn't need. `lvgl.textarea.update`/
+  `lvgl.keyboard.update` are in the action allowlist, and `text` is a
+  Live-Binding target for `textarea` (reusing the same target name `label`
+  already uses).
+- Added editor support for two more LVGL widget types: `dropdown` and
+  `roller`. Both are creatable from the palette, fully editable (including
+  a new comma-separated `options` list editor, the same UI pattern already
+  used for `image_ref_list`/`grid_track_list`), round-trip through YAML
+  import/export, render as a native `<select>` in the browser Viewer with
+  working click/keyboard selection, and support `lvgl.dropdown.update`/
+  `lvgl.roller.update` actions plus `selected_index` as a Live-Binding
+  target. Required a new style part (`list`, the dropdown's opened menu)
+  added to `STYLE_PARTS` in `model.py` and its two independently-kept
+  copies in `yamlexport.py` and `viewer.js`.
+- Added editor support for three more LVGL widget types: `checkbox`, `arc`,
+  and `bar` (previously import-only passthrough). All three are now
+  creatable from the palette, fully editable in the properties panel,
+  round-trip through YAML import/export, render and respond to clicks in
+  the browser Viewer, and can be a Live-Binding target (`state_checked` for
+  `checkbox`, `value` for `arc`/`bar`). `arc`/`bar` needed no
+  import/export/viewer changes at all - that plumbing already existed in
+  anticipation of this; only the `WidgetSchema` registration was missing.
+  `checkbox` is new end-to-end, modelled on the existing `switch` widget
+  (click-to-toggle, `state_checked` content property, `indicator` part for
+  the tickbox colour).
+- The widget palette is now grouped into "Input" and "Display" sections
+  (translated) instead of one flat list, using a new `category` field on
+  each `WidgetSchema` (`input`: button, switch, slider, checkbox, arc;
+  `display`: obj, container, label, image, animimg, bar) - a UI-only
+  grouping with no effect on import/export/validation.
+- Fixed several more untranslated German strings found while touching this
+  code: the properties panel's "Content"/"Style · {part}" section headings,
+  the Live-Binding target dropdown's labels, and two Viewer event-log
+  state messages ("active"/"inactive", "on"/"off") that had no German
+  special characters and were missed by earlier sweeps.
 - Changed the license from plain MIT to MIT with a Commons Clause
   restriction: free to use and modify, including commercially, but selling
   the software or offering it as a paid hosted/consulting service isn't
