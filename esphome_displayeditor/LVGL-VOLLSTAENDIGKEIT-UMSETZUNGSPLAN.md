@@ -90,23 +90,33 @@
   bleibt der einzige Ort im geteilten `designer_core`, unverändert). Damit
   ist dies ein reines Add-on-Feature ohne `test_core_sync.py`-Risiko - die
   Desktop-App sieht `msgboxes` weiterhin nur als unverändertes Passthrough
-  (Gegenprobe bestätigt, wie schon bei `pages`). Neuer "+ Message box"-
-  Button im Workspace-Toolbar; jede Message-Box bekommt ein eigenes
-  Einstellungs-Panel (Titel, Schließen-Button, Body-Text) plus zwei
-  umschaltbare Widget-Editier-Flächen ("Buttons"/"Header buttons"), die die
-  komplett bestehende Canvas-/Hierarchie-Baum-/Eigenschaften-Panel-
-  Maschinerie wiederverwenden (Palette wird auf `button` beschränkt,
-  solange eine dieser Flächen aktiv ist, da ESPHome dort nur Buttons
-  akzeptiert). Im Viewer rendert eine Message-Box als zentriertes
-  Modal-Overlay, standardmäßig versteckt (wie im echten ESPHome - es gibt
-  keine "sichtbar beim Booten"-Option), umgeschaltet über die bereits
-  generischen `lvgl.widget.show`/`lvgl.widget.hide`-Aktionen; der eigene
-  Schließen-Button nutzt denselben Mechanismus. Keine neue Aktionsart
-  nötig. Live im Browser verifiziert: Export erzeugt exakt das erwartete
-  ESPHome-YAML (inkl. korrektem Entfernen von `widgets: []`, wenn nur
-  Message-Boxen ohne Root-Widgets existieren), im Viewer macht
-  `lvgl.widget.show` das Modal mit Titel/Text/Buttons sichtbar, der
-  ✕-Button versteckt es wieder. Details siehe CHANGELOG.
+  (Gegenprobe bestätigt, wie schon bei `pages`). Im Viewer rendert eine
+  Message-Box als zentriertes Modal-Overlay, standardmäßig versteckt (wie
+  im echten ESPHome - es gibt keine "sichtbar beim Booten"-Option),
+  umgeschaltet über die bereits generischen `lvgl.widget.show`/
+  `lvgl.widget.hide`-Aktionen; der eigene Schließen-Button nutzt denselben
+  Mechanismus. Keine neue Aktionsart nötig.
+  **UI-Nachbesserung (noch am 06.08.2026):** die erste Version bildete
+  `buttons`/`header_buttons` als zwei zusätzliche, umschaltbare
+  Workspace-"Surfaces" ab (wie eine Seite) - Nutzer-Feedback: das sei
+  verwirrend, eine Message-Box ist ja keine Seite, zu der man navigiert.
+  Umgebaut auf einen dedizierten Dialog ("+ Message box" in einem eigenen
+  "Message boxes"-Abschnitt, nicht mehr im Workspace-Toolbar): Titel/
+  Schließen-Button/Text-Felder plus zwei kompakte Zeilenlisten für Buttons
+  (Text + "schließt diese Message Box"-Checkbox) und Header-Buttons
+  (Bild-Auswahl + dieselbe Checkbox). Bewusster Kompromiss: Buttons sind
+  dadurch nicht mehr voll Canvas-editierbar (kein Stil/eigene Trigger),
+  aber der weit überwiegende Anwendungsfall (Bestätigen/Abbrechen/
+  Schließen) ist damit abgedeckt. Nebeneffekt behoben: die alten
+  Canvas-Buttons exportierten ihre Platzhalter-`x`/`y`/`width`/`height`
+  mit ins YAML - bedeutungslos (LVGL ordnet die Buttons automatisch in
+  einer Reihe an) und Ursache für eine falsche Platzierung auf dem echten
+  Gerät. Neue Buttons exportieren jetzt ganz ohne Größe/Position.
+  `backend/msgbox_support.py` musste dafür nicht geändert werden - es
+  kennt nur WidgetNode-förmige Dicts, nicht wie das Frontend sie erzeugt.
+  Live im Browser verifiziert: Dialog öffnen/bearbeiten/schließen,
+  Bearbeiten/Entfernen aus der Liste, Export erzeugt exakt das erwartete
+  ESPHome-YAML ohne Positionsrauschen. Details siehe CHANGELOG.
 - `backend/designer_core/widgetschema.py` kennt alle 26 LVGL-Widget-Typen aus
   der ESPHome-Dokumentation (`LVGL_WIDGET_TYPES`), davon haben jetzt 21 ein
   registriertes `WidgetSchema` mit editierbaren Eigenschaften: `obj`,
@@ -126,13 +136,26 @@
   behandelt: sie bleiben im YAML-Roundtrip erhalten, sind aber im Designer
   weder erstell- noch bearbeitbar (nur sichtbar als "nicht editierbares"
   Element im Hierarchie-Baum bzw. im Viewer als generische Box).
-- Die Stil-Eigenschaften der 15 unterstützten Widgets decken laut
-  Code-Kommentar bewusst nur *"a hand-picked subset of ESPHome's BASE_PROPS
-  ... not the full ~90-property list"* ab.
+- Die Stil-Eigenschaften decken laut Code-Kommentar bewusst nur *"a
+  hand-picked subset of ESPHome's BASE_PROPS ... not the full
+  ~90-property list"* ab. **06.08.2026 erweitert**: `pad_top`/`pad_bottom`/
+  `pad_left`/`pad_right` (einzelne Seiten, bisher nur `pad_all`),
+  `margin_top`/`margin_bottom`/`margin_left`/`margin_right`, `border_opa`,
+  `border_side` (welche Kanten, Wiederverwendung des `text_list`-Kinds -
+  komma-getrennt statt eigenem Multi-Select) und `text_opa` sind jetzt für
+  (fast) jedes Widget editierbar - alle schon vorher in `LVGL_STYLE_KEYS`
+  erkannt und roundtrip-fest, nur ohne Eigenschaften-Panel-Feld. Weiterhin
+  unmodelliert (nächste Kandidaten bei Bedarf, siehe Chat-Antwort
+  "relevanteste Styles"): Outline (`outline_*`), Transform (`translate_*`,
+  `transform_*`), Hintergrund-Feinschliff (Gradient-Stops, Hintergrundbild-
+  Optionen), generische Line/Arc-Style-Keys, `anim_time`/`blend_mode`/
+  `clip_corner`/`base_dir` - laut Einschätzung deutlich seltener in echten
+  ESPHome-Configs gebraucht.
 - Die Aktionsliste (`widget-actions`-Sektion) existiert nur für `button` und
   bietet nur eine feste Allowlist (`show`/`hide`/`update`/Seite öffnen), nicht
   die volle ESPHome-LVGL-Aktionspalette.
-- Top-Level-`lvgl:`-Schlüssel `touchscreens`, `encoders`, `keypads`,
+- Top-Level-`lvgl:`-Schlüssel `touchscreens` (Unterplan 3d geschrieben,
+  Umsetzung offen), `encoders`, `keypads`,
   `rotation`, `gradients`, `animations`, `byte_order`, `buffer_size`,
   `draw_rounding`, `refresh_interval`, `resume_on_input`, `paused`,
   `update_when_display_idle`, `rotary_sensitivity`, `log_level` werden nur
@@ -433,19 +456,27 @@ Neues Modul, 1:1 nach dem Vorbild von `page_support.py`:
 
 ### 3b.4 Frontend: eigenes Panel statt Properties-Panel-Sektion
 
-Anders als `tab`/`tile` ist eine Message-Box kein auswählbares Widget im
-Baum - sie lebt komplett außerhalb des Canvas. Sinnvollstes UI-Muster: ein
-neuer Abschnitt im bestehenden "Workspace"-Panel (dort, wo aktuell
-"+ Page"/"+ Bottom layer"/"+ Top layer" sitzen), z. B. "+ Message box", der
-eine neue Message-Box zur Liste hinzufügt und als eigene, wählbare
-Oberfläche in der Workspace-Leiste erscheint (analog zu einer Page). Die
-Auswahl einer Message-Box wechselt den Canvas auf eine eigene bearbeitbare
-Fläche für `body`-Text-Widget-artige Eigenschaften (Titel, Schließen-Button
-An/Aus, Body-Text + Stil) plus zwei Listen (`buttons`/`header_buttons`),
-die mit den bereits vorhandenen Widget-Hierarchie-/Eigenschaften-Mechanismen
-bearbeitet werden (jeder Button ist ein stinknormales `button`-Widget -
-keine neue Editor-Logik nötig, nur die Listen-Verwaltung selbst: hinzufügen/
-entfernen/reihenfolge, analog zum bestehenden Seiten-Array).
+**(Ursprünglicher Plan, siehe "UI-Nachbesserung" oben für die tatsächlich
+umgesetzte Fassung.)** Anders als `tab`/`tile` ist eine Message-Box kein
+auswählbares Widget im Baum - sie lebt komplett außerhalb des Canvas.
+Ursprünglich geplantes UI-Muster: ein neuer Abschnitt im bestehenden
+"Workspace"-Panel (dort, wo aktuell "+ Page"/"+ Bottom layer"/"+ Top layer"
+sitzen), z. B. "+ Message box", der eine neue Message-Box zur Liste
+hinzufügt und als eigene, wählbare Oberfläche in der Workspace-Leiste
+erscheint (analog zu einer Page). Die Auswahl einer Message-Box wechselt
+den Canvas auf eine eigene bearbeitbare Fläche für `body`-Text-Widget-
+artige Eigenschaften (Titel, Schließen-Button An/Aus, Body-Text + Stil)
+plus zwei Listen (`buttons`/`header_buttons`), die mit den bereits
+vorhandenen Widget-Hierarchie-/Eigenschaften-Mechanismen bearbeitet werden.
+
+**Tatsächlich umgesetzt (nach Nutzer-Feedback "verwirrend mit den zwei
+Surface-Einträgen"):** ein dedizierter `<dialog>` statt Canvas-Flächen -
+siehe "UI-Nachbesserung" im "Aktueller Stand" oben. Der Kompromiss: Buttons
+sind dort Text + "schließt diese Message Box"-Checkbox statt voll
+Canvas-editierbarer Widgets mit Stil/eigenen Triggern - deckt den
+weit überwiegenden Anwendungsfall ab, ist aber bewusst kein Ersatz für
+komplexe individuelle Button-Aktionen (die blieben dem alten Ansatz
+vorbehalten und sind in der neuen Fassung nicht mehr möglich).
 
 ### 3b.5 Viewer
 
@@ -662,6 +693,113 @@ da diese Action bewusst nicht simuliert wird (siehe 3c.5).
 Diese Punkte sind explizit spätere Ausbaustufen, keine endgültigen Grenzen -
 es lohnt sich, sie erneut zu bewerten, sobald echte Nutzung zeigt, welche
 dieser Vereinfachungen tatsächlich stört.
+
+## 3d. Unterplan: `touchscreens` (Stand 06.08.2026, vor Umsetzung)
+
+### 3d.1 Was fehlt und warum es (fast) niemand braucht
+
+`lvgl.touchscreens:` ist eine Top-Level-`lvgl:`-Liste (kein Widget, keine
+Widget-Baum-Beziehung), aktuell unmodelliertes Passthrough (nicht in
+`_KNOWN_LVGL_KEYS`, landet in `extra_lvgl`). Laut ESPHome-Doku:
+
+```yaml
+lvgl:
+  touchscreens:
+    - touchscreen_id: my_touchscreen
+      long_press_time: 400ms
+      long_press_repeat_time: 100ms
+```
+
+- **`touchscreen_id`** (Pflicht, ID): Referenz auf eine `touchscreen:`-
+  Komponente - die liegt in der Haupt-Config des Nutzers, **nicht** in
+  diesem Tool (siehe Abgrenzung: dieses Tool erzeugt nur den `lvgl:`-Block,
+  nie Hardware-Komponenten wie `display:`/`touchscreen:`). Der Editor kennt
+  diese Id also nie als "echtes" Objekt, nur als freien String.
+- **`long_press_time`** (Optional, Time, Default `400ms`).
+- **`long_press_repeat_time`** (Optional, Time, Default `100ms`).
+
+Entscheidender Satz aus der Doku: *"If you configure a single touchscreen
+it will be used automatically, and this config entry will not be
+required."* Für den weit überwiegenden Fall (ein Touchscreen, Standard-
+Timing) ist dieser Schlüssel also gar nicht nötig - LVGL erkennt ihn
+automatisch. Gebraucht wird die Liste nur für **mehrere** Touchscreens
+gleichzeitig oder individuelles Long-Press-Timing pro Touchscreen.
+
+### 3d.2 Abgrenzung zu `encoders`/`keypads`
+
+`encoders`/`keypads` (ebenfalls unmodelliert) sind bewusst **nicht** Teil
+dieses Unterplans, obwohl sie strukturell ähnlich aussehen (auch
+Top-Level-Listen). Unterschied: beide haben ein `group:`-Feld, das
+zusätzlich auf **einzelnen Widgets** gesetzt werden muss (welche Widgets
+zur Fokus-Navigationsgruppe eines Encoders/Keypads gehören) - das reicht
+in den Widget-Baum hinein und bräuchte eine eigene Bewertung. `touchscreens`
+hat dieses Problem nicht: Touch braucht keine Gruppen, keine
+Fokus-Navigation, keine Widget-seitige Konfiguration - der einfachste der
+drei Eingabegerätetypen.
+
+### 3d.3 Architekturentscheidung: `backend/touchscreen_support.py`, kleiner als `msgbox_support.py`
+
+Gleiches Grundmuster wie `page_support.py`/`msgbox_support.py` (Add-on-only,
+`designer_core` bleibt unangetastet, `extra_lvgl["touchscreens"]` bleibt der
+einzige Ort im geteilten Kern), aber deutlich einfacher, weil hier **keine**
+Widgets im Spiel sind:
+
+- `materialize_touchscreens(project) -> list[dict]`: liest
+  `project.extra_lvgl.get("touchscreens")`, gibt sie (ggf. mit
+  Typ-Normalisierung, z. B. sicherstellen dass es eine Liste ist) direkt als
+  Frontend-Payload zurück - keine `_import_widget()`-Delegation nötig, keine
+  `IdRegistry`, da `touchscreen_id` eine externe Fremdreferenz ist, kein von
+  diesem Tool verwalteter Id-Namespace (anders als Widget-/Style-/Font-Ids).
+- `apply_touchscreens_payload(payload) -> dict`: schreibt die vom Frontend
+  bearbeitete Liste zurück nach `extra_lvgl["touchscreens"]` (oder entfernt
+  den Schlüssel bei leerer Liste).
+- Einzige Validierung: doppelte `touchscreen_id`-Werte innerhalb der Liste
+  als Warnung (C-Issue) markieren - kein Blocker, da ESPHome selbst
+  entscheidet, ob das ein Fehler ist.
+- Aufruf-Stellen: dieselben wie bei `page_support`/`msgbox_support`
+  (`validate()`, `import_yaml`, `project_payload()`).
+
+### 3d.4 Frontend: kompakte Zeilenliste statt Dialog
+
+Nur 3 flache Felder pro Eintrag - kein Dialog nötig (anders als bei
+`msgbox`, wo Titel+Text+zwei Listen zu viel für eine Inline-Darstellung
+waren). Stattdessen ein neuer kompakter Abschnitt, UI-Muster identisch zur
+bereits bestehenden Farb-/Font-Bibliothek (`renderColorLibrary()`/
+`renderFontLibrary()` in `app.js`: eine Zeile pro Eintrag mit Icon-Buttons
+✎/× für Bearbeiten/Entfernen). Platzierung: neuer eigener
+`<details class="touchscreen-bar">`-Abschnitt analog zu `.msgbox-bar`, mit
+"+ Touchscreen"-Button, der eine neue Zeile mit drei Inline-Eingabefeldern
+(`touchscreen_id` Text, `long_press_time` Text mit Platzhalter `400ms`,
+`long_press_repeat_time` Text mit Platzhalter `100ms`) direkt anfügt -
+kein separates Bearbeiten-Icon nötig, die Felder sind immer direkt in der
+Zeile editierbar (nochmal einfacher als die Farb-/Font-Bibliothek, die ein
+Bearbeiten-Icon braucht, weil dort mehr Felder/eine Farbvorschau
+dazukommen).
+
+### 3d.5 Viewer
+
+Keine Änderung nötig. Der Viewer simuliert bereits Maus- **und**
+Touch-Eingaben einheitlich über PointerEvents (`pointerdown`/`pointerup`/
+`click` in `bindWidget()`) - `touchscreens:`-Konfiguration betrifft nur
+Long-Press-Timing auf echter Hardware, hat keine Auswirkung auf die
+Late-Binding-Interaktion in der Browser-Vorschau.
+
+### 3d.6 Tests
+
+Analog zu `test_msgboxes.py`, aber kleiner: `tests/test_touchscreens.py`
+mit Roundtrip (Import → Export → Import) für eine Liste mit zwei
+Touchscreens (einer mit expliziten Zeiten, einer nur mit `touchscreen_id`),
+plus ein Test für die Duplikat-Id-Warnung.
+
+### 3d.7 Nicht-Ziele
+
+- `encoders`/`keypads` (siehe 3d.2 - eigener Unterplan nötig wegen
+  `group:`-Bezug zu Widgets).
+- Jegliche Validierung, ob `touchscreen_id` tatsächlich zu einer im Rest
+  der Config existierenden `touchscreen:`-Komponente passt - das Tool sieht
+  diese Komponente nie (Abgrenzung: nur `lvgl:`-Block).
+- Hardware-Kalibrierung, Rotation-Transform der Touch-Achsen - beides
+  Sache der `touchscreen:`-Komponente selbst, nicht von `lvgl:`.
 
 ## 4. Zielarchitektur pro Widget
 

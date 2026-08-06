@@ -286,6 +286,24 @@ input:focus { border-color: var(--accent); }
 .background-bar > summary { padding: 8px 14px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
 .background-bar > summary:hover { color: var(--text); }
 
+/* Message boxes */
+.msgbox-bar { border-bottom: 1px solid var(--line); background: #0e1722; }
+.msgbox-bar > summary { padding: 8px 14px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
+.msgbox-bar > summary:hover { color: var(--text); }
+.msgbox-list { display: flex; flex-direction: column; gap: 6px; padding: 0 14px 8px; }
+.msgbox-list-item { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+.msgbox-list-item-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msgbox-list-item-meta { color: var(--muted); font-size: 11px; }
+#add-msgbox { margin: 0 14px 10px; }
+.msgbox-dialog-body { display: flex; flex-direction: column; gap: 12px; padding: 14px 18px; overflow: auto; }
+.msgbox-dialog-body > label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
+.msgbox-dialog-section { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.msgbox-dialog-section .property-section { color: var(--muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+.msgbox-dialog-rows { display: flex; flex-direction: column; gap: 6px; }
+.msgbox-dialog-row { display: flex; align-items: center; gap: 8px; }
+.msgbox-dialog-row input[type="text"], .msgbox-dialog-row select { flex: 1 1 auto; min-width: 0; }
+.msgbox-dialog-row .checkbox-field { flex: none; white-space: nowrap; }
+
 .theme-editor-details { margin-top: 10px; border-top: 1px solid var(--line); }
 .theme-editor-details > summary { padding: 8px 9px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
 .theme-editor-details > summary:hover { color: var(--text); }

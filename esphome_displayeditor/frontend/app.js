@@ -182,21 +182,6 @@ function surfaceEntries() {
   if (state.project.top_layer) {
     entries.push({ key: "top", kind: "top", label: "Top-Layer", surface: state.project.top_layer });
   }
-  state.project.msgboxes.forEach((msgbox, index) => {
-    const label = msgbox.title || msgbox.id;
-    entries.push({
-      key: `msgbox:${msgbox.id}:buttons`, kind: "msgbox-buttons",
-      label: `${label} · ${t("surface.msgboxButtons")}`,
-      surface: { widgets: msgbox.buttons, layout: {}, style_tree: {}, extra: {} },
-      msgbox, index,
-    });
-    entries.push({
-      key: `msgbox:${msgbox.id}:header`, kind: "msgbox-header",
-      label: `${label} · ${t("surface.msgboxHeaderButtons")}`,
-      surface: { widgets: msgbox.header_buttons, layout: {}, style_tree: {}, extra: {} },
-      msgbox, index,
-    });
-  });
   return entries;
 }
 
@@ -947,6 +932,7 @@ function bindDesigner() {
   }, 1000);
   bindGlowTools();
   bindSurfaceTools();
+  bindMsgboxDialog();
 
   $("#zoom-in").addEventListener("click", () => setZoom(state.zoom * 1.25));
   $("#zoom-out").addEventListener("click", () => setZoom(state.zoom / 1.25));
@@ -1535,17 +1521,6 @@ function renderPalette() {
     palette.append(heading);
   };
 
-  // A msgbox's buttons:/header_buttons: list only ever accepts button
-  // widgets in real ESPHome YAML - every other widget type would compile
-  // but not be a valid list entry there, so the palette is restricted to
-  // just "button" (and its image-button variant) while such a surface is
-  // active, instead of letting an invalid type get placed.
-  if (activeSurfaceEntry().kind.startsWith("msgbox-")) {
-    const buttonSchema = state.schemas.find((schema) => schema.type_key === "button");
-    if (buttonSchema) appendWidgetButton(buttonSchema);
-    return;
-  }
-
   // is_stub schemas (e.g. "tile") are structural children of another widget,
   // not something placeable on their own - they never get a palette entry.
   const placeable = state.schemas.filter((schema) => !schema.is_stub);
@@ -1833,24 +1808,224 @@ function addMessageBox() {
     extra: {},
   };
   state.project.msgboxes.push(msgbox);
-  state.activeSurface = `msgbox:${msgbox.id}:buttons`;
-  state.selectedWidget = null;
   markProjectDirty();
-  renderDesigner();
+  renderMsgboxList();
+  openMsgboxDialog(msgbox);
 }
 
-function deleteActiveMessageBox() {
-  const entry = activeSurfaceEntry();
-  if (!entry.kind.startsWith("msgbox-")) return;
-  const widgetCount = allWidgets(entry.msgbox.buttons).length + allWidgets(entry.msgbox.header_buttons).length;
-  if (!confirm(t("confirm.surface.remove", { label: entry.msgbox.title || entry.msgbox.id })
+function deleteMsgbox(msgbox) {
+  const widgetCount = allWidgets(msgbox.buttons).length + allWidgets(msgbox.header_buttons).length;
+  if (!confirm(t("confirm.surface.remove", { label: msgbox.title || msgbox.id })
     + (widgetCount ? t("confirm.surface.removeWidgetsSuffix", { count: widgetCount }) : ""))) return;
   pushUndo();
-  state.project.msgboxes.splice(entry.index, 1);
-  state.activeSurface = state.project.pages[0] ? `page:${state.project.pages[0].id}` : "root";
-  state.selectedWidget = null;
+  const index = state.project.msgboxes.indexOf(msgbox);
+  if (index >= 0) state.project.msgboxes.splice(index, 1);
   markProjectDirty();
-  renderDesigner();
+  renderMsgboxList();
+}
+
+// --- Message box dialog (Option B: a dedicated dialog instead of treating
+// a msgbox's buttons/header_buttons as canvas surfaces - see the German
+// chat discussion this was decided in). Buttons here are simplified: text +
+// an optional "closes this message box" toggle (the overwhelmingly common
+// case, see msgbox docs), not full canvas-editable widgets with styling.
+
+function renderMsgboxList() {
+  ensureProjectSurfaces();
+  const list = $("#msgbox-list");
+  list.replaceChildren();
+  state.project.msgboxes.forEach((msgbox) => {
+    const row = document.createElement("div");
+    row.className = "msgbox-list-item";
+    const label = document.createElement("span");
+    label.className = "msgbox-list-item-label";
+    label.textContent = msgbox.title || msgbox.id;
+    const meta = document.createElement("span");
+    meta.className = "msgbox-list-item-meta";
+    meta.textContent = t("dialog.msgbox.listMeta", {
+      buttons: msgbox.buttons.length, headerButtons: msgbox.header_buttons.length,
+    });
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "button subtle compact";
+    edit.textContent = t("common.edit");
+    edit.addEventListener("click", () => openMsgboxDialog(msgbox));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "button danger compact";
+    remove.textContent = t("surface.remove");
+    remove.addEventListener("click", () => deleteMsgbox(msgbox));
+    row.append(label, meta, edit, remove);
+    list.append(row);
+  });
+}
+
+function uniqueMsgboxButtonId(base) {
+  const used = new Set([
+    ...allProjectWidgets().map((widget) => widget.id),
+    ...(state.project.reserved_ids || []),
+  ]);
+  let number = 1;
+  while (used.has(`${base}_${number}`)) number += 1;
+  return `${base}_${number}`;
+}
+
+function blankMsgboxButton(id, extra = {}) {
+  return {
+    id, widget_type: "button", name: "", x: 0, y: 0, width: null, height: null,
+    align: "TOP_LEFT", align_to: "", hidden: false, locked: false,
+    properties: {}, style_mode: "inline", style_refs: [], style_tree: {},
+    events: {}, children: [], tab_title: "", tile_row: 0, tile_col: 0, tile_dir: "ALL",
+    layout: {}, grid_cell: {}, extra, source: "editor", synthetic_id: false,
+  };
+}
+
+function openMsgboxDialog(msgbox) {
+  state.editingMsgbox = msgbox;
+  $("#msgbox-dialog-title").value = msgbox.title || "";
+  $("#msgbox-dialog-close-button").checked = msgbox.close_button !== false;
+  $("#msgbox-dialog-body-text").value = msgbox.body?.text || "";
+  renderMsgboxDialogButtons();
+  renderMsgboxDialogHeaderButtons();
+  const dialog = $("#msgbox-dialog");
+  if (!dialog.open) dialog.showModal();
+}
+
+function closeMsgboxDialog() {
+  state.editingMsgbox = null;
+  $("#msgbox-dialog").close();
+  renderMsgboxList();
+}
+
+function renderMsgboxDialogButtons() {
+  const msgbox = state.editingMsgbox;
+  const container = $("#msgbox-dialog-buttons");
+  container.replaceChildren();
+  if (!msgbox) return;
+  msgbox.buttons.forEach((button) => {
+    const row = document.createElement("div");
+    row.className = "msgbox-dialog-row";
+    const text = document.createElement("input");
+    text.type = "text";
+    text.value = button.properties?.text || "";
+    text.placeholder = t("dialog.msgbox.buttonTextPlaceholder");
+    text.addEventListener("input", () => {
+      pushUndo();
+      button.properties ||= {};
+      button.properties.text = text.value;
+      markProjectDirty();
+    });
+    const closes = document.createElement("label");
+    closes.className = "checkbox-field";
+    const closesInput = document.createElement("input");
+    closesInput.type = "checkbox";
+    closesInput.checked = Boolean(
+      (button.events?.on_click || []).some((action) => action?.["lvgl.widget.hide"] === msgbox.id),
+    );
+    closesInput.addEventListener("change", () => {
+      pushUndo();
+      button.events ||= {};
+      if (closesInput.checked) {
+        button.events.on_click = [{ "lvgl.widget.hide": msgbox.id }];
+      } else {
+        delete button.events.on_click;
+      }
+      markProjectDirty();
+    });
+    closes.append(closesInput, document.createTextNode(t("dialog.msgbox.closesThisBox")));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "button danger compact";
+    remove.textContent = "×";
+    remove.title = t("surface.remove");
+    remove.addEventListener("click", () => {
+      pushUndo();
+      const index = msgbox.buttons.indexOf(button);
+      if (index >= 0) msgbox.buttons.splice(index, 1);
+      markProjectDirty();
+      renderMsgboxDialogButtons();
+    });
+    row.append(text, closes, remove);
+    container.append(row);
+  });
+}
+
+function renderMsgboxDialogHeaderButtons() {
+  const msgbox = state.editingMsgbox;
+  const container = $("#msgbox-dialog-header-buttons");
+  container.replaceChildren();
+  if (!msgbox) return;
+  msgbox.header_buttons.forEach((button) => {
+    const row = document.createElement("div");
+    row.className = "msgbox-dialog-row";
+    const src = document.createElement("select");
+    src.append(new Option("—", ""));
+    imageLibrary().forEach((entry) => src.append(new Option(entry.id, entry.id)));
+    const currentSrc = button.extra?.src || "";
+    if (currentSrc && !imageLibrary().some((entry) => entry.id === currentSrc)) {
+      src.append(new Option(t("dynprops.widgetRefMissing", { id: currentSrc }), currentSrc));
+    }
+    src.value = currentSrc;
+    src.addEventListener("change", () => {
+      pushUndo();
+      button.extra ||= {};
+      if (src.value) button.extra.src = src.value;
+      else delete button.extra.src;
+      markProjectDirty();
+    });
+    const closes = document.createElement("label");
+    closes.className = "checkbox-field";
+    const closesInput = document.createElement("input");
+    closesInput.type = "checkbox";
+    closesInput.checked = Boolean(
+      (button.events?.on_click || []).some((action) => action?.["lvgl.widget.hide"] === msgbox.id),
+    );
+    closesInput.addEventListener("change", () => {
+      pushUndo();
+      button.events ||= {};
+      if (closesInput.checked) {
+        button.events.on_click = [{ "lvgl.widget.hide": msgbox.id }];
+      } else {
+        delete button.events.on_click;
+      }
+      markProjectDirty();
+    });
+    closes.append(closesInput, document.createTextNode(t("dialog.msgbox.closesThisBox")));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "button danger compact";
+    remove.textContent = "×";
+    remove.title = t("surface.remove");
+    remove.addEventListener("click", () => {
+      pushUndo();
+      const index = msgbox.header_buttons.indexOf(button);
+      if (index >= 0) msgbox.header_buttons.splice(index, 1);
+      markProjectDirty();
+      renderMsgboxDialogHeaderButtons();
+    });
+    row.append(src, closes, remove);
+    container.append(row);
+  });
+}
+
+function addMsgboxButton() {
+  const msgbox = state.editingMsgbox;
+  if (!msgbox) return;
+  pushUndo();
+  const button = blankMsgboxButton(uniqueMsgboxButtonId(`${msgbox.id}_button`));
+  button.properties.text = t("dialog.msgbox.defaultButtonText");
+  msgbox.buttons.push(button);
+  markProjectDirty();
+  renderMsgboxDialogButtons();
+}
+
+function addMsgboxHeaderButton() {
+  const msgbox = state.editingMsgbox;
+  if (!msgbox) return;
+  pushUndo();
+  msgbox.header_buttons.push(blankMsgboxButton(uniqueMsgboxButtonId(`${msgbox.id}_header_button`)));
+  markProjectDirty();
+  renderMsgboxDialogHeaderButtons();
 }
 
 function moveActivePage(delta) {
@@ -1867,10 +2042,6 @@ function moveActivePage(delta) {
 
 function deleteActiveSurface() {
   const entry = activeSurfaceEntry();
-  if (entry.kind.startsWith("msgbox-")) {
-    deleteActiveMessageBox();
-    return;
-  }
   if (entry.kind === "root") return;
   const widgetCount = allWidgets(entry.surface.widgets).length;
   if (!confirm(t("confirm.surface.remove", { label: entry.label })
@@ -1970,35 +2141,42 @@ function bindSurfaceTools() {
     renderDesigner();
   });
   $("#apply-surface").addEventListener("click", applySurfaceSettings);
+}
+
+function bindMsgboxDialog() {
   $("#add-msgbox").addEventListener("click", addMessageBox);
-  $("#msgbox-title").addEventListener("focus", pushUndo);
-  $("#msgbox-title").addEventListener("input", () => {
-    const entry = activeSurfaceEntry();
-    if (!entry.kind.startsWith("msgbox-")) return;
-    entry.msgbox.title = $("#msgbox-title").value;
-    markProjectDirty();
-    renderSurfaceToolbar();
+  $("#close-msgbox-dialog").addEventListener("click", closeMsgboxDialog);
+  $("#msgbox-dialog-done").addEventListener("click", closeMsgboxDialog);
+  $("#msgbox-dialog").addEventListener("close", () => { state.editingMsgbox = null; renderMsgboxList(); });
+  $("#msgbox-dialog").addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeMsgboxDialog();
   });
-  $("#msgbox-close-button").addEventListener("change", () => {
-    const entry = activeSurfaceEntry();
-    if (!entry.kind.startsWith("msgbox-")) return;
+  $("#msgbox-dialog-title").addEventListener("focus", pushUndo);
+  $("#msgbox-dialog-title").addEventListener("input", () => {
+    if (!state.editingMsgbox) return;
+    state.editingMsgbox.title = $("#msgbox-dialog-title").value;
+    markProjectDirty();
+  });
+  $("#msgbox-dialog-close-button").addEventListener("change", () => {
+    if (!state.editingMsgbox) return;
     pushUndo();
-    entry.msgbox.close_button = $("#msgbox-close-button").checked;
+    state.editingMsgbox.close_button = $("#msgbox-dialog-close-button").checked;
     markProjectDirty();
   });
-  $("#msgbox-body-text").addEventListener("focus", pushUndo);
-  $("#msgbox-body-text").addEventListener("input", () => {
-    const entry = activeSurfaceEntry();
-    if (!entry.kind.startsWith("msgbox-")) return;
-    entry.msgbox.body.text = $("#msgbox-body-text").value;
+  $("#msgbox-dialog-body-text").addEventListener("focus", pushUndo);
+  $("#msgbox-dialog-body-text").addEventListener("input", () => {
+    if (!state.editingMsgbox) return;
+    state.editingMsgbox.body.text = $("#msgbox-dialog-body-text").value;
     markProjectDirty();
   });
+  $("#msgbox-dialog-add-button").addEventListener("click", addMsgboxButton);
+  $("#msgbox-dialog-add-header-button").addEventListener("click", addMsgboxHeaderButton);
 }
 
 function renderSurfaceToolbar() {
   const entries = surfaceEntries();
   const entry = activeSurfaceEntry();
-  const isMsgbox = entry.kind.startsWith("msgbox-");
   renderPalette();
   const select = $("#surface-select");
   select.replaceChildren(...entries.map((item) => new Option(item.label, item.key)));
@@ -2013,20 +2191,13 @@ function renderSurfaceToolbar() {
   $("#page-wrap-field").classList.toggle("hidden", state.project.pages.length < 2);
   $("#page-wrap").checked = state.project.page_wrap !== false;
   $("#surface-id-field").classList.toggle("hidden", entry.kind !== "page");
-  $("#surface-settings").classList.toggle("hidden", entry.kind === "root" || isMsgbox);
+  $("#surface-settings").classList.toggle("hidden", entry.kind === "root");
   $("#surface-id").value = entry.kind === "page" ? entry.surface.id : "";
   $("#surface-layout-json").value = JSON.stringify(entry.surface.layout || {}, null, 2);
   $("#surface-style-json").value = JSON.stringify(entry.surface.style_tree || {}, null, 2);
   $("#surface-extra-json").value = JSON.stringify(entry.surface.extra || {}, null, 2);
   $("#surface-error").classList.add("hidden");
   $("#line-tool-group").classList.toggle("hidden", state.canvasMode !== "lines" || entry.kind !== "root");
-
-  $("#msgbox-settings").classList.toggle("hidden", !isMsgbox);
-  if (isMsgbox) {
-    $("#msgbox-title").value = entry.msgbox.title || "";
-    $("#msgbox-close-button").checked = entry.msgbox.close_button !== false;
-    $("#msgbox-body-text").value = entry.msgbox.body?.text || "";
-  }
 }
 
 function renderDesigner() {
@@ -2040,6 +2211,7 @@ function renderDesigner() {
   renderThemeEditor();
   renderColorLibrary();
   renderFontLibrary();
+  renderMsgboxList();
   renderDesignerStatus();
   updateUndoButtons();
 }
@@ -5962,8 +6134,7 @@ function renderTree() {
   const widgets = allWidgets();
   const strokes = activeSurfaceEntry().kind === "root" ? (state.project.glow_strokes || []) : [];
   const hasSurfaces = Boolean(
-    state.project.pages?.length || state.project.top_layer || state.project.bottom_layer
-      || state.project.msgboxes?.length,
+    state.project.pages?.length || state.project.top_layer || state.project.bottom_layer,
   );
   tree.classList.toggle("empty", widgets.length === 0 && strokes.length === 0 && !hasSurfaces);
 
@@ -6079,13 +6250,6 @@ function renderTree() {
       appendSurface(`page:${page.id}`, t("surface.pageLabel", { id: page.id }), page, { skipped: page.skip });
     });
     if (state.project.top_layer) appendSurface("top", "Top-Layer", state.project.top_layer);
-    (state.project.msgboxes || []).forEach((msgbox) => {
-      const label = msgbox.title || msgbox.id;
-      appendSurface(`msgbox:${msgbox.id}:buttons`,
-        `${label} · ${t("surface.msgboxButtons")}`, { widgets: msgbox.buttons });
-      appendSurface(`msgbox:${msgbox.id}:header`,
-        `${label} · ${t("surface.msgboxHeaderButtons")}`, { widgets: msgbox.header_buttons });
-    });
   }
 
   if (activeSurfaceEntry().kind === "root") {

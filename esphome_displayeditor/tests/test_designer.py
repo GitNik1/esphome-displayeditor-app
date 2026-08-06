@@ -84,6 +84,55 @@ def test_schema_widgets_are_categorised_input_or_display(tmp_path: Path) -> None
     assert set(categories.values()) <= {"input", "display"}
 
 
+def test_schema_exposes_extended_paint_and_text_style_properties(tmp_path: Path) -> None:
+    service = DesignerService(tmp_path)
+    schemas = service.schemas("de")
+    by_key = {widget["type_key"]: widget for widget in schemas["widgets"]}
+    button_keys = {prop["key"] for prop in by_key["button"]["properties"] if prop["category"] == "style"}
+    assert {
+        "pad_top", "pad_bottom", "pad_left", "pad_right",
+        "margin_top", "margin_bottom", "margin_left", "margin_right",
+        "border_opa", "border_side", "text_opa",
+    } <= button_keys
+    border_side_prop = next(p for p in by_key["button"]["properties"] if p["key"] == "border_side")
+    assert border_side_prop["kind"] == "text_list"
+
+
+def test_addon_extended_style_properties_export_and_import_without_changing_core(
+    tmp_path: Path,
+) -> None:
+    service = DesignerService(tmp_path)
+    project = project_with_button()
+    project["widgets"][0]["style_tree"] = {
+        "bg_color": "20C7B7",
+        "pad_top": 4, "pad_bottom": 6, "pad_left": 8, "pad_right": 10,
+        "margin_top": 2, "margin_bottom": 2, "margin_left": 0, "margin_right": 0,
+        "border_opa": "50%",
+        "border_side": ["TOP", "BOTTOM"],
+        "text_opa": "80%",
+    }
+
+    exported = service.export_yaml(project)["yaml"]
+    assert "pad_top: 4" in exported
+    assert "pad_bottom: 6" in exported
+    assert "pad_left: 8" in exported
+    assert "pad_right: 10" in exported
+    assert "margin_top: 2" in exported
+    assert "border_opa: 50%" in exported
+    assert "border_side:" in exported and "- TOP" in exported and "- BOTTOM" in exported
+    assert "text_opa: 80%" in exported
+
+    imported = service.import_yaml(f"lvgl:\n{exported.split('lvgl:', 1)[1]}")
+    assert imported["valid"]
+    button = imported["project"]["widgets"][0]
+    assert button["style_tree"]["pad_top"] == 4
+    assert button["style_tree"]["pad_right"] == 10
+    assert button["style_tree"]["margin_top"] == 2
+    assert button["style_tree"]["border_opa"] == "50%"
+    assert button["style_tree"]["border_side"] == ["TOP", "BOTTOM"]
+    assert button["style_tree"]["text_opa"] == "80%"
+
+
 def test_addon_checkbox_export_and_import_without_changing_core(tmp_path: Path) -> None:
     service = DesignerService(tmp_path)
     project = project_with_button()

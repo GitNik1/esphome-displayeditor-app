@@ -113,6 +113,45 @@ def test_msgbox_yaml_round_trip_preserves_structure(tmp_path) -> None:
     ]
 
 
+def test_msgbox_buttons_never_export_editor_canvas_position(tmp_path) -> None:
+    """A msgbox's buttons/header_buttons are auto-laid-out by LVGL in a row,
+    not placed at an absolute canvas position - the x/y the designer's own
+    canvas assigns a newly-placed button must never leak into the exported
+    YAML there, or it would (at best) be meaningless noise and (at worst)
+    break the real auto-layout. width/height are legitimate and must be
+    kept - a real msgbox button can have an explicit size."""
+    service = DesignerService(tmp_path)
+    project = {
+        "format": "esphome-lvgl-designer-project",
+        "format_version": 3,
+        "canvas": {"width": 480, "height": 320},
+        "display_id_placeholder": "my_display",
+        "widgets": [],
+    }
+    project["msgboxes"] = [
+        {
+            "id": "main_msgbox", "synthetic_id": False, "title": "Confirm",
+            "close_button": True, "body": {"text": "", "style_tree": {}, "extra": {}},
+            "buttons": [
+                {
+                    "id": "apply_button", "widget_type": "button",
+                    "x": 20, "y": 20, "width": 120, "height": 50,
+                    "properties": {"text": "Apply"}, "style_tree": {}, "children": [],
+                },
+            ],
+            "header_buttons": [], "extra": {},
+        },
+    ]
+
+    exported = service.export_yaml(project)["yaml"]
+    lvgl = yaml.safe_load(exported)["lvgl"]
+    button = lvgl["msgboxes"][0]["buttons"][0]
+    assert "x" not in button
+    assert "y" not in button
+    assert button["width"] == 120
+    assert button["height"] == 50
+
+
 def test_stored_core_payload_can_be_materialized_again(tmp_path) -> None:
     service = DesignerService(tmp_path)
     imported = service.import_yaml(MSGBOXES_YAML)["project"]
