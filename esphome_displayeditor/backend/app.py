@@ -460,6 +460,10 @@ def create_app(
             layer = project.get(layer_name)
             if isinstance(layer, dict):
                 visit(layer.get("widgets"))
+        for msgbox in project.get("msgboxes", []) if isinstance(project.get("msgboxes"), list) else []:
+            if isinstance(msgbox, dict):
+                visit(msgbox.get("buttons"))
+                visit(msgbox.get("header_buttons"))
         return result
 
     @application.get("/api/v1/health")

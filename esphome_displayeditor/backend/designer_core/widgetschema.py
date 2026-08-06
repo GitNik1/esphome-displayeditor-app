@@ -2,9 +2,15 @@
 
 Single source of truth for the palette, the property panel, and the YAML
 generator: each entry describes one ESPHome LVGL widget type as data,
-without needing a dedicated Python/Qt class per type. M1 registers 7 widget
-types (obj, container, label, button, switch, slider, image); the remaining
-~19 are added the same way in a later milestone.
+without needing a dedicated Python/Qt class per type. Currently registered:
+obj, container, label, button, switch, slider, image, animimg, checkbox,
+arc, bar, dropdown, roller, textarea, keyboard, tileview, tabview, led,
+spinner, qrcode, spinbox - the remaining widget types (`buttonmatrix`,
+`msgboxes`, `line`, `canvas`) need a fundamentally different, non-flat
+editor and are deliberately left unregistered (see
+LVGL-VOLLSTAENDIGKEIT-UMSETZUNGSPLAN.md). `tile` and `tab` are also
+registered, but are synthetic pseudo-widgets (see their own comments
+below), not real ESPHome LVGL widget types.
 
 The LVGL v9 "chart" widget is deliberately never registered here: ESPHome
 hard-disables LV_USE_CHART in its generated lv_conf.h with no override
@@ -22,6 +28,12 @@ STYLE = "style"
 LAYOUT = "layout"
 #: Backed by WidgetNode.grid_cell - the ``grid_cell_*`` keys on a grid child.
 GRID_CELL = "grid_cell"
+
+#: Palette grouping: widgets the user interacts with (tap/drag/type) vs.
+#: widgets that only ever show information. Purely a UI-organisation aid for
+#: the palette - has no effect on import/export/validation.
+CATEGORY_INPUT = "input"
+CATEGORY_DISPLAY = "display"
 
 ALIGN_VALUES = (
     "TOP_LEFT", "TOP_MID", "TOP_RIGHT", "LEFT_MID", "CENTER", "RIGHT_MID",
@@ -119,6 +131,7 @@ class WidgetSchema:
     child_role: str = "generic"   # generic | tab | tile
     is_top_level_only: bool = False
     is_stub: bool = False
+    category: str = CATEGORY_DISPLAY
 
     def label(self, lang: str) -> str:
         return self.label_de if lang == "de" else self.label_en
@@ -271,6 +284,7 @@ _register(WidgetSchema(
     default_size=(200, 100),
     properties=(*_paint_style_props(), *_flex_child_style_props(), *_layout_props()),
     allows_children=True,
+    category=CATEGORY_DISPLAY,
 ))
 
 _register(WidgetSchema(
@@ -278,6 +292,7 @@ _register(WidgetSchema(
     default_size=(300, 100),
     properties=(*_paint_style_props(), *_flex_child_style_props(), *_layout_props()),
     allows_children=True,
+    category=CATEGORY_DISPLAY,
 ))
 
 _register(WidgetSchema(
@@ -294,6 +309,7 @@ _register(WidgetSchema(
         *_text_style_props(),
         *_paint_style_props(),
     ),
+    category=CATEGORY_DISPLAY,
 ))
 
 _register(WidgetSchema(
@@ -308,6 +324,7 @@ _register(WidgetSchema(
         *_paint_style_props(),
     ),
     allows_children=True,
+    category=CATEGORY_INPUT,
 ))
 
 _register(WidgetSchema(
@@ -323,6 +340,7 @@ _register(WidgetSchema(
         PropertyDef("bg_color", "color", STYLE, part="knob",
                     label_de="Knopf-Farbe", label_en="Knob colour"),
     ),
+    category=CATEGORY_INPUT,
 ))
 
 _register(WidgetSchema(
@@ -344,6 +362,7 @@ _register(WidgetSchema(
         PropertyDef("bg_color", "color", STYLE, part="knob",
                     label_de="Knopf-Farbe", label_en="Knob colour"),
     ),
+    category=CATEGORY_INPUT,
 ))
 
 _register(WidgetSchema(
@@ -358,6 +377,7 @@ _register(WidgetSchema(
                     label_de="Zoom", label_en="Zoom"),
         *_paint_style_props(),
     ),
+    category=CATEGORY_DISPLAY,
 ))
 
 _register(WidgetSchema(
@@ -379,4 +399,309 @@ _register(WidgetSchema(
                     label_de="Autostart", label_en="Auto start"),
         *_paint_style_props(),
     ),
+    category=CATEGORY_DISPLAY,
+))
+
+_register(WidgetSchema(
+    type_key="checkbox", label_de="Checkbox", label_en="Checkbox",
+    default_size=(150, 24),
+    parts=("main", "indicator"),
+    properties=(
+        PropertyDef("text", "text", CONTENT, default="Checkbox",
+                    label_de="Text", label_en="Text"),
+        PropertyDef("state_checked", "bool", CONTENT, default=False,
+                    label_de="Anfangszustand: aktiviert", label_en="Initial state: checked"),
+        *_text_style_props(),
+        *_paint_style_props(),
+        PropertyDef("bg_color", "color", STYLE, part="indicator",
+                    label_de="Kästchenfarbe (aktiviert)", label_en="Tickbox colour (checked)"),
+    ),
+    category=CATEGORY_INPUT,
+))
+
+_register(WidgetSchema(
+    type_key="arc", label_de="Bogen (Arc)", label_en="Arc",
+    default_size=(120, 120),
+    parts=("main", "indicator", "knob"),
+    properties=(
+        PropertyDef("value", "int", CONTENT, default=0, label_de="Wert", label_en="Value"),
+        PropertyDef("min_value", "int", CONTENT, default=0, label_de="Min", label_en="Min"),
+        PropertyDef("max_value", "int", CONTENT, default=100, label_de="Max", label_en="Max"),
+        PropertyDef("start_angle", "int", CONTENT, default=135,
+                    label_de="Startwinkel", label_en="Start angle"),
+        PropertyDef("end_angle", "int", CONTENT, default=45,
+                    label_de="Endwinkel", label_en="End angle"),
+        PropertyDef("rotation", "int", CONTENT, default=0,
+                    label_de="Rotation", label_en="Rotation"),
+        PropertyDef("mode", "enum", CONTENT, default="NORMAL",
+                    enum_values=("NORMAL", "REVERSE", "SYMMETRICAL"),
+                    label_de="Modus", label_en="Mode"),
+        PropertyDef("adjustable", "bool", CONTENT, default=False,
+                    label_de="Bedienbar (adjustable)", label_en="Adjustable"),
+        PropertyDef("change_rate", "int", CONTENT, default=720,
+                    label_de="Änderungsrate", label_en="Change rate"),
+        *_paint_style_props(),
+        PropertyDef("arc_color", "color", STYLE, part="indicator",
+                    label_de="Bogenfarbe", label_en="Arc colour"),
+        PropertyDef("arc_width", "int", STYLE, default=0, part="indicator",
+                    label_de="Bogenbreite", label_en="Arc width"),
+        PropertyDef("bg_color", "color", STYLE, part="knob",
+                    label_de="Knopf-Farbe", label_en="Knob colour"),
+    ),
+    category=CATEGORY_INPUT,
+))
+
+_register(WidgetSchema(
+    type_key="bar", label_de="Balken (Bar)", label_en="Bar",
+    default_size=(150, 20),
+    parts=("main", "indicator"),
+    properties=(
+        PropertyDef("value", "int", CONTENT, default=0, label_de="Wert", label_en="Value"),
+        PropertyDef("min_value", "int", CONTENT, default=0, label_de="Min", label_en="Min"),
+        PropertyDef("max_value", "int", CONTENT, default=100, label_de="Max", label_en="Max"),
+        PropertyDef("start_value", "int", CONTENT, default=0,
+                    label_de="Startwert", label_en="Start value"),
+        PropertyDef("mode", "enum", CONTENT, default="NORMAL",
+                    enum_values=("NORMAL", "SYMMETRICAL", "RANGE"),
+                    label_de="Modus", label_en="Mode"),
+        PropertyDef("animated", "bool", CONTENT, default=True,
+                    label_de="Animiert", label_en="Animated"),
+        *_paint_style_props(),
+        PropertyDef("bg_color", "color", STYLE, part="indicator",
+                    label_de="Füllfarbe", label_en="Indicator colour"),
+    ),
+    category=CATEGORY_DISPLAY,
+))
+
+_register(WidgetSchema(
+    type_key="dropdown", label_de="Dropdown", label_en="Dropdown",
+    default_size=(150, 40),
+    parts=("main", "selected", "list", "scrollbar"),
+    properties=(
+        PropertyDef("options", "text_list", CONTENT,
+                    label_de="Optionen", label_en="Options"),
+        PropertyDef("selected_index", "int", CONTENT, default=0,
+                    label_de="Ausgewählter Index", label_en="Selected index"),
+        PropertyDef("symbol", "text", CONTENT,
+                    label_de="Symbol", label_en="Symbol"),
+        PropertyDef("dir", "enum", CONTENT, default="DOWN",
+                    enum_values=("UP", "DOWN", "LEFT", "RIGHT"),
+                    label_de="Öffnungsrichtung", label_en="Open direction"),
+        PropertyDef("max_height", "int", CONTENT,
+                    label_de="Maximale Höhe", label_en="Max height"),
+        *_text_style_props(),
+        *_paint_style_props(),
+        PropertyDef("bg_color", "color", STYLE, part="selected",
+                    label_de="Farbe (ausgewählt)", label_en="Colour (selected)"),
+    ),
+    category=CATEGORY_INPUT,
+))
+
+_register(WidgetSchema(
+    type_key="roller", label_de="Roller", label_en="Roller",
+    default_size=(150, 80),
+    parts=("main", "selected", "items"),
+    properties=(
+        PropertyDef("options", "text_list", CONTENT,
+                    label_de="Optionen", label_en="Options"),
+        PropertyDef("selected_index", "int", CONTENT, default=0,
+                    label_de="Ausgewählter Index", label_en="Selected index"),
+        PropertyDef("visible_row_count", "int", CONTENT, default=3,
+                    label_de="Sichtbare Zeilen", label_en="Visible rows"),
+        PropertyDef("mode", "enum", CONTENT, default="NORMAL",
+                    enum_values=("NORMAL", "INFINITE"),
+                    label_de="Modus", label_en="Mode"),
+        *_text_style_props(),
+        *_paint_style_props(),
+        PropertyDef("bg_color", "color", STYLE, part="selected",
+                    label_de="Farbe (ausgewählt)", label_en="Colour (selected)"),
+    ),
+    category=CATEGORY_INPUT,
+))
+
+_register(WidgetSchema(
+    type_key="textarea", label_de="Textfeld (Textarea)", label_en="Textarea",
+    default_size=(200, 60),
+    parts=("main", "selected", "scrollbar", "cursor"),
+    properties=(
+        PropertyDef("text", "text", CONTENT,
+                    label_de="Text", label_en="Text"),
+        PropertyDef("placeholder_text", "text", CONTENT,
+                    label_de="Platzhaltertext", label_en="Placeholder text"),
+        PropertyDef("one_line", "bool", CONTENT, default=False,
+                    label_de="Einzeilig", label_en="Single line"),
+        PropertyDef("password_mode", "bool", CONTENT, default=False,
+                    label_de="Passwort-Modus", label_en="Password mode"),
+        PropertyDef("max_length", "int", CONTENT,
+                    label_de="Maximale Länge", label_en="Max length"),
+        PropertyDef("accepted_chars", "text", CONTENT,
+                    label_de="Erlaubte Zeichen", label_en="Accepted characters"),
+        *_text_style_props(),
+        *_paint_style_props(),
+    ),
+    category=CATEGORY_INPUT,
+))
+
+_register(WidgetSchema(
+    type_key="keyboard", label_de="Tastatur", label_en="Keyboard",
+    default_size=(320, 160),
+    properties=(
+        # A plain widget-id reference, not a style/content literal - the
+        # frontend renders this as a picker over the project's textarea
+        # widgets rather than a free-text field (widgetschema.py has no
+        # notion of "the id of another widget", so this is recognised by
+        # the frontend purely from the `widget_ref` kind + `textarea` key).
+        PropertyDef("textarea", "widget_ref", CONTENT,
+                    label_de="Verknüpftes Textfeld", label_en="Linked textarea"),
+        PropertyDef("mode", "enum", CONTENT, default="TEXT_LOWER",
+                    enum_values=("TEXT_LOWER", "TEXT_UPPER", "TEXT_SPECIAL", "NUMBER"),
+                    label_de="Modus", label_en="Mode"),
+        *_paint_style_props(),
+    ),
+    category=CATEGORY_INPUT,
+))
+
+# `tile` is a synthetic pseudo-widget, not a real ESPHome LVGL widget type:
+# it exists only to hold one entry of a `tileview`'s `tiles:` list (its
+# `WidgetNode.tile_row`/`tile_col`/`tile_dir` fields, not any PropertyDef -
+# a tile has no styling of its own in real ESPHome YAML) plus that entry's
+# own nested `widgets:` as this node's children. `is_stub` keeps it out of
+# the palette; yamlimport.py/yamlexport.py translate `tiles:` <-> children
+# of a `tileview` node specifically.
+_register(WidgetSchema(
+    type_key="tile", label_de="Kachel", label_en="Tile",
+    default_size=(200, 200),
+    allows_children=True,
+    is_stub=True,
+    category=CATEGORY_DISPLAY,
+))
+
+_register(WidgetSchema(
+    type_key="tileview", label_de="Kachelansicht (Tileview)", label_en="Tileview",
+    default_size=(300, 300),
+    parts=("main", "scrollbar"),
+    properties=(*_paint_style_props(),),
+    allows_children=True,
+    child_role="tile",
+    category=CATEGORY_DISPLAY,
+))
+
+# `tab` is a synthetic pseudo-widget, not a real ESPHome LVGL widget type -
+# the same pattern as `tile` above, but for a `tabview`'s `tabs:` list entry.
+# Its only per-entry metadata is `name:`, held on `WidgetNode.tab_title`
+# rather than a PropertyDef, since a tab has no styling of its own (that
+# lives on `tabview.tab_style`/`content_style`, not modelled here yet).
+_register(WidgetSchema(
+    type_key="tab", label_de="Tab", label_en="Tab",
+    default_size=(300, 260),
+    allows_children=True,
+    is_stub=True,
+    category=CATEGORY_DISPLAY,
+))
+
+_register(WidgetSchema(
+    type_key="tabview", label_de="Tabs (Tabview)", label_en="Tabview",
+    default_size=(300, 300),
+    parts=("main", "scrollbar"),
+    properties=(
+        PropertyDef("position", "enum", CONTENT, default="TOP",
+                    enum_values=("TOP", "BOTTOM", "LEFT", "RIGHT"),
+                    label_de="Tableisten-Position", label_en="Tab bar position"),
+        PropertyDef("size", "text", CONTENT, default="10%",
+                    label_de="Tableisten-Größe", label_en="Tab bar size"),
+        *_paint_style_props(),
+    ),
+    allows_children=True,
+    child_role="tab",
+    category=CATEGORY_DISPLAY,
+))
+
+# --- Phase 3 - specialised/rarer widgets -------------------------------------
+# Only the widget types whose ESPHome config is a plain flat-property shape
+# (see LVGL-VOLLSTAENDIGKEIT-UMSETZUNGSPLAN.md, Phase 3): `buttonmatrix`
+# (per-button matrix editor), `msgboxes` (a top-level list, like `pages`, not
+# a widget-tree entry), `line` (a points list, often lambda-driven) and
+# `canvas` (pure draw-action API, nothing to visually edit) all need a
+# fundamentally different editor and stay unregistered for now.
+
+_register(WidgetSchema(
+    type_key="led", label_de="LED", label_en="LED",
+    default_size=(40, 40),
+    properties=(
+        PropertyDef("brightness", "text", CONTENT, default="100%",
+                    label_de="Helligkeit", label_en="Brightness"),
+        PropertyDef("color", "color", CONTENT,
+                    label_de="Farbe", label_en="Colour"),
+        *_paint_style_props(),
+    ),
+    category=CATEGORY_DISPLAY,
+))
+
+_register(WidgetSchema(
+    type_key="spinner", label_de="Spinner", label_en="Spinner",
+    default_size=(60, 60),
+    parts=("main", "indicator"),
+    properties=(
+        # These read like style keys but are the spinner's own flat
+        # "Configuration variables" for its main-part spinning arc, not
+        # STYLE properties nested under style_tree - ESPHome writes them
+        # directly on the widget (see the docs example: `arc_color:` sits
+        # next to `spin_time:`, not inside a `main:`/style block).
+        PropertyDef("arc_color", "color", CONTENT,
+                    label_de="Bogenfarbe", label_en="Arc colour"),
+        PropertyDef("arc_width", "int", CONTENT, default=0,
+                    label_de="Bogenbreite", label_en="Arc width"),
+        PropertyDef("arc_length", "int", CONTENT, default=200,
+                    label_de="Bogenlänge (Grad)", label_en="Arc length (degrees)"),
+        PropertyDef("arc_rounded", "bool", CONTENT, default=False,
+                    label_de="Bogenenden gerundet", label_en="Rounded arc ends"),
+        PropertyDef("spin_time", "text", CONTENT, default="2s",
+                    label_de="Umlaufzeit", label_en="Spin time"),
+        PropertyDef("arc_color", "color", STYLE, part="indicator",
+                    label_de="Indikator-Bogenfarbe", label_en="Indicator arc colour"),
+        PropertyDef("arc_width", "int", STYLE, default=0, part="indicator",
+                    label_de="Indikator-Bogenbreite", label_en="Indicator arc width"),
+    ),
+    category=CATEGORY_DISPLAY,
+))
+
+_register(WidgetSchema(
+    type_key="qrcode", label_de="QR-Code", label_en="QR code",
+    default_size=(100, 100),
+    properties=(
+        PropertyDef("text", "text", CONTENT,
+                    label_de="Text", label_en="Text"),
+        PropertyDef("size", "int", CONTENT, default=100,
+                    label_de="Größe", label_en="Size"),
+        PropertyDef("dark_color", "color", CONTENT,
+                    label_de="Dunkle Farbe", label_en="Dark colour"),
+        PropertyDef("light_color", "color", CONTENT,
+                    label_de="Helle Farbe", label_en="Light colour"),
+        *_paint_style_props(),
+    ),
+    category=CATEGORY_DISPLAY,
+))
+
+_register(WidgetSchema(
+    type_key="spinbox", label_de="Spinbox", label_en="Spinbox",
+    default_size=(120, 40),
+    properties=(
+        PropertyDef("value", "float", CONTENT, default=0,
+                    label_de="Wert", label_en="Value"),
+        PropertyDef("range_from", "float", CONTENT, default=0,
+                    label_de="Minimum", label_en="Minimum"),
+        PropertyDef("range_to", "float", CONTENT, default=100,
+                    label_de="Maximum", label_en="Maximum"),
+        PropertyDef("digits", "int", CONTENT, default=4,
+                    label_de="Ziffern", label_en="Digits"),
+        PropertyDef("decimal_places", "int", CONTENT, default=0,
+                    label_de="Nachkommastellen", label_en="Decimal places"),
+        PropertyDef("selected_digit", "int", CONTENT, default=0,
+                    label_de="Fokussierte Ziffer", label_en="Selected digit"),
+        PropertyDef("rollover", "bool", CONTENT, default=False,
+                    label_de="Überlauf", label_en="Rollover"),
+        *_text_style_props(),
+        *_paint_style_props(),
+    ),
+    category=CATEGORY_INPUT,
 ))

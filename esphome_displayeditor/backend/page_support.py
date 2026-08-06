@@ -203,8 +203,10 @@ def _walk_widget_dicts(widgets: list[dict[str, Any]]):
 
 
 def strip_empty_root_widgets(yaml_text: str, project: Project) -> str:
-    """Remove the core's synthetic empty root list when raw pages are present."""
-    if not project.extra_lvgl.get("pages") or project.widgets:
+    """Remove the core's synthetic empty root list when raw pages or message
+    boxes are present - both make an empty root widget list redundant."""
+    has_pages_or_msgboxes = bool(project.extra_lvgl.get("pages") or project.extra_lvgl.get("msgboxes"))
+    if not has_pages_or_msgboxes or project.widgets:
         return yaml_text
     lines = yaml_text.splitlines(keepends=True)
     inside_lvgl = False

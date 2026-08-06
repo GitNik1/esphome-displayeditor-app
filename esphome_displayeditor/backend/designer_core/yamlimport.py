@@ -43,8 +43,19 @@ from .widgetschema import LVGL_STYLE_KEYS, STATE_VALUES, WIDGET_SCHEMAS
 #: Widget keys that map onto a WidgetNode field rather than a property dict.
 _GEOMETRY_KEYS = {"x", "y", "width", "height", "align", "align_to", "hidden"}
 
-#: Keys handled structurally, never classified.
-_STRUCTURAL_KEYS = {"id", "widgets"}
+#: Keys handled structurally, never classified. ``tiles``/``tabs`` only occur
+#: on ``tileview``/``tabview`` (handled by their own branch in
+#: ``_import_widget``), but are harmless to exclude globally - no other
+#: widget type uses those keys.
+_STRUCTURAL_KEYS = {"id", "widgets", "tiles", "tabs"}
+
+#: ``tiles:`` entry keys this importer understands; anything else is kept in
+#: the synthetic ``tile`` node's ``extra`` so a round trip never drops it.
+_KNOWN_TILE_KEYS = {"id", "row", "column", "dir", "widgets"}
+
+#: ``tabs:`` entry keys this importer understands; anything else is kept in
+#: the synthetic ``tab`` node's ``extra`` so a round trip never drops it.
+_KNOWN_TAB_KEYS = {"id", "name", "widgets"}
 
 _GRID_CELL_PREFIX = "grid_cell_"
 
@@ -332,8 +343,97 @@ def _import_widget(entry: Any, registry: IdRegistry, issues: list[ImportIssue],
 
     _classify_widget_body(node, body, issues, path)
 
-    children = body.get("widgets") or []
-    for index, child in enumerate(children):
+    if widget_type == "tileview":
+        for index, tile_entry in enumerate(body.get("tiles") or []):
+            tile_node = _import_tile(tile_entry, registry, issues, f"{path}.tiles[{index}]")
+            if tile_node is not None:
+                node.children.append(tile_node)
+    elif widget_type == "tabview":
+        for index, tab_entry in enumerate(body.get("tabs") or []):
+            tab_node = _import_tab(tab_entry, registry, issues, f"{path}.tabs[{index}]")
+            if tab_node is not None:
+                node.children.append(tab_node)
+    else:
+        children = body.get("widgets") or []
+        for index, child in enumerate(children):
+            child_node = _import_widget(child, registry, issues, f"{path}.widgets[{index}]")
+            if child_node is not None:
+                node.children.append(child_node)
+    return node
+
+
+def _import_tile(entry: Any, registry: IdRegistry, issues: list[ImportIssue],
+                 path: str) -> WidgetNode | None:
+    """One entry of a ``tileview``'s ``tiles:`` list, as a synthetic ``tile``
+    node - see the ``tile``/``tileview`` comment in widgetschema.py."""
+    if not isinstance(entry, dict):
+        issues.append(ImportIssue("B", "Skipped a tile entry that is not a mapping.", path))
+        return None
+
+    tile_id = str(entry.get("id") or "")
+    synthetic = not tile_id
+    if synthetic:
+        tile_id = registry.unique_id("tile")
+    registry.claim(tile_id, f"tile at {path}")
+
+    node = WidgetNode(id=tile_id, widget_type="tile")
+    node.source = "imported"
+    node.synthetic_id = synthetic
+    node.width = None
+    node.height = None
+    try:
+        node.tile_row = int(entry.get("row", 0) or 0)
+    except (TypeError, ValueError):
+        node.tile_row = 0
+    try:
+        node.tile_col = int(entry.get("column", 0) or 0)
+    except (TypeError, ValueError):
+        node.tile_col = 0
+    raw_dir = entry.get("dir", "ALL")
+    node.tile_dir = ",".join(raw_dir) if isinstance(raw_dir, list) else str(raw_dir or "ALL")
+
+    extra = {k: v for k, v in entry.items() if k not in _KNOWN_TILE_KEYS}
+    if extra:
+        issues.append(ImportIssue(
+            "C", f"Tile keys {sorted(extra)} preserved but not editable.", path, tile_id))
+        node.extra.update(extra)
+
+    for index, child in enumerate(entry.get("widgets") or []):
+        child_node = _import_widget(child, registry, issues, f"{path}.widgets[{index}]")
+        if child_node is not None:
+            node.children.append(child_node)
+    return node
+
+
+def _import_tab(entry: Any, registry: IdRegistry, issues: list[ImportIssue],
+                path: str) -> WidgetNode | None:
+    """One entry of a ``tabview``'s ``tabs:`` list, as a synthetic ``tab``
+    node - see the ``tile``/``tileview`` comment in widgetschema.py for the
+    same pattern applied to ``tabview``."""
+    if not isinstance(entry, dict):
+        issues.append(ImportIssue("B", "Skipped a tab entry that is not a mapping.", path))
+        return None
+
+    tab_id = str(entry.get("id") or "")
+    synthetic = not tab_id
+    if synthetic:
+        tab_id = registry.unique_id("tab")
+    registry.claim(tab_id, f"tab at {path}")
+
+    node = WidgetNode(id=tab_id, widget_type="tab")
+    node.source = "imported"
+    node.synthetic_id = synthetic
+    node.width = None
+    node.height = None
+    node.tab_title = str(entry.get("name") or "")
+
+    extra = {k: v for k, v in entry.items() if k not in _KNOWN_TAB_KEYS}
+    if extra:
+        issues.append(ImportIssue(
+            "C", f"Tab keys {sorted(extra)} preserved but not editable.", path, tab_id))
+        node.extra.update(extra)
+
+    for index, child in enumerate(entry.get("widgets") or []):
         child_node = _import_widget(child, registry, issues, f"{path}.widgets[{index}]")
         if child_node is not None:
             node.children.append(child_node)

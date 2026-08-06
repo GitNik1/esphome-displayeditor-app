@@ -65,6 +65,8 @@ h2 { margin: 3px 0 0; font-size: 16px; }
 .palette button { min-height: 68px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); cursor: pointer; font-size: 12px; }
 .palette button:hover { border-color: var(--accent); transform: translateY(-1px); }
 .palette .widget-icon { display: block; font-size: 18px; color: var(--accent); margin-bottom: 6px; }
+.palette-group-heading { grid-column: 1 / -1; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding: 4px 2px 0; }
+.palette-group-heading:first-child { padding-top: 0; }
 
 /* Rows: toolbar, project management, surfaces, reference image, canvas and
    status. Only the canvas stage absorbs the remaining height. */
@@ -178,6 +180,28 @@ input:focus { border-color: var(--accent); }
 .viewer-arc-svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .viewer-arc-knob[hidden] { display: none; }
 .viewer-arc-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.viewer-checkbox { display: inline-flex; align-items: center; gap: 8px; width: 100%; height: 100%; }
+.viewer-checkbox-indicator { display: inline-block; flex: none; width: 18px; height: 18px; border-radius: 3px; border: 2px solid #657386; background: transparent; position: relative; }
+.viewer-checkbox-indicator.checked { background: var(--accent); border-color: var(--accent); }
+.viewer-checkbox-indicator.checked::after { content: ""; position: absolute; left: 4px; top: 0; width: 5px; height: 10px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.viewer-dropdown, .viewer-roller { width: 100%; height: 100%; box-sizing: border-box; background: #1c2532; color: inherit; border: 1px solid #657386; border-radius: 4px; font: inherit; }
+.viewer-roller { text-align: center; }
+.viewer-textarea { width: 100%; height: 100%; box-sizing: border-box; background: #1c2532; color: inherit; border: 1px solid #657386; border-radius: 4px; font: inherit; padding: 4px 6px; resize: none; }
+.viewer-keyboard { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; box-sizing: border-box; background: #1c2532; border: 1px solid #657386; border-radius: 4px; font-size: 20px; color: var(--muted); }
+.viewer-tabview-bar { position: absolute; left: 0; top: 0; right: 0; display: flex; gap: 2px; height: 32px; box-sizing: border-box; background: #1c2532; border-bottom: 1px solid #657386; }
+.viewer-tab-button { flex: 1 1 auto; min-width: 0; border: none; background: transparent; color: var(--muted); font: inherit; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; }
+.viewer-tab-button.active { color: var(--text); background: #263343; box-shadow: inset 0 -2px 0 var(--accent); }
+.viewer-led { display: block; width: 100%; height: 100%; border-radius: 50%; box-sizing: border-box; }
+.viewer-spinner { display: block; width: 100%; height: 100%; box-sizing: border-box; border-radius: 50%; border: 4px solid transparent; border-top-color: var(--accent); border-right-color: var(--accent); animation: viewer-spin 2s linear infinite; }
+@keyframes viewer-spin { to { transform: rotate(360deg); } }
+.viewer-qrcode { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; box-sizing: border-box; background: #fff; color: #111; border: 1px solid #657386; font-size: 10px; text-align: center; overflow: hidden; word-break: break-all; padding: 4px; }
+.viewer-spinbox { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; box-sizing: border-box; background: #1c2532; color: inherit; border: 1px solid #657386; border-radius: 4px; font: inherit; font-variant-numeric: tabular-nums; }
+.viewer-msgbox { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 90; min-width: 220px; max-width: 80%; box-sizing: border-box; background: #1c2532; color: inherit; border: 1px solid #657386; border-radius: 8px; box-shadow: 0 12px 40px #000b; display: flex; flex-direction: column; }
+.viewer-msgbox-header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #263343; }
+.viewer-msgbox-title { flex: 1 1 auto; font-weight: 600; }
+.viewer-msgbox-close { flex: none; border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 14px; padding: 2px 6px; }
+.viewer-msgbox-body { padding: 10px 12px; }
+.viewer-msgbox-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid #263343; }
 .viewer-statusline { min-height: 32px; padding: 7px 14px; display: flex; justify-content: space-between; gap: 16px; color: var(--muted); border-top: 1px solid var(--line); background: #0d1520; font-size: 12px; }
 .viewer-events { position: relative; flex: 0 1 420px; color: var(--text); }
 .viewer-events > summary { cursor: pointer; text-align: center; color: #8fdcff; }

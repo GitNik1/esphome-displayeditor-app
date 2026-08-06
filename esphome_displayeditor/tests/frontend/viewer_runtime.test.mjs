@@ -301,3 +301,79 @@ assert.equal(runtimeBindingHealth(
 assert.equal(runtimeBindingHealth(healthBinding, {
   devices: [{ ...runtimeSnapshot.devices[0], status: "disconnected" }],
 }).status, "offline");
+
+const tileviewProject = {
+  widgets: [
+    {
+      id: "main_tileview", widget_type: "tileview", properties: {}, children: [
+        { id: "home_tile", widget_type: "tile", tile_row: 0, tile_col: 0, properties: {}, children: [] },
+        { id: "settings_tile", widget_type: "tile", tile_row: 0, tile_col: 1, properties: {}, children: [] },
+      ],
+    },
+  ],
+};
+const tileRuntime = { activeTiles: {} };
+const byId = applyViewerAction(
+  tileviewProject, { "lvgl.tileview.select": { id: "main_tileview", tile_id: "settings_tile" } }, tileRuntime,
+);
+assert.equal(byId.changed, true);
+assert.equal(tileRuntime.activeTiles.main_tileview, "settings_tile");
+const byRowColumn = applyViewerAction(
+  tileviewProject, { "lvgl.tileview.select": { id: "main_tileview", row: 0, column: 0 } }, tileRuntime,
+);
+assert.equal(byRowColumn.changed, true);
+assert.equal(tileRuntime.activeTiles.main_tileview, "home_tile");
+const unknownTile = applyViewerAction(
+  tileviewProject, { "lvgl.tileview.select": { id: "main_tileview", tile_id: "no_such_tile" } }, tileRuntime,
+);
+assert.equal(unknownTile.warning, true);
+assert.equal(tileRuntime.activeTiles.main_tileview, "home_tile", "an unresolved target must not change the active tile");
+
+const tabviewProject = {
+  widgets: [
+    {
+      id: "main_tabview", widget_type: "tabview", properties: {}, children: [
+        { id: "home_tab", widget_type: "tab", tab_title: "Home", properties: {}, children: [] },
+        { id: "settings_tab", widget_type: "tab", tab_title: "Settings", properties: {}, children: [] },
+      ],
+    },
+  ],
+};
+const tabRuntime = { activeTabs: {} };
+const byIndex = applyViewerAction(
+  tabviewProject, { "lvgl.tabview.select": { id: "main_tabview", index: 1 } }, tabRuntime,
+);
+assert.equal(byIndex.changed, true);
+assert.equal(tabRuntime.activeTabs.main_tabview, "settings_tab");
+const sameIndexAgain = applyViewerAction(
+  tabviewProject, { "lvgl.tabview.select": { id: "main_tabview", index: 1 } }, tabRuntime,
+);
+assert.equal(sameIndexAgain.changed, false, "selecting the already-active tab must report no change");
+const outOfRangeTab = applyViewerAction(
+  tabviewProject, { "lvgl.tabview.select": { id: "main_tabview", index: 5 } }, tabRuntime,
+);
+assert.equal(outOfRangeTab.warning, true);
+assert.equal(tabRuntime.activeTabs.main_tabview, "settings_tab", "an unresolved target must not change the active tab");
+
+const msgboxProject = {
+  widgets: [
+    { id: "open_button", widget_type: "button", properties: {}, children: [] },
+  ],
+  msgboxes: [
+    {
+      id: "message_box", title: "Message box", close_button: true,
+      body: { text: "Hi" },
+      buttons: [{ id: "msgbox_close", widget_type: "button", properties: {}, children: [] }],
+      header_buttons: [],
+    },
+  ],
+};
+const showResult = applyViewerAction(msgboxProject, { "lvgl.widget.show": "message_box" }, {});
+assert.equal(showResult.changed, true);
+assert.equal(msgboxProject.msgboxes[0].hidden, false, "lvgl.widget.show must find a msgbox by its own id, not just tree widgets");
+const hideResult = applyViewerAction(msgboxProject, { "lvgl.widget.hide": "message_box" }, {});
+assert.equal(hideResult.changed, true);
+assert.equal(msgboxProject.msgboxes[0].hidden, true);
+const showButtonResult = applyViewerAction(msgboxProject, { "lvgl.widget.hide": "msgbox_close" }, {});
+assert.equal(showButtonResult.changed, true, "a msgbox button id must also be reachable, since it is a normal WidgetNode");
+assert.equal(msgboxProject.msgboxes[0].buttons[0].hidden, true);

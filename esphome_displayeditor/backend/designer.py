@@ -19,6 +19,7 @@ from .designer_core.yamlimport import (
     import_esphome_yaml,
 )
 from .errors import ApiError
+from .msgbox_support import apply_msgbox_payload, materialize_msgboxes
 from .page_support import apply_surface_payload, materialize_surfaces, strip_empty_root_widgets
 
 _ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -55,6 +56,14 @@ def _normalise_button_child_text(
             layer = normalized.get(layer_name)
             if isinstance(layer, dict) and isinstance(layer.get("widgets"), list):
                 lists.append(layer["widgets"])
+        msgboxes = normalized.get("msgboxes")
+        if isinstance(msgboxes, list):
+            for msgbox in msgboxes:
+                if not isinstance(msgbox, dict):
+                    continue
+                for key in ("buttons", "header_buttons"):
+                    if isinstance(msgbox.get(key), list):
+                        lists.append(msgbox[key])
         return lists
 
     def collect_widget_ids(nodes: list[dict[str, Any]]) -> None:
@@ -197,7 +206,7 @@ class DesignerService:
                 {"project_version": version, "supported_version": PROJECT_FORMAT_VERSION},
             )
         try:
-            project = Project.from_dict(apply_surface_payload(payload))
+            project = Project.from_dict(apply_msgbox_payload(apply_surface_payload(payload)))
         except (TypeError, ValueError, KeyError) as exc:
             raise ApiError("invalid_project", "Project data is malformed.") from exc
         if not (1 <= project.canvas_width <= 4096 and 1 <= project.canvas_height <= 4096):
@@ -278,6 +287,19 @@ class DesignerService:
                 "severity": "error",
                 "message": "ESPHome does not allow root widgets and pages together.",
             })
+
+        msgbox_payload, _msgbox_stats = materialize_msgboxes(project)
+        for msgbox_index, msgbox in enumerate(msgbox_payload):
+            msgbox_id = str(msgbox.get("id", ""))
+            if not _ID_PATTERN.fullmatch(msgbox_id):
+                issues.append({
+                    "severity": "error", "msgbox": msgbox_id,
+                    "message": "Invalid ESPHome msgbox id.",
+                })
+            registry.claim(msgbox_id, f"msgboxes[{msgbox_index}]")
+            for key in ("buttons", "header_buttons"):
+                visit_surface_widgets(
+                    msgbox.get(key, []), parent_path=f"msgboxes[{msgbox_index}].{key}")
         for kind, entries in (
             ("style", project.styles),
             ("font", project.fonts),
@@ -357,6 +379,7 @@ class DesignerService:
             raise ApiError("import_failed", str(exc), 422) from exc
 
         payload, surface_stats = materialize_surfaces(result.project, result.issues)
+        payload["msgboxes"], msgbox_stats = materialize_msgboxes(result.project, result.issues)
         # Run the normal validation too, so the caller gets one issue list and
         # the same failure modes as any other project.
         _project, validation_issues = self.validate(payload)
@@ -368,7 +391,11 @@ class DesignerService:
         )
         blocking = [i for i in issues if i["severity"] in ("A", "error")]
         stats = dict(result.stats)
-        stats["widget_count"] = stats.get("widget_count", 0) + surface_stats["surface_widget_count"]
+        stats["widget_count"] = (
+            stats.get("widget_count", 0)
+            + surface_stats["surface_widget_count"]
+            + msgbox_stats["msgbox_widget_count"]
+        )
         merged_types = dict(stats.get("widget_types", {}))
         for widget_type, count in surface_stats["surface_widget_types"].items():
             merged_types[widget_type] = merged_types.get(widget_type, 0) + count
@@ -377,6 +404,7 @@ class DesignerService:
             key: value for key, value in surface_stats.items()
             if key != "surface_widget_types"
         })
+        stats.update(msgbox_stats)
         return {
             "project": payload,
             "issues": issues,
@@ -390,8 +418,13 @@ class DesignerService:
         except LvglImportError as exc:
             raise ApiError("import_failed", str(exc), 422) from exc
         _payload, surface_stats = materialize_surfaces(result.project, result.issues)
+        _msgboxes, msgbox_stats = materialize_msgboxes(result.project, result.issues)
         stats = dict(result.stats)
-        stats["widget_count"] = stats.get("widget_count", 0) + surface_stats["surface_widget_count"]
+        stats["widget_count"] = (
+            stats.get("widget_count", 0)
+            + surface_stats["surface_widget_count"]
+            + msgbox_stats["msgbox_widget_count"]
+        )
         merged_types = dict(stats.get("widget_types", {}))
         for widget_type, count in surface_stats["surface_widget_types"].items():
             merged_types[widget_type] = merged_types.get(widget_type, 0) + count
@@ -400,6 +433,7 @@ class DesignerService:
             key: value for key, value in surface_stats.items()
             if key not in {"surface_widget_count", "surface_widget_types"}
         })
+        stats.update(msgbox_stats)
         return stats
 
     def export_yaml(self, payload: dict[str, Any]) -> dict:
@@ -428,4 +462,6 @@ class DesignerService:
 
     def project_payload(self, project: Project) -> dict[str, Any]:
         """Decorate a stored core project with read-only Viewer surfaces."""
-        return materialize_surfaces(project)[0]
+        payload = materialize_surfaces(project)[0]
+        payload["msgboxes"] = materialize_msgboxes(project)[0]
+        return payload

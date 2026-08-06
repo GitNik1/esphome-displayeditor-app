@@ -21,7 +21,7 @@ PROJECT_FORMAT_VERSION = 3
 DEFAULT_W, DEFAULT_H = 480, 480
 
 #: Style-tree keys that name a further part rather than a style property.
-STYLE_PARTS = ("indicator", "knob", "items", "ticks", "selected", "scrollbar", "cursor")
+STYLE_PARTS = ("indicator", "knob", "items", "ticks", "selected", "scrollbar", "cursor", "list")
 
 #: Reserved style-tree key holding per-state overrides:
 #: ``style_tree["states"]["pressed"] = {...}``. In YAML a state block sits flat
