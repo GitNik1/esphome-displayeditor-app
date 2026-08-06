@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.16.0
+
 - Added editable style properties, available on (almost) every widget:
   individual padding sides (`pad_top`/`pad_bottom`/`pad_left`/`pad_right`,
   alongside the existing all-sides `pad_all`), margins (`margin_top`/
