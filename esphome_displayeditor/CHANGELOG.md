@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- Added editable style properties, available on (almost) every widget:
+  individual padding sides (`pad_top`/`pad_bottom`/`pad_left`/`pad_right`,
+  alongside the existing all-sides `pad_all`), margins (`margin_top`/
+  `margin_bottom`/`margin_left`/`margin_right`), `border_opa`, `border_side`
+  (which edges to draw a border on) and `text_opa`. All of these were
+  already recognized on import (`LVGL_STYLE_KEYS`) and round-tripped
+  correctly if hand-written, but had no property-panel field to set them.
+  `border_side` reuses the existing comma-separated `text_list` editor
+  (the same UI already used for dropdown/roller options) rather than a new
+  dedicated multi-select control - the export side already had
+  `resolve_border_side()` to expand `FULL` into all four edges.
+
+- Reworked message box editing from canvas surfaces to a dedicated dialog.
+  The previous UI treated a msgbox's `buttons`/`header_buttons` as two
+  extra switchable "surfaces" in the same Workspace dropdown as pages/
+  layers ("Message box · Buttons" / "Message box · Header buttons") -
+  user feedback was that this reads as confusing, since a message box
+  isn't a screen you navigate to like a page is. Message boxes are no
+  longer surfaces at all: "+ Message box" (now its own "Message boxes"
+  section, separate from the Workspace toolbar) opens a dedicated dialog
+  with the title/close-button/body-text fields plus two compact row lists
+  for buttons and header buttons. Buttons are simplified compared to the
+  previous canvas-editable version - a text field and a "closes this
+  message box" checkbox (the overwhelmingly common case, `lvgl.widget.hide`
+  on click) instead of full widget styling/triggers; header buttons get an
+  image picker instead of text. This also fixed a side effect of the old
+  design: canvas-placed buttons carried the editor's placeholder `x`/`y`/
+  `width`/`height` into the exported YAML, which are meaningless (LVGL
+  auto-lays out a msgbox's buttons in a row) and could make the real
+  device's layout look wrong - new buttons now export with no size/position
+  at all, letting LVGL auto-size them. The backend (`msgbox_support.py`)
+  is unchanged - it already only cared about the WidgetNode-shaped
+  dictionaries, not how the frontend produced them.
 - Added editor support for `msgboxes` (message box pop-ups). Unlike every
   other widget type so far, a message box is not a widget-tree entry at
   all - it is a top-level `lvgl:` key, structurally identical to

@@ -127,7 +127,17 @@ def apply_msgbox_payload(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(raw, dict):
                 continue
             node = WidgetNode.from_dict(raw)
-            result.append(_widget_dict(node, registry, export_issues))
+            widget_dict = _widget_dict(node, registry, export_issues)
+            # A msgbox's buttons/header_buttons are auto-laid-out by LVGL in a
+            # row, not placed at an absolute canvas position - x/y from the
+            # editor's own canvas (where the button preview needs *some*
+            # coordinate) would be meaningless noise in the exported YAML, so
+            # they are dropped here. width/height are kept: a real msgbox
+            # button can legitimately have an explicit size (e.g. a wider
+            # "Apply" than "Cancel").
+            widget_dict.pop("x", None)
+            widget_dict.pop("y", None)
+            result.append(widget_dict)
         return result
 
     def body_dict(body: Any) -> dict[str, Any]:

@@ -220,7 +220,6 @@
               <button id="add-page" type="button" class="button subtle compact" data-i18n="surface.addPage">+ Seite</button>
               <button id="add-bottom-layer" type="button" class="button subtle compact" data-i18n="surface.addBottomLayer">+ Bottom-Layer</button>
               <button id="add-top-layer" type="button" class="button subtle compact" data-i18n="surface.addTopLayer">+ Top-Layer</button>
-              <button id="add-msgbox" type="button" class="button subtle compact" data-i18n="surface.addMsgbox">+ Message box</button>
               <button id="surface-up" type="button" class="button subtle compact" data-i18n-attr="title:surface.moveUp" title="Seite nach oben verschieben">↑</button>
               <button id="surface-down" type="button" class="button subtle compact" data-i18n-attr="title:surface.moveDown" title="Seite nach unten verschieben">↓</button>
               <button id="delete-surface" type="button" class="button danger compact" data-i18n="surface.remove">Entfernen</button>
@@ -250,21 +249,12 @@
                 <button id="apply-surface" type="button" class="button primary compact" data-i18n="surface.apply">Übernehmen</button>
               </div>
             </details>
-            <details id="msgbox-settings" class="surface-settings hidden">
-              <summary data-i18n="surface.msgboxEditSummary">Message box bearbeiten</summary>
-              <div class="surface-settings-fields">
-                <label><span data-i18n="surface.msgboxTitle">Titel</span>
-                  <input id="msgbox-title" type="text">
-                </label>
-                <label class="checkbox-field"><span data-i18n="surface.msgboxCloseButton">Schließen-Button</span>
-                  <input id="msgbox-close-button" type="checkbox">
-                </label>
-                <label><span data-i18n="surface.msgboxBodyText">Text</span>
-                  <textarea id="msgbox-body-text" rows="3"></textarea>
-                </label>
-              </div>
-            </details>
           </div>
+          <details class="msgbox-bar">
+            <summary data-i18n="surface.msgboxSectionHeading">Message boxes</summary>
+            <div id="msgbox-list" class="msgbox-list"></div>
+            <button id="add-msgbox" type="button" class="button subtle compact" data-i18n="surface.addMsgbox">+ Message box</button>
+          </details>
           <details class="background-bar">
             <summary data-i18n="background.heading">Referenzbild</summary>
             <div class="background-fields">
@@ -681,6 +671,38 @@
 
     <datalist id="project-color-options"></datalist>
     <datalist id="project-font-options"></datalist>
+
+    <dialog id="msgbox-dialog" class="msgbox-dialog">
+      <div class="dialog-heading"><h2 data-i18n="dialog.msgbox.title">Message box bearbeiten</h2><button id="close-msgbox-dialog" type="button" class="icon-button">×</button></div>
+      <div class="msgbox-dialog-body">
+        <label><span data-i18n="surface.msgboxTitle">Titel</span>
+          <input id="msgbox-dialog-title" type="text">
+        </label>
+        <label class="checkbox-field"><span data-i18n="surface.msgboxCloseButton">Schließen-Button</span>
+          <input id="msgbox-dialog-close-button" type="checkbox">
+        </label>
+        <label><span data-i18n="surface.msgboxBodyText">Text</span>
+          <textarea id="msgbox-dialog-body-text" rows="3"></textarea>
+        </label>
+
+        <div class="msgbox-dialog-section">
+          <div class="property-section" data-i18n="surface.msgboxButtons">Buttons</div>
+          <p class="hint" data-i18n="dialog.msgbox.buttonsHint">Erscheinen als Reihe am unteren Rand der Message-Box.</p>
+          <div id="msgbox-dialog-buttons" class="msgbox-dialog-rows"></div>
+          <button id="msgbox-dialog-add-button" type="button" class="button subtle compact" data-i18n="dialog.msgbox.addButton">+ Button</button>
+        </div>
+
+        <div class="msgbox-dialog-section">
+          <div class="property-section" data-i18n="surface.msgboxHeaderButtons">Header buttons</div>
+          <p class="hint" data-i18n="dialog.msgbox.headerButtonsHint">Bild-Buttons oben neben dem Titel (zusätzlich zum Schließen-Kreuz).</p>
+          <div id="msgbox-dialog-header-buttons" class="msgbox-dialog-rows"></div>
+          <button id="msgbox-dialog-add-header-button" type="button" class="button subtle compact" data-i18n="dialog.msgbox.addHeaderButton">+ Header button</button>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button id="msgbox-dialog-done" class="button primary" data-i18n="dialog.msgbox.done">Fertig</button>
+      </div>
+    </dialog>
 
     <dialog id="import-dialog">
       <div class="dialog-heading"><h2 data-i18n="dialog.importYaml.title">ESPHome-YAML importieren</h2><button id="close-import" class="icon-button">×</button></div>

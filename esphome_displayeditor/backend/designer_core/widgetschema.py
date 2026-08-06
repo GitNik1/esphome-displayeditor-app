@@ -167,10 +167,37 @@ def _paint_style_props() -> tuple[PropertyDef, ...]:
                     label_de="Rahmenbreite", label_en="Border width"),
         PropertyDef("border_color", "color", STYLE,
                     label_de="Rahmenfarbe", label_en="Border colour"),
+        PropertyDef("border_opa", "percent_or_enum", STYLE, default="COVER",
+                    enum_values=("TRANSP", "COVER"),
+                    label_de="Rahmen-Deckkraft", label_en="Border opacity"),
+        # Reuses the "text_list" (comma-separated) editor already built for
+        # dropdown/roller options - ESPHome accepts border_side as a list of
+        # NONE|TOP|BOTTOM|LEFT|RIGHT|INTERNAL|FULL tokens, the export side
+        # already has resolve_border_side() to expand "FULL". No dedicated
+        # multi-select UI for now (see LVGL-VOLLSTAENDIGKEIT-UMSETZUNGSPLAN.md).
+        PropertyDef("border_side", "text_list", STYLE,
+                    label_de="Rahmenkanten (TOP,BOTTOM,LEFT,RIGHT,FULL)",
+                    label_en="Border sides (TOP,BOTTOM,LEFT,RIGHT,FULL)"),
         PropertyDef("radius", "int", STYLE, default=0,
                     label_de="Eckenradius", label_en="Corner radius"),
         PropertyDef("pad_all", "int", STYLE, default=0,
                     label_de="Innenabstand", label_en="Padding"),
+        PropertyDef("pad_top", "int", STYLE, default=0,
+                    label_de="Innenabstand oben", label_en="Padding top"),
+        PropertyDef("pad_bottom", "int", STYLE, default=0,
+                    label_de="Innenabstand unten", label_en="Padding bottom"),
+        PropertyDef("pad_left", "int", STYLE, default=0,
+                    label_de="Innenabstand links", label_en="Padding left"),
+        PropertyDef("pad_right", "int", STYLE, default=0,
+                    label_de="Innenabstand rechts", label_en="Padding right"),
+        PropertyDef("margin_top", "int", STYLE, default=0,
+                    label_de="Außenabstand oben", label_en="Margin top"),
+        PropertyDef("margin_bottom", "int", STYLE, default=0,
+                    label_de="Außenabstand unten", label_en="Margin bottom"),
+        PropertyDef("margin_left", "int", STYLE, default=0,
+                    label_de="Außenabstand links", label_en="Margin left"),
+        PropertyDef("margin_right", "int", STYLE, default=0,
+                    label_de="Außenabstand rechts", label_en="Margin right"),
         PropertyDef("shadow_width", "int", STYLE, default=0,
                     label_de="Schattenbreite", label_en="Shadow width"),
         PropertyDef("shadow_color", "color", STYLE,
@@ -201,6 +228,9 @@ def _text_style_props(part: str = "main") -> tuple[PropertyDef, ...]:
         PropertyDef("text_align", "enum", STYLE, part=part, default="LEFT",
                     enum_values=("LEFT", "CENTER", "RIGHT", "AUTO"),
                     label_de="Textausrichtung", label_en="Text align"),
+        PropertyDef("text_opa", "percent_or_enum", STYLE, part=part, default="COVER",
+                    enum_values=("TRANSP", "COVER"),
+                    label_de="Text-Deckkraft", label_en="Text opacity"),
     )
 
 
