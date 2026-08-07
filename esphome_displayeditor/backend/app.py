@@ -10,6 +10,7 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI, Header, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
@@ -23,7 +24,9 @@ from .builder.adapter import BuilderAdapterError, sanitize_output
 from .designer import DesignerService
 from .errors import ApiError, capability_unavailable
 from .filesystem import FilesystemBackend
-from .font_sources import FontSourceService
+from .font_sources import FontSourceService, is_mdi_webfont_url
+from .lvgl_bundle import build_project_zip
+from .lvgl_merge import MergeError, build_project_yaml_for_bundle, merge_project_into_yaml
 from .project_store import ProjectStore
 from .runtime import DeviceManager, DeviceRegistry, SecretStore
 from .security import RateLimiter
@@ -43,6 +46,15 @@ class PublishRequest(BaseModel):
 
 class DesignerProjectRequest(BaseModel):
     project: dict[str, Any]
+
+
+class MergeDraftRequest(BaseModel):
+    """Merge a Designer project's color/font/image/lvgl blocks into an
+    existing configuration's draft (or its active content, if there is no
+    draft yet), replacing only those top-level keys - see lvgl_merge.py."""
+
+    project: dict[str, Any]
+    target: str
 
 
 class CanvasSize(BaseModel):
@@ -281,7 +293,14 @@ def create_app(
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: http: https:; font-src 'self' data: http: https:; "
-            "connect-src 'self' ws: wss:; "
+            # https: alongside 'self'/ws:/wss: - the CSS Font Loading API
+            # (new FontFace().load(), used for the MDI icon catalog preview
+            # and any project font with source_kind "web") is governed by
+            # connect-src in this browser, not font-src, even though the
+            # resource it fetches is a font. Without this, loading an
+            # external web font failed with a CSP violation, not the more
+            # obvious-looking network/CORS error it otherwise resembles.
+            "connect-src 'self' ws: wss: https:; "
             "object-src 'none'; base-uri 'none'"
         )
         if request.url.path.startswith("/api/v1/"):
@@ -476,6 +495,7 @@ def create_app(
         return {
             "version": application.version,
             "access_level": settings.access_level,
+            "mdi_local": settings.mdi_local,
             "user": {
                 "id": user_id,
                 "name": request.headers.get("X-Remote-User-Name"),
@@ -1204,6 +1224,88 @@ def create_app(
     async def export_project_yaml(body: DesignerProjectRequest) -> dict:
         return designer.export_yaml(body.project)
 
+    @application.post("/api/v1/designer/projects/export-zip")
+    async def export_project_zip(body: DesignerProjectRequest) -> Response:
+        ensure_capability_available("designer.export_yaml")
+        project, issues = designer.validate(body.project)
+        if any(issue["severity"] == "error" for issue in issues):
+            raise ApiError("invalid_project", "Project validation failed.", 422, {"issues": issues})
+        # Unlike export_yaml(), this never copies assets or checks their
+        # existence against this process's own working directory - the ZIP
+        # bundles the actual asset bytes itself, straight from the config
+        # root, via build_project_zip() below.
+        yaml_text, export_issues = build_project_yaml_for_bundle(project)
+        blocking = [i for i in export_issues if i.severity == "A"]
+        if blocking:
+            raise ApiError("invalid_project", "Project validation failed.", 422,
+                {"issues": [{"severity": i.severity, "message": i.message} for i in blocking]})
+        bundle = build_project_zip(yaml_text, project, filesystem)
+        headers = {"Content-Disposition": 'attachment; filename="ui-bundle.zip"'}
+        if bundle.missing_assets:
+            headers["X-Missing-Assets"] = ",".join(quote(path, safe="") for path in bundle.missing_assets)
+        return Response(content=bundle.content, media_type="application/zip", headers=headers)
+
+    @application.post("/api/v1/designer/projects/merge-draft")
+    async def merge_project_draft(body: MergeDraftRequest, request: Request) -> dict:
+        # Same capability the existing "Konfigurationen" draft editor requires
+        # - this endpoint gives the Designer the same write access an editor
+        # already has there, nothing new the role model didn't already grant.
+        user_id = require_capability(request, "configuration.write_draft")
+        ensure_capability_available("designer.export_yaml")
+        project, issues = designer.validate(body.project)
+        if any(issue["severity"] == "error" for issue in issues):
+            raise ApiError("invalid_project", "Project validation failed.", 422, {"issues": issues})
+
+        try:
+            existing = filesystem.read_draft(body.target)["content"]
+        except ApiError as exc:
+            if exc.error != "draft_not_found":
+                raise
+            existing = filesystem.read_config(body.target)["content"]
+
+        try:
+            merged = merge_project_into_yaml(project, existing)
+        except MergeError as exc:
+            raise ApiError("merge_failed", str(exc), 422) from exc
+        blocking = [i for i in merged.issues if i.severity == "A"]
+        if blocking:
+            raise ApiError(
+                "invalid_project", "Project validation failed.", 422,
+                {"issues": [{"severity": i.severity, "message": i.message} for i in blocking]},
+            )
+
+        old_revision = None
+        try:
+            try:
+                old_revision = filesystem.read_draft(body.target)["revision"]
+            except ApiError as exc:
+                if exc.error != "draft_not_found":
+                    raise
+            result = filesystem.save_draft(body.target, merged.content)
+        except ApiError as exc:
+            audit.record(
+                user_id=user_id,
+                action="configuration.draft.merge",
+                configuration=body.target,
+                old_revision=old_revision,
+                new_revision=None,
+                result=exc.error,
+            )
+            raise
+        audit.record(
+            user_id=user_id,
+            action="configuration.draft.merge",
+            configuration=body.target,
+            old_revision=old_revision,
+            new_revision=result["revision"],
+            result="success",
+        )
+        return {
+            "revision": result["revision"],
+            "replaced": merged.replaced_keys,
+            "appended": merged.appended_keys,
+        }
+
     def _import_source(body: ImportRequest) -> tuple[str, str]:
         """Resolve the text to import, and the name to record as its origin.
 
@@ -1327,8 +1429,13 @@ def create_app(
     @application.post("/api/v1/designer/font-sources/update")
     async def update_font_source(body: FontSourceUpdateRequest, request: Request) -> dict:
         user_id = require_capability(request, "designer.asset_write")
+        # "mdi_local": pin the font this add-on already ships instead of
+        # reaching out to GitHub - the whole point of the option is that
+        # adding MDI icons needs no internet access at all.
+        use_bundled = settings.mdi_local and is_mdi_webfont_url(body.url)
+        action = font_sources.pin_bundled_mdi if use_bundled else font_sources.update
         try:
-            result = await asyncio.to_thread(font_sources.update, body.id, body.url)
+            result = await asyncio.to_thread(action, body.id, body.url)
         except ApiError as exc:
             audit.record(
                 user_id=user_id,

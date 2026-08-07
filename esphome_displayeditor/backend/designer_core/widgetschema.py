@@ -113,6 +113,11 @@ class PropertyDef:
     part: str = "main"
     label_de: str = ""
     label_en: str = ""
+    #: Optional sub-grouping within a (category, part) property list - lets
+    #: the frontend fold rarely-tweaked clusters (spacing/border/shadow) into
+    #: a collapsible section instead of listing every property flat. Empty
+    #: string means "not grouped", rendered inline as before.
+    group: str = ""
 
     def label(self, lang: str) -> str:
         text = self.label_de if lang == "de" else self.label_en
@@ -163,53 +168,53 @@ def _paint_style_props() -> tuple[PropertyDef, ...]:
         PropertyDef("bg_grad_dir", "enum", STYLE, default="NONE",
                     enum_values=("NONE", "VER", "HOR"),
                     label_de="Verlaufsrichtung", label_en="Gradient direction"),
-        PropertyDef("border_width", "int", STYLE, default=0,
+        PropertyDef("border_width", "int", STYLE, default=0, group="border",
                     label_de="Rahmenbreite", label_en="Border width"),
-        PropertyDef("border_color", "color", STYLE,
+        PropertyDef("border_color", "color", STYLE, group="border",
                     label_de="Rahmenfarbe", label_en="Border colour"),
         PropertyDef("border_opa", "percent_or_enum", STYLE, default="COVER",
-                    enum_values=("TRANSP", "COVER"),
+                    enum_values=("TRANSP", "COVER"), group="border",
                     label_de="Rahmen-Deckkraft", label_en="Border opacity"),
         # Reuses the "text_list" (comma-separated) editor already built for
         # dropdown/roller options - ESPHome accepts border_side as a list of
         # NONE|TOP|BOTTOM|LEFT|RIGHT|INTERNAL|FULL tokens, the export side
         # already has resolve_border_side() to expand "FULL". No dedicated
         # multi-select UI for now (see LVGL-VOLLSTAENDIGKEIT-UMSETZUNGSPLAN.md).
-        PropertyDef("border_side", "text_list", STYLE,
+        PropertyDef("border_side", "text_list", STYLE, group="border",
                     label_de="Rahmenkanten (TOP,BOTTOM,LEFT,RIGHT,FULL)",
                     label_en="Border sides (TOP,BOTTOM,LEFT,RIGHT,FULL)"),
-        PropertyDef("radius", "int", STYLE, default=0,
+        PropertyDef("radius", "int", STYLE, default=0, group="border",
                     label_de="Eckenradius", label_en="Corner radius"),
-        PropertyDef("pad_all", "int", STYLE, default=0,
+        PropertyDef("pad_all", "int", STYLE, default=0, group="spacing",
                     label_de="Innenabstand", label_en="Padding"),
-        PropertyDef("pad_top", "int", STYLE, default=0,
+        PropertyDef("pad_top", "int", STYLE, default=0, group="spacing",
                     label_de="Innenabstand oben", label_en="Padding top"),
-        PropertyDef("pad_bottom", "int", STYLE, default=0,
+        PropertyDef("pad_bottom", "int", STYLE, default=0, group="spacing",
                     label_de="Innenabstand unten", label_en="Padding bottom"),
-        PropertyDef("pad_left", "int", STYLE, default=0,
+        PropertyDef("pad_left", "int", STYLE, default=0, group="spacing",
                     label_de="Innenabstand links", label_en="Padding left"),
-        PropertyDef("pad_right", "int", STYLE, default=0,
+        PropertyDef("pad_right", "int", STYLE, default=0, group="spacing",
                     label_de="Innenabstand rechts", label_en="Padding right"),
-        PropertyDef("margin_top", "int", STYLE, default=0,
+        PropertyDef("margin_top", "int", STYLE, default=0, group="spacing",
                     label_de="Außenabstand oben", label_en="Margin top"),
-        PropertyDef("margin_bottom", "int", STYLE, default=0,
+        PropertyDef("margin_bottom", "int", STYLE, default=0, group="spacing",
                     label_de="Außenabstand unten", label_en="Margin bottom"),
-        PropertyDef("margin_left", "int", STYLE, default=0,
+        PropertyDef("margin_left", "int", STYLE, default=0, group="spacing",
                     label_de="Außenabstand links", label_en="Margin left"),
-        PropertyDef("margin_right", "int", STYLE, default=0,
+        PropertyDef("margin_right", "int", STYLE, default=0, group="spacing",
                     label_de="Außenabstand rechts", label_en="Margin right"),
-        PropertyDef("shadow_width", "int", STYLE, default=0,
+        PropertyDef("shadow_width", "int", STYLE, default=0, group="shadow",
                     label_de="Schattenbreite", label_en="Shadow width"),
-        PropertyDef("shadow_color", "color", STYLE,
+        PropertyDef("shadow_color", "color", STYLE, group="shadow",
                     label_de="Schattenfarbe", label_en="Shadow colour"),
         PropertyDef("shadow_opa", "percent_or_enum", STYLE, default="COVER",
-                    enum_values=("TRANSP", "COVER"),
+                    enum_values=("TRANSP", "COVER"), group="shadow",
                     label_de="Schatten-Deckkraft", label_en="Shadow opacity"),
-        PropertyDef("shadow_offset_x", "int", STYLE, default=0,
+        PropertyDef("shadow_offset_x", "int", STYLE, default=0, group="shadow",
                     label_de="Schatten X", label_en="Shadow X"),
-        PropertyDef("shadow_offset_y", "int", STYLE, default=0,
+        PropertyDef("shadow_offset_y", "int", STYLE, default=0, group="shadow",
                     label_de="Schatten Y", label_en="Shadow Y"),
-        PropertyDef("shadow_spread", "int", STYLE, default=0,
+        PropertyDef("shadow_spread", "int", STYLE, default=0, group="shadow",
                     label_de="Schatten-Ausbreitung", label_en="Shadow spread"),
         PropertyDef("bg_image_src", "image_ref", STYLE,
                     label_de="Hintergrundbild", label_en="Background image"),
@@ -275,9 +280,9 @@ def _flex_child_style_props() -> tuple[PropertyDef, ...]:
     return (
         PropertyDef("flex_grow", "int", STYLE, default=0,
                     label_de="Flex-Wachstum", label_en="Flex grow"),
-        PropertyDef("pad_row", "int", STYLE, default=0,
+        PropertyDef("pad_row", "int", STYLE, default=0, group="spacing",
                     label_de="Zeilenabstand", label_en="Row gap"),
-        PropertyDef("pad_column", "int", STYLE, default=0,
+        PropertyDef("pad_column", "int", STYLE, default=0, group="spacing",
                     label_de="Spaltenabstand", label_en="Column gap"),
     )
 

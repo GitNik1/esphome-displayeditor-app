@@ -90,6 +90,12 @@ class Settings:
     api_timeout_seconds: int = 300
     builder_url: str = "http://5c53de3b-esphome:6052"
     validation_max_age_seconds: int = 900
+    #: Serve/pin the Material Design Icons webfont from the copy bundled
+    #: with this add-on instead of fetching it from GitHub - so the icon
+    #: catalog preview and "Add MDI icons" both work with no internet
+    #: access at all. Off falls back to the previous GitHub-backed
+    #: behaviour (e.g. to pick up icon updates ahead of an add-on release).
+    mdi_local: bool = True
 
     @classmethod
     def load(cls) -> "Settings":
@@ -155,6 +161,7 @@ class Settings:
             validation_max_age_seconds=_bounded_int(
                 options, "validation_max_age_seconds", 900, 30, 86400
             ),
+            mdi_local=bool(options.get("mdi_local", True)),
         )
 
     def role_for(self, user_id: str | None) -> str:

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>ESPHome Display Editor</title>
-    <link rel="stylesheet" href="styles.css?v=0.16.0">
+    <link rel="stylesheet" href="styles.css?v=0.17.0">
   </head>
   <body>
     <header class="topbar">
@@ -16,7 +16,7 @@
       <label class="language-switch"><span data-i18n="language.label">Sprache</span>
         <select id="language-select"><option value="de">Deutsch</option><option value="en">English</option></select>
       </label>
-      <div id="health" class="health"><span></span> <span data-i18n="app.health.backend">Backend</span></div>
+      <div id="health" class="health"><span class="health-dot"></span> <span data-i18n="app.health.backend">Backend</span></div>
     </header>
 
     <nav class="tabs" data-i18n-attr="aria-label:nav.ariaLabel" aria-label="Bereiche">
@@ -400,8 +400,8 @@
               <button id="apply-image-button" type="button" class="button primary compact" data-i18n="imgbtn.apply">Bild-Button übernehmen</button>
             </div>
 
-            <div id="widget-actions-section" class="hidden">
-              <div class="property-section" data-i18n="actions.section">Aktionen</div>
+            <details id="widget-actions-section" class="hidden property-group">
+              <summary data-i18n="actions.section">Aktionen</summary>
               <p class="hint" data-i18n="actions.hint">Ändert andere Widgets beim Drücken, Loslassen oder Umschalten dieses Buttons.</p>
               <div id="widget-action-list" class="widget-action-list"></div>
               <div class="widget-action-builder">
@@ -463,7 +463,7 @@
                 <p id="widget-action-error" class="widget-action-error hidden"></p>
                 <button id="add-widget-action" type="button" class="button primary compact" data-i18n="actions.add">Aktion hinzufügen</button>
               </div>
-            </div>
+            </details>
 
             <div id="runtime-binding-section" class="hidden">
               <div class="property-section" data-i18n="binding.section">Live-Daten im Viewer</div>
@@ -754,7 +754,17 @@
       <div class="dialog-heading"><h2 data-i18n="dialog.yamlOutput.title">Generiertes ESPHome YAML</h2><button id="close-dialog" class="icon-button">×</button></div>
       <div id="yaml-issues" class="issues hidden"></div>
       <pre id="yaml-output"></pre>
-      <div class="dialog-actions"><button id="copy-yaml" class="button primary" data-i18n="dialog.yamlOutput.copy">In Zwischenablage kopieren</button></div>
+      <div class="merge-draft-controls">
+        <label><span data-i18n="dialog.yamlOutput.mergeTarget">Zieldatei</span>
+          <select id="merge-draft-target"><option value="" data-i18n="dialog.yamlOutput.mergeTargetPick">Datei wählen …</option></select>
+        </label>
+        <p class="hint issue-error" data-i18n="dialog.yamlOutput.mergeHint">Ersetzt in der gewählten Datei nur die Top-Level-Schlüssel color:/font:/image:/lvgl: - alles andere in der Datei bleibt unverändert. Schreibt nur einen Entwurf, keine aktive Datei.</p>
+      </div>
+      <div class="dialog-actions">
+        <button id="merge-draft-save" class="button subtle" data-i18n="dialog.yamlOutput.mergeSave" disabled>Als Entwurf speichern</button>
+        <button id="download-zip" class="button subtle" data-i18n="dialog.yamlOutput.downloadZip">ZIP herunterladen</button>
+        <button id="copy-yaml" class="button primary" data-i18n="dialog.yamlOutput.copy">In Zwischenablage kopieren</button>
+      </div>
     </dialog>
 
     <dialog id="merge-dialog" class="merge-dialog">
@@ -787,6 +797,10 @@
           </span>
         </label>
         <p id="glyph-input-error" class="widget-action-error hidden"></p>
+        <label class="glyph-size-field"><span data-i18n="dialog.glyph.sizeLabel">Icon-Größe (px)</span>
+          <input id="glyph-size" type="number" min="1" max="255" value="24">
+        </label>
+        <p class="hint" data-i18n="dialog.glyph.sizeHint">Jede Größe bekommt automatisch einen eigenen, lokal fixierten Font-Bibliothekseintrag - beim Export werden dort nur die tatsächlich eingefügten Icons mitgebacken.</p>
         <label><span data-i18n="dialog.glyph.searchLabel">MDI-Katalog durchsuchen</span>
           <input id="glyph-search" type="search" data-i18n-attr="placeholder:dialog.glyph.searchPlaceholder" placeholder="z. B. home, light, F02DC">
         </label>
@@ -849,6 +863,6 @@
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js?v=0.16.0"></script>
+    <script type="module" src="app.js?v=0.17.0"></script>
   </body>
 </html>

@@ -960,6 +960,14 @@ function bindDesigner() {
     await navigator.clipboard.writeText($("#yaml-output").textContent);
     toast(t("toast.yaml.copied"));
   });
+  $("#merge-draft-target").addEventListener("change", () => {
+    $("#merge-draft-save").disabled = !$("#merge-draft-target").value;
+  });
+  $("#merge-draft-save").addEventListener("click", saveMergeDraft);
+  $("#download-zip").addEventListener("click", downloadProjectZip);
+  const actionsSection = $("#widget-actions-section");
+  actionsSection.open = !collapsedPropertyGroups.actions;
+  actionsSection.addEventListener("toggle", () => togglePropertyGroup("actions", !actionsSection.open));
   document.addEventListener("keydown", (event) => {
     if (!$("#designer").classList.contains("active")) return;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName);
@@ -1706,15 +1714,31 @@ function addWidget(schema) {
   renderDesigner();
 }
 
+// A hidden container's children have no widget-level "hidden" of their own
+// in real LVGL either - the whole subtree just disappears with the parent.
+// Walks from the active surface's roots (not allWidgets()'s flat list,
+// which has no ancestor information) so a child two levels under a hidden
+// grandparent is still caught.
+function effectivelyHiddenWidgets(nodes = activeWidgetRoots(), ancestorHidden = false, result = new Set()) {
+  (nodes || []).forEach((widget) => {
+    const hidden = ancestorHidden || Boolean(widget.hidden);
+    if (hidden) result.add(widget);
+    effectivelyHiddenWidgets(widget.children, hidden, result);
+  });
+  return result;
+}
+
 function visualWidgets() {
   // The layout engine resolves grid/flex/align placement; a widget with no
   // computed box (an unknown parent arrangement) falls back to its raw
   // coordinates so it stays reachable rather than vanishing.
   const boxes = computeLayout(activeSurfaceProject());
+  const hiddenWidgets = effectivelyHiddenWidgets();
   return allWidgets().map((widget) => {
     const box = boxes.get(widget);
+    const effectivelyHidden = hiddenWidgets.has(widget);
     return box
-      ? { widget, ...box }
+      ? { widget, ...box, effectivelyHidden }
       : {
           widget,
           left: Number(widget.x) || 0,
@@ -1724,6 +1748,7 @@ function visualWidgets() {
           managed: false,
           originX: 0,
           originY: 0,
+          effectivelyHidden,
         };
   });
 }
@@ -2364,6 +2389,18 @@ function bindGlowTools() {
   canvas.addEventListener("pointerdown", onGlowPointerDown);
   canvas.addEventListener("dblclick", onGlowDoubleClick);
   canvas.addEventListener("contextmenu", onGlowContextMenu);
+  // Clicking empty canvas space (not a widget, not a resize/glow handle)
+  // deselects the current widget - `beginDrag()` only ever sets a selection,
+  // it never had a matching way to clear one.
+  canvas.addEventListener("click", (event) => {
+    if (state.canvasMode !== "widgets") return;
+    if (event.target.closest(".canvas-widget, .resize-handle")) return;
+    if (!state.selectedWidget) return;
+    state.selectedWidget = null;
+    renderProperties();
+    renderTree();
+    $$(".canvas-widget.selected").forEach((item) => item.classList.remove("selected"));
+  });
 
   $$(".colorwheel-target .button").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -3084,7 +3121,7 @@ async function bakeSelectedStroke() {
 }
 
 function renderWidget(item) {
-  const { widget, left, top, width, height, managed } = item;
+  const { widget, left, top, width, height, managed, effectivelyHidden } = item;
   const node = document.createElement("div");
   node.className = `canvas-widget${state.selectedWidget === widget ? " selected" : ""}`;
   node.dataset.type = widget.widget_type;
@@ -3093,7 +3130,7 @@ function renderWidget(item) {
   node.style.top = `${top}px`;
   node.style.width = `${Math.max(1, width)}px`;
   node.style.height = `${Math.max(1, height)}px`;
-  node.style.opacity = widget.hidden ? "0" : "1";
+  node.style.opacity = effectivelyHidden ? "0" : "1";
   if (widget.locked) node.classList.add("locked");
   // The state selected in the property panel is also the state previewed on
   // the canvas. This is especially useful for a button's pressed/checked
@@ -3120,7 +3157,10 @@ function renderWidget(item) {
     node.style.backgroundSize = "cover";
     node.style.backgroundPosition = "center";
   }
-  node.style.fontFamily = resolvedFontFamily(effectiveStyle.text_font || state.project.default_font);
+  const textFontReference = effectiveStyle.text_font || state.project.default_font;
+  node.style.fontFamily = resolvedFontFamily(textFontReference);
+  const textFontSize = fontEntrySize(textFontReference);
+  if (textFontSize) node.style.fontSize = `${textFontSize}px`;
   let imageReference = widget.properties?.src;
   const selectedImageButton = directImageButtonParts(state.selectedWidget);
   if (widget.widget_type === "image" && selectedImageButton?.image === widget) {
@@ -4342,10 +4382,26 @@ const GOOGLE_FONTS = [
 // The Pictogrammers Material Design Icons webfont, offered as a one-click
 // preset so users don't have to know or type this URL themselves. Font and
 // icons are Apache 2.0 (see mdi-glyphs.js header) - free to redistribute a
-// locally-pinned copy from here.
+// locally-pinned copy from here. Deliberately raw.githubusercontent.com,
+// not the github.com/.../raw/... URL that redirects to it: that redirect
+// hop's response carries an empty (invalid) Access-Control-Allow-Origin
+// header, which fails CORS for the browser's FontFace() loader even though
+// the final raw.githubusercontent.com response itself serves a correct
+// "*" header and would otherwise be fine.
 const MDI_WEBFONT_URL =
-  "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf";
+  "https://raw.githubusercontent.com/Templarian/MaterialDesign-Webfont/master/fonts/materialdesignicons-webfont.ttf";
 const MDI_WEBFONT_DEFAULT_ID = "icons_mdi";
+// Served straight out of frontend/ (mounted as static files - see
+// backend/app.py), so it needs no network access at all once this add-on
+// itself has loaded. Only used while the "mdi_local" add-on option is on
+// (see state.system.mdi_local); off keeps the previous GitHub-backed
+// behaviour, e.g. to pick up icon updates ahead of an add-on release.
+function mdiLocalFontUrl() {
+  const appBase = window.location.pathname.endsWith("/")
+    ? window.location.pathname
+    : `${window.location.pathname}/`;
+  return `${appBase}vendor/materialdesignicons-webfont.ttf`;
+}
 
 function isMdiWebfontUrl(url) {
   return /materialdesignicons-webfont\.ttf(\?.*)?$/i.test(String(url || "").trim());
@@ -4517,19 +4573,23 @@ function updateGlyphPreviewStatus(message, status) {
   node.classList.toggle("error", status === "failed");
 }
 
-/** Loads the MDI webfont once (from its pinned local revision if the
- * library already has it, else straight from the upstream URL) so the
- * catalog can show the real glyph shapes instead of placeholder boxes. */
+/** Loads the MDI webfont once - from its pinned local revision if the
+ * project's font library already has it, else from this add-on's own
+ * bundled copy if "mdi_local" is on, else straight from the upstream URL -
+ * so the catalog can show the real glyph shapes instead of placeholder
+ * boxes. */
 async function ensureMdiPreviewFont() {
   if (glyphPreviewState.status === "loaded") return;
   const request = ++glyphPreviewRequest;
   const mdiFont = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
-  const source = mdiFont?.file_path || MDI_WEBFONT_URL;
+  const cssUrl = mdiFont?.file_path
+    ? assetUrl(mdiFont.file_path)
+    : state.system?.mdi_local ? mdiLocalFontUrl() : MDI_WEBFONT_URL;
   glyphPreviewState = { status: "loading", family: "inherit" };
   updateGlyphPreviewStatus("Vorschaufont wird geladen …", "loading");
   renderIconCatalog();
   try {
-    const cssSource = `url(${JSON.stringify(assetUrl(source))})`;
+    const cssSource = `url(${JSON.stringify(cssUrl)})`;
     const loaded = await new FontFace("esphome_mdi_preview", cssSource).load();
     if (request !== glyphPreviewRequest) return;
     document.fonts.add(loaded);
@@ -4577,9 +4637,11 @@ function renderIconCatalog() {
 }
 
 /** Opens the icon picker for a specific text control (a label/button's
- * `text` property). Insertion both writes the glyph into that control and,
- * on first use, wires up the MDI font as the widget's text_font - an icon
- * glyph is meaningless without the font that actually contains it. */
+ * `text` property). Insertion both writes the glyph into that control and
+ * wires up an MDI font at the dialog's chosen size as the widget's
+ * text_font - an icon glyph is meaningless without the font that actually
+ * contains it. The size field starts at the widget's current MDI font size
+ * if it already has one, else the library preset's default (24px). */
 function openIconInsertDialog(widget, control) {
   activeIconTarget = { widget, control };
   pushUndo();
@@ -4587,6 +4649,10 @@ function openIconInsertDialog(widget, control) {
   $("#glyph-search").value = "";
   $("#glyph-input-error").classList.add("hidden");
   $("#glyph-catalog-version").textContent = `Lokaler MDI-Katalog ${MDI_CATALOG_VERSION}`;
+  const currentFontId = effectiveViewerStyle(state.project, widget, state.activeState).text_font;
+  const currentFont = fontLibrary().find((entry) => entry.id === currentFontId);
+  const currentIsMdi = currentFont && isMdiWebfontUrl(webFontUrl(currentFont));
+  $("#glyph-size").value = (currentIsMdi && Number(currentFont.size)) || 24;
   renderIconCatalog();
   $("#glyph-dialog").showModal();
   ensureMdiPreviewFont();
@@ -4595,16 +4661,11 @@ function openIconInsertDialog(widget, control) {
 async function insertMdiGlyphs(glyphs) {
   if (!activeIconTarget) return;
   const { widget } = activeIconTarget;
-  let mdiFont = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
-  if (!mdiFont) {
-    // First use in this project: register the MDI font automatically so the
-    // inserted glyph actually renders on the real device, not just here.
-    await addMdiIconFont();
-    mdiFont = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
-  }
-  // addMdiIconFont() may have re-rendered the properties panel (new font
-  // registered), which replaces property controls - re-resolve by id so
-  // later inserts keep landing in the control the user is actually looking at.
+  const mdiFont = await ensureMdiFontAtSize($("#glyph-size").value);
+  // ensureMdiFontAtSize() may have re-rendered the properties panel (new
+  // font registered), which replaces property controls - re-resolve by id
+  // so later inserts keep landing in the control the user is actually
+  // looking at.
   const control = document.getElementById(activeIconTarget.control.id) || activeIconTarget.control;
   activeIconTarget.control = control;
 
@@ -5015,12 +5076,37 @@ async function uploadFontFile(file) {
   return result.path;
 }
 
-/** One-click preset: adds the MDI icon webfont as a normal Font Library
- * entry (source_kind "web", refresh "never") and, where write access is
- * available, immediately pins a local revision the same way the manual
- * "Update"/"Lokal" button does - so the result is a font that's fixed in
- * the library from the start, not just a URL the user still has to fetch
- * themselves. */
+/** Registers a new MDI Font Library entry (source_kind "web", refresh
+ * "never") at exactly `size` and, where write access is available,
+ * immediately pins a local revision the same way the manual "Update"/
+ * "Lokal" button does - so the result is a font that's fixed in the
+ * library from the start, not just a URL the user still has to fetch
+ * themselves. Shared by the Font Library's "Add MDI icons" preset and the
+ * icon-insert dialog's per-size auto-provisioning. */
+async function registerAndPinMdiFont(id, size) {
+  pushUndo();
+  const entry = {
+    id, external: false,
+    source_kind: "web", builtin_name: "", gfonts_family: "", gfonts_weight: 400, gfonts_italic: false,
+    file_path: "", web_url: MDI_WEBFONT_URL,
+    extra: { file: { type: "web", url: MDI_WEBFONT_URL, refresh: "never" } },
+    size, bpp: 4, glyphs: [],
+  };
+  fontLibrary().push(entry);
+  markProjectDirty();
+  renderDesigner();
+
+  if (!state.capabilities["designer.asset_write"]) {
+    toast(t("toast.font.mdiCreatedNoWrite", { id }), true);
+    return entry;
+  }
+  toast(t("toast.font.mdiPinning", { id }));
+  await updateFontSource(entry);
+  return entry;
+}
+
+/** One-click preset in the Font Library section: pre-provisions the
+ * default-size MDI font without assigning it to any widget yet. */
 async function addMdiIconFont() {
   const existing = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
   if (existing) {
@@ -5031,25 +5117,28 @@ async function addMdiIconFont() {
   let id = MDI_WEBFONT_DEFAULT_ID;
   let suffix = 2;
   while (projectIdIsUsed(id)) id = `${MDI_WEBFONT_DEFAULT_ID}_${suffix++}`;
+  await registerAndPinMdiFont(id, 24);
+}
 
-  pushUndo();
-  const entry = {
-    id, external: false,
-    source_kind: "web", builtin_name: "", gfonts_family: "", gfonts_weight: 400, gfonts_italic: false,
-    file_path: "", web_url: MDI_WEBFONT_URL,
-    extra: { file: { type: "web", url: MDI_WEBFONT_URL, refresh: "never" } },
-    size: 24, bpp: 4, glyphs: [],
-  };
-  fontLibrary().push(entry);
-  markProjectDirty();
-  renderDesigner();
-
-  if (!state.capabilities["designer.asset_write"]) {
-    toast(t("toast.font.mdiCreatedNoWrite", { id }), true);
-    return;
-  }
-  toast(t("toast.font.mdiPinning", { id }));
-  await updateFontSource(entry);
+/** Finds (or registers + pins) an MDI Font Library entry at exactly the
+ * requested size, so the icon-insert dialog's own size field can offer a
+ * size independent of the library - while still landing every icon
+ * inserted at that size on one shared entry, not a fresh one per insert.
+ * ESPHome bakes bitmap fonts at one fixed pixel size per font: entry, so a
+ * distinct size always needs its own entry; the glyph list each one
+ * exports with is already scoped per font id (see _is_mdi_font()/
+ * _collect_used_glyphs() in yamlexport.py), so this never bakes more than
+ * what is actually used at that specific size. */
+async function ensureMdiFontAtSize(size) {
+  const targetSize = clamp(Math.round(Number(size)) || 24, 1, 255);
+  const existing = fontLibrary().find(
+    (entry) => isMdiWebfontUrl(webFontUrl(entry)) && Number(entry.size) === targetSize,
+  );
+  if (existing) return existing;
+  let id = targetSize === 24 ? MDI_WEBFONT_DEFAULT_ID : `${MDI_WEBFONT_DEFAULT_ID}_${targetSize}`;
+  let suffix = 2;
+  while (projectIdIsUsed(id)) id = `${MDI_WEBFONT_DEFAULT_ID}_${targetSize}_${suffix++}`;
+  return registerAndPinMdiFont(id, targetSize);
 }
 
 function bindFontLibrary() {
@@ -5162,6 +5251,52 @@ function saveCurrentStyleAsNamed() {
   toast(t("toast.style.saved", { name }));
 }
 
+// Rarely-tweaked style clusters the schema tags with a PropertyDef.group -
+// folded into a <details> instead of listed flat, so a widget with every
+// style property offered doesn't turn the panel into one long scroll.
+// Collapsed by default; the open/closed choice is remembered per group (not
+// per widget) in localStorage, so it does not reset every time the
+// selection changes.
+const PROPERTY_GROUP_LABELS = {
+  spacing: "dynprops.group.spacing",
+  border: "dynprops.group.border",
+  shadow: "dynprops.group.shadow",
+};
+const COLLAPSED_GROUPS_KEY = "designer.collapsedPropertyGroups";
+
+function loadCollapsedGroups() {
+  const defaults = { spacing: true, border: true, shadow: true, actions: true };
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(COLLAPSED_GROUPS_KEY) || "{}");
+    return { ...defaults, ...stored };
+  } catch {
+    return defaults;
+  }
+}
+
+const collapsedPropertyGroups = loadCollapsedGroups();
+
+function togglePropertyGroup(key, collapsed) {
+  collapsedPropertyGroups[key] = collapsed;
+  try {
+    window.localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(collapsedPropertyGroups));
+  } catch {
+    // Best-effort only - the in-memory toggle for this session still works.
+  }
+}
+
+function appendPropertyGroup(container, key) {
+  const details = document.createElement("details");
+  details.className = "property-group";
+  details.open = !collapsedPropertyGroups[key];
+  const summary = document.createElement("summary");
+  summary.textContent = t(PROPERTY_GROUP_LABELS[key] || key);
+  details.append(summary);
+  details.addEventListener("toggle", () => togglePropertyGroup(key, !details.open));
+  container.append(details);
+  return details;
+}
+
 function renderDynamicProperties(widget) {
   const container = $("#dynamic-properties");
   container.replaceChildren();
@@ -5173,6 +5308,8 @@ function renderDynamicProperties(widget) {
     (property) => property.category === "content" || property.category === "style");
 
   let previousSection = "";
+  let openGroup = null;
+  let openGroupKey = "";
   inline.forEach((property, index) => {
     const section = property.category === "content"
       ? t("dynprops.content")
@@ -5183,7 +5320,20 @@ function renderDynamicProperties(widget) {
       heading.textContent = section;
       container.append(heading);
       previousSection = section;
+      openGroup = null;
+      openGroupKey = "";
     }
+    const groupKey = property.category === "style" ? property.group || "" : "";
+    if (groupKey) {
+      if (groupKey !== openGroupKey) {
+        openGroup = appendPropertyGroup(container, groupKey);
+        openGroupKey = groupKey;
+      }
+      openGroup.append(propertyField(widget, property, index));
+      return;
+    }
+    openGroup = null;
+    openGroupKey = "";
     container.append(propertyField(widget, property, index));
   });
 }
@@ -5623,6 +5773,19 @@ function imageEntry(id) {
 function fontLibrary() {
   if (!Array.isArray(state.project.fonts)) state.project.fonts = [];
   return state.project.fonts;
+}
+
+// ESPHome bitmap fonts are baked at one fixed pixel size per font: entry
+// (LVGL v9 has no runtime scaling for them), so - like resolvedFontFamily()
+// - "the font's size" lives on the library entry, not per widget instance.
+// Same fallback as viewer.js's viewerFont(): a name like "montserrat_16"
+// that was never actually registered in the library still yields a
+// plausible size instead of falling back to the browser default.
+function fontEntrySize(reference) {
+  if (!reference) return null;
+  const entry = fontLibrary().find((font) => font.id === reference);
+  const inferredSize = Number.parseInt(String(reference).match(/(\d+)(?!.*\d)/)?.[1] || "", 10);
+  return Number(entry?.size) || inferredSize || null;
 }
 
 // One attempt per font id per page load - "failed" is sticky (no retry loop
@@ -6298,10 +6461,107 @@ async function exportDesignerYaml() {
     renderExportIssues(result.issues || []);
     $("#yaml-dialog").showModal();
     renderDesignerStatus();
+    populateMergeDraftTargets();
   } catch (error) {
     $("#designer-status").textContent = t("designer.status.exportFailed");
     renderExportIssues(error.details?.issues || []);
     toast(error.message, true);
+  }
+}
+
+// "Als Entwurf speichern" in the YAML dialog - merges color:/font:/image:/
+// lvgl: into an existing configuration's draft instead of the old copy to
+// clipboard -> switch tab -> paste round trip. Only wired up when the role
+// actually has draft-write access; other roles still only get "copy".
+async function populateMergeDraftTargets() {
+  const select = $("#merge-draft-target");
+  const button = $("#merge-draft-save");
+  if (!state.capabilities["configuration.write_draft"]) {
+    select.closest(".merge-draft-controls").classList.add("hidden");
+    return;
+  }
+  select.closest(".merge-draft-controls").classList.remove("hidden");
+  select.replaceChildren(new Option(t("dialog.yamlOutput.mergeTargetPick"), ""));
+  button.disabled = true;
+  try {
+    const result = await api("configurations");
+    result.configurations.forEach((configuration) => {
+      select.append(new Option(configuration.name, configuration.name));
+    });
+    if (state.project.import_source?.name) {
+      select.value = state.project.import_source.name;
+    }
+    button.disabled = !select.value;
+  } catch {
+    // Configurations list failed to load - leave only the placeholder;
+    // "copy to clipboard" remains available regardless.
+  }
+}
+
+async function saveMergeDraft() {
+  const target = $("#merge-draft-target").value;
+  if (!target) return;
+  const button = $("#merge-draft-save");
+  button.disabled = true;
+  try {
+    const result = await api("designer/projects/merge-draft", {
+      method: "POST", body: JSON.stringify({ project: state.project, target }),
+    });
+    const changed = [...result.replaced, ...result.appended];
+    toast(t("toast.mergeDraft.saved", { target, keys: changed.join(", ") }));
+    $("#yaml-dialog").close();
+    $$(".tab").forEach((item) => item.classList.toggle("active", item.dataset.tab === "configurations"));
+    $$(".view").forEach((view) => view.classList.toggle("active", view.id === "configurations"));
+    $("#configurations").classList.remove("showing-list");
+    await loadConfigurations();
+    const entry = state.configurations.find((item) => item.name === target);
+    if (entry) await loadConfiguration(entry);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = !$("#merge-draft-target").value;
+  }
+}
+
+// "ZIP herunterladen" in the YAML dialog - bundles ui.yaml plus every
+// locally uploaded image/font at its existing images/<name>/fonts/<name>
+// path, so unzipping it straight into the config root reproduces exactly
+// what the Designer already has on disk. Uses fetch() directly (not the
+// api() helper) since the response is a binary blob, not JSON.
+async function downloadProjectZip() {
+  const button = $("#download-zip");
+  button.disabled = true;
+  try {
+    const appBase = window.location.pathname.endsWith("/")
+      ? window.location.pathname
+      : `${window.location.pathname}/`;
+    const response = await fetch(`${appBase}api/v1/designer/projects/export-zip`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: state.project }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.message || `HTTP ${response.status}`);
+    }
+    const missing = response.headers.get("X-Missing-Assets");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = normalizeProjectName($("#project-name").value).replace(/\.lvgldesign$/, "") + ".zip";
+    link.click();
+    URL.revokeObjectURL(url);
+    if (missing) {
+      const paths = missing.split(",").map((path) => decodeURIComponent(path));
+      toast(t("toast.zip.missingAssets", { paths: paths.join(", ") }), true);
+    } else {
+      toast(t("toast.zip.downloaded"));
+    }
+  } catch (error) {
+    toast(t("toast.zip.downloadFailed", { error: error.message }), true);
+  } finally {
+    button.disabled = false;
   }
 }
 

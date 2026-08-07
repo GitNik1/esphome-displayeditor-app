@@ -109,6 +109,69 @@ def test_update_writes_hash_versioned_local_font(tmp_path: Path) -> None:
     assert result["sha256"][:12] in result["path"]
 
 
+def test_pin_bundled_mdi_writes_the_shipped_font_without_any_network_call(tmp_path: Path) -> None:
+    session = FakeSession([])  # any use would raise IndexError - proves no request happened
+    filesystem = FilesystemBackend(settings(tmp_path))
+    service = FontSourceService(filesystem, max_size=4 * 1024 * 1024, session=session)
+
+    result = service.pin_bundled_mdi("icons_mdi", "https://raw.githubusercontent.com/x/materialdesignicons-webfont.ttf")
+
+    assert session.calls == []
+    assert result["path"].startswith("fonts/icons_mdi-")
+    assert result["path"].endswith(".ttf")
+    assert (filesystem.root / result["path"]).read_bytes().startswith((b"\x00\x01\x00\x00", b"OTTO", b"true"))
+    assert result["url"] == "https://raw.githubusercontent.com/x/materialdesignicons-webfont.ttf"
+
+
+def test_update_api_uses_the_bundled_mdi_font_when_mdi_local_is_on(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    configured = Settings(**{**configured.__dict__, "default_role": "editor", "mdi_local": True})
+    app = create_app(configured, serve_frontend=False)
+    app.state.font_sources.session = FakeSession([])  # network use would raise IndexError
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/designer/font-sources/update",
+        headers={"X-Remote-User-Id": "editor"},
+        json={
+            "id": "icons_mdi",
+            "url": "https://raw.githubusercontent.com/Templarian/MaterialDesign-Webfont/master/fonts/materialdesignicons-webfont.ttf",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["path"].startswith("fonts/icons_mdi-")
+    assert app.state.font_sources.session.calls == []
+
+
+def test_update_api_still_downloads_mdi_font_when_mdi_local_is_off(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    configured = Settings(**{**configured.__dict__, "default_role": "editor", "mdi_local": False})
+    app = create_app(configured, serve_frontend=False)
+    app.state.font_sources.session = FakeSession([FakeResponse(200, {"ETag": '"v1"'}, TTF)])
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/designer/font-sources/update",
+        headers={"X-Remote-User-Id": "editor"},
+        json={
+            "id": "icons_mdi",
+            "url": "https://raw.githubusercontent.com/Templarian/MaterialDesign-Webfont/master/fonts/materialdesignicons-webfont.ttf",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(app.state.font_sources.session.calls) == 1
+
+
+def test_system_endpoint_reports_mdi_local_setting(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    configured = Settings(**{**configured.__dict__, "mdi_local": False})
+    client = TestClient(create_app(configured, serve_frontend=False))
+
+    assert client.get("/api/v1/system").json()["mdi_local"] is False
+
+
 def test_update_rejects_non_font_content(tmp_path: Path) -> None:
     session = FakeSession([FakeResponse(200, {}, b"not a font")])
     service = FontSourceService(FilesystemBackend(settings(tmp_path)), max_size=4096, session=session)
