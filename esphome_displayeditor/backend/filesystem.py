@@ -369,6 +369,31 @@ class FilesystemBackend:
             raise ApiError("invalid_path", "Image names may not contain a directory.")
         return relative
 
+    def list_image_assets(self) -> list[str]:
+        """Files already sitting in the images/ folder - lets a brand-new
+        project (nothing imported yet) reuse an image that is already on the
+        host instead of only ever accepting an http(s) URL or a fresh
+        upload. Read-only, same trust boundary as list_configs(); returns
+        the same "images/<name>" relative form read_asset()/assetUrl()
+        already expect."""
+        if not self.assets.is_dir():
+            return []
+        result: list[str] = []
+        try:
+            entries = list(os.scandir(self.assets))
+        except OSError:
+            return []
+        for entry in entries:
+            filename = entry.name
+            if filename.startswith(".") or entry.is_symlink() or not entry.is_file():
+                continue
+            suffix = PurePosixPath(filename).suffix.lower()
+            if suffix not in _ASSET_CONTENT_TYPES or not _ASSET_CONTENT_TYPES[suffix].startswith("image/"):
+                continue
+            result.append(f"{self._assets_subdir}/{filename}")
+        result.sort()
+        return result
+
     def write_image_asset(self, name: str, content: bytes) -> dict:
         """Write a PNG into the dedicated images/ folder.
 

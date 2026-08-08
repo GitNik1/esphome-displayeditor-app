@@ -290,11 +290,17 @@ input:focus { border-color: var(--accent); }
 .background-bar { border-bottom: 1px solid var(--line); background: #0e1722; }
 .background-bar > summary { padding: 8px 14px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
 .background-bar > summary:hover { color: var(--text); }
+/* Same Chromium quirk as .designer-sidebar-details further up: without an
+   explicit :not([open]) rule, a <details>'s own content (here explicitly
+   display:flex, see .background-fields below) can stay visible even after
+   the <details> itself is closed. */
+.background-bar:not([open]) > .background-fields { display: none; }
 
 /* Message boxes */
 .msgbox-bar { border-bottom: 1px solid var(--line); background: #0e1722; }
 .msgbox-bar > summary { padding: 8px 14px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
 .msgbox-bar > summary:hover { color: var(--text); }
+.msgbox-bar:not([open]) > :not(summary) { display: none; }
 .msgbox-list { display: flex; flex-direction: column; gap: 6px; padding: 0 14px 8px; }
 .msgbox-list-item { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
 .msgbox-list-item-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -312,12 +318,17 @@ input:focus { border-color: var(--accent); }
 .theme-editor-details { margin-top: 10px; border-top: 1px solid var(--line); }
 .theme-editor-details > summary { padding: 8px 9px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
 .theme-editor-details > summary:hover { color: var(--text); }
+/* Same Chromium quirk as .designer-sidebar-details above: without an
+   explicit :not([open]) rule, a <details>'s own content can stay visible
+   even after it is closed. */
+.theme-editor-details:not([open]) > .theme-editor { display: none; }
 .theme-editor { display: flex; flex-direction: column; gap: 8px; padding: 0 9px 12px; }
 .theme-editor label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
 .theme-editor .property-section { margin-top: 4px; color: var(--muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
 .color-library-details { border-top: 1px solid var(--line); }
 .color-library-details > summary { padding: 8px 9px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
 .color-library-details > summary:hover { color: var(--text); }
+.color-library-details:not([open]) > .color-library { display: none; }
 .color-library { padding: 0 9px 12px; }
 .color-library-list { display: grid; gap: 6px; margin-bottom: 9px; }
 .color-library-empty { margin: 0; color: var(--muted); font-size: 11px; }
@@ -336,6 +347,7 @@ input:focus { border-color: var(--accent); }
 .font-library-details { border-top: 1px solid var(--line); }
 .font-library-details > summary { padding: 8px 9px; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
 .font-library-details > summary:hover { color: var(--text); }
+.font-library-details:not([open]) > .font-library { display: none; }
 .font-library { padding: 0 9px 12px; }
 .font-library > label { display: block; margin-bottom: 10px; color: var(--muted); font-size: 11px; }
 .font-library-list { display: grid; gap: 6px; margin-bottom: 9px; }
