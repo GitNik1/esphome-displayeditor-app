@@ -327,6 +327,20 @@ function applyStyleObject(node, project, style) {
   if (background) node.style.backgroundColor = colorWithOpacity(background, backgroundOpacity);
   const gradientBackground = viewerGradientBackground(project, style);
   if (gradientBackground) node.style.backgroundImage = gradientBackground;
+  // bg_image_src wins over a gradient, same as real LVGL (it is the actual
+  // visual background, not a fallback) and the same order the Designer
+  // canvas already applies these two in (see renderWidget() in app.js).
+  if (style.bg_image_src) {
+    const source = imageSource(project, style.bg_image_src);
+    if (source) {
+      // `cover` is an approximation - LVGL's own bg_image scaling isn't
+      // modeled here, same "plausible, not pixel-exact" spirit as the rest
+      // of the layout engine.
+      node.style.backgroundImage = `url("${source}")`;
+      node.style.backgroundSize = "cover";
+      node.style.backgroundPosition = "center";
+    }
+  }
   if (border) node.style.borderColor = border;
   if (style.border_width !== undefined) node.style.borderWidth = `${Math.max(0, Number(style.border_width) || 0)}px`;
   if (style.radius !== undefined) node.style.borderRadius = `${Math.max(0, Number(style.radius) || 0)}px`;
