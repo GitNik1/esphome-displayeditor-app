@@ -45,6 +45,89 @@ def test_health_capabilities_and_write_authorization(tmp_path: Path) -> None:
     assert allowed.status_code == 200
 
 
+def test_merge_draft_replaces_only_the_lvgl_block_and_requires_write_capability(
+    tmp_path: Path,
+) -> None:
+    config_root = tmp_path / "esphome"
+    config_root.mkdir()
+    (config_root / "device.yaml").write_text(
+        "esphome:\n  name: device\n\nlvgl:\n  widgets:\n  - label:\n      id: old\n      text: Old\n",
+        encoding="utf-8", newline="",
+    )
+    settings = Settings(
+        access_level="write",
+        max_file_size=1024 * 1024,
+        protect_sensitive_paths=True,
+        config_root=config_root,
+        data_root=tmp_path / "data",
+        default_role="administrator",
+    )
+    client = TestClient(create_app(settings, serve_frontend=False))
+    project = project_with_button()
+
+    denied = client.post(
+        "/api/v1/designer/projects/merge-draft",
+        json={"project": project, "target": "device.yaml"},
+    )
+    assert denied.status_code == 403
+
+    allowed = client.post(
+        "/api/v1/designer/projects/merge-draft",
+        headers={"X-Remote-User-Id": "test-user"},
+        json={"project": project, "target": "device.yaml"},
+    )
+    assert allowed.status_code == 200
+    body = allowed.json()
+    assert body["replaced"] == ["lvgl"]
+    assert body["appended"] == []
+
+    draft = client.get(
+        "/api/v1/configurations/device.yaml/draft",
+        headers={"X-Remote-User-Id": "test-user"},
+    ).json()
+    assert "esphome:\n  name: device" in draft["content"]
+    assert "old" not in draft["content"]
+    assert "button_1" in draft["content"]
+
+    # The active file on disk must stay untouched - merge only ever writes
+    # a draft, exactly like the existing save-draft endpoint does.
+    active = (config_root / "device.yaml").read_text(encoding="utf-8")
+    assert "old" in active
+    assert "button_1" not in active
+
+
+def test_export_zip_bundles_yaml_and_local_image(tmp_path: Path) -> None:
+    import zipfile
+    import io
+
+    config_root = tmp_path / "esphome"
+    (config_root / "images").mkdir(parents=True)
+    (config_root / "images" / "icon.png").write_bytes(b"\x89PNG\r\n\x1a\nfakepngdata")
+    settings = Settings(
+        access_level="write",
+        max_file_size=1024 * 1024,
+        protect_sensitive_paths=True,
+        config_root=config_root,
+        data_root=tmp_path / "data",
+        default_role="administrator",
+    )
+    client = TestClient(create_app(settings, serve_frontend=False))
+    project = project_with_button()
+    project["images"] = [{"id": "my_icon", "file_path": "images/icon.png"}]
+
+    response = client.post("/api/v1/designer/projects/export-zip", json={"project": project})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert "X-Missing-Assets" not in response.headers
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = archive.namelist()
+        assert "ui.yaml" in names
+        assert "images/icon.png" in names
+        assert archive.read("images/icon.png") == b"\x89PNG\r\n\x1a\nfakepngdata"
+        assert b"button_1" in archive.read("ui.yaml")
+
+
 def test_frontend_is_served(tmp_path: Path) -> None:
     settings = Settings(
         access_level="read",
@@ -72,8 +155,8 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     assert 'id="merge-dialog"' in response.text
     assert 'id="image-button-section"' in response.text
     assert 'id="widget-action-image"' in response.text
-    assert 'styles.css?v=0.16.0' in response.text
-    assert 'app.js?v=0.16.0' in response.text
+    assert 'styles.css?v=0.17.0' in response.text
+    assert 'app.js?v=0.17.0' in response.text
     assert client.get("/app.js").status_code == 200
     viewer = client.get("/viewer/viewer.js")
     assert viewer.status_code == 200

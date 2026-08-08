@@ -2,6 +2,204 @@
 
 ## Unreleased
 
+## 0.17.0
+
+- Fixed: the top-right health indicator showed two green dots instead of
+  one dot plus the "Backend" label. `.health span` in `styles.css` styled
+  *every* span inside `#health` as an 8x8px circle - including the text
+  span, which squeezed "Backend" into a tiny circle with its text
+  overflowing, reading as a second dot. Gave the status span its own
+  `.health-dot` class and scoped the CSS to that instead of a bare `span`.
+
+- Added an "Icon-Größe (px)" field to the icon-insert dialog, so a size can
+  be picked right there instead of having to manage it via the Font
+  Library separately. Behind the scenes it finds-or-creates (and, with
+  write access, pins) an MDI Font Library entry at exactly that size -
+  `ensureMdiFontAtSize()` in `frontend/app.js`, sharing the same
+  registration/pinning code (`registerAndPinMdiFont()`) the Font Library's
+  "Add MDI icons" preset already used. Every icon inserted at a given size
+  lands on the same one entry for that size (`icons_mdi` for the default
+  24px, `icons_mdi_<size>` otherwise), not a fresh one per insert. Since
+  glyph restriction is already scoped per font id
+  (`_is_mdi_font()`/`_collect_used_glyphs()` in
+  `backend/designer_core/yamlexport.py`), each size's exported `font:`
+  block still only ever bakes exactly the glyphs actually inserted at that
+  size, confirmed live: two buttons, two sizes picked directly in the
+  dialog, exported YAML shows two separate `font:` entries (32px/48px)
+  each listing only its own 6 used characters, not the full ~7447-icon set.
+  The dialog pre-fills the size field from the widget's current font if it
+  already uses one, defaulting to 24px otherwise.
+
+- Fixed: the Designer canvas never reflected a font library entry's
+  "Größe"/size field at all - `renderWidget()` in `frontend/app.js` set
+  `font-family` from `resolvedFontFamily()` but never set `font-size`, so
+  every widget's text (icons included) always rendered at whatever size the
+  surrounding CSS happened to cascade, regardless of the actual font
+  entry's configured size. Since ESPHome bakes bitmap fonts at one fixed
+  pixel size per `font:` entry (LVGL v9 has no runtime scaling for them),
+  that size is exactly what matters for previewing icon/text size
+  correctly - the Viewer already read it (see the MDI font-loading fix
+  above), the canvas just never did. Added `fontEntrySize()`, the same
+  size lookup `viewerFont()` in `viewer.js` already does, and apply it
+  alongside the existing font-family line - confirmed live: after setting
+  an MDI font entry's size to 48, the canvas now renders that widget's
+  text/icon at a computed 48px, matching the Viewer.
+
+- Fixed: an inserted MDI icon (or any font uploaded/imported as a file, or
+  pinned from a web URL) rendered as a tofu box in the read-only Viewer,
+  even though the exact same font already rendered correctly on the
+  Designer canvas. `viewer.js`'s `viewerFont()` only ever set a
+  `font-family` for Google Fonts (`gfonts_family`) and LVGL builtin bitmap
+  fonts (`builtin_name`) - it had no `FontFace` loading of its own, unlike
+  the canvas's `ensureFontLoaded()` in `app.js`. Added the equivalent
+  `ensureViewerFontLoaded()` to `viewer.js`, reusing the same
+  `fontFamilyId()`/`resolvedFontFamily()` helpers from `layout.js` the
+  canvas already uses, so both surfaces resolve to the identical CSS family
+  name and either one loading the font benefits the other. Since
+  `viewerFont()` is a plain render-time helper with no reference to the
+  `ViewerController` instance, the async load announces itself via a
+  `esphome-viewer-font-loaded` document event instead of a callback, which
+  `ViewerController` listens for to re-render once the real glyphs are
+  ready - confirmed live: `document.fonts` reports the font `loaded` and
+  the button's computed `font-family` is the real MDI font, not a fallback.
+
+- Added a new "MDI local" add-on option (`mdi_local`, on by default) that
+  serves the Material Design Icons webfont this add-on now vendors
+  (`frontend/vendor/materialdesignicons-webfont.ttf`, Apache 2.0,
+  Pictogrammers) instead of fetching it from GitHub - so the icon catalog
+  preview and "Add MDI icons" both work with zero internet access,
+  verified live with `github.com`/`raw.githubusercontent.com` unreachable
+  from the add-on container. The preview (`ensureMdiPreviewFont()` in
+  `frontend/app.js`) loads the bundled copy straight from this add-on's own
+  static files (`/vendor/materialdesignicons-webfont.ttf`, same origin, no
+  CORS/CSP concerns at all) whenever a project hasn't already pinned its
+  own MDI font revision. Pinning ("Add MDI icons", or the font library's
+  manual "Update" button on an MDI entry) copies the same bundled file into
+  the config root's `fonts/` folder server-side
+  (`FontSourceService.pin_bundled_mdi()` in `backend/font_sources.py`)
+  instead of downloading it, whenever the requested URL is the MDI webfont.
+  Turning the option off restores the previous GitHub-backed behaviour for
+  admins who'd rather always fetch the latest icon set (at the cost of
+  needing internet for that step). License check: confirmed against the
+  upstream repo's own LICENSE/package.json that the font is Apache 2.0
+  (no separate NOTICE file exists there); the full Apache 2.0 text is
+  vendored alongside it at `frontend/vendor/LICENSE-Apache-2.0.txt` to
+  satisfy its "give recipients a copy of this License" redistribution term.
+  Exposed via `/api/v1/system`'s new
+  `mdi_local` field.
+
+- Fixed: the MDI icon catalog's glyph preview always showed
+  "Vorschaufont konnte nicht geladen werden."/"Preview font could not be
+  loaded." instead of the real icon shapes. Two stacked causes: (1) the
+  default MDI webfont URL pointed at `github.com/.../raw/...`, which
+  302-redirects to `raw.githubusercontent.com` - that redirect hop's own
+  response carries an empty (invalid) `Access-Control-Allow-Origin` header,
+  which fails CORS even though the final response would have been fine, so
+  the URL now points straight at `raw.githubusercontent.com`; (2) the
+  backend's `Content-Security-Policy` allowed `https:` on `font-src` but not
+  on `connect-src` - the browser's `FontFace().load()` (used for both this
+  preview and any project font with `source_kind: "web"`) turns out to be
+  governed by `connect-src`, not `font-src`, so it was blocked outright
+  regardless of the URL. Both are in `backend/app.py`/`frontend/app.js`.
+
+- Collapsed the rarely-tweaked style clusters in the widget property panel -
+  spacing (padding/margin), border (width/colour/opacity/side/radius) and
+  shadow - into `<details>` sections, plus the button's "Aktionen"/Actions
+  section, so a widget offering every style property no longer means one
+  long scroll for a couple of everyday tweaks. `PropertyDef` gained an
+  optional `group` field (`backend/designer_core/widgetschema.py`, shared
+  with the desktop app), tagging which of these three clusters a style
+  property belongs to; `renderDynamicProperties()` in `frontend/app.js`
+  folds consecutive same-group properties into one collapsible section
+  instead of listing them inline. Collapsed by default, but the open/closed
+  choice is remembered per section (not per widget) in `localStorage`, so
+  switching the selected widget does not reset what you just opened.
+
+- Added "Download ZIP" in the Generate YAML dialog, next to "Copy to
+  clipboard", for the case where a target isn't one of this add-on's own
+  configurations yet (a brand-new device, or editing on the desktop app
+  instead) - the merge-as-draft workflow above needs an existing
+  configuration to merge into, this doesn't. Bundles `ui.yaml` (the same
+  `color:`/`font:`/`image:`/`lvgl:` blocks the merge feature generates,
+  built asset-copy-free the same way) together with every locally uploaded
+  image and font, each at its existing `images/<name>`/`fonts/<name>` path -
+  so unzipping it straight into a config root reproduces exactly what the
+  Designer already has on disk, no path rewriting needed. New backend
+  module `backend/lvgl_bundle.py`, endpoint
+  `POST /api/v1/designer/projects/export-zip`. Imported/`external` assets
+  and remote (`http(s)://`) images are deliberately left out - their paths
+  already point at the config they came from, or aren't a local file to
+  begin with. If a referenced local file can't actually be found on disk,
+  the ZIP still downloads with everything else it *could* bundle, and the
+  response's `X-Missing-Assets` header lists what's missing so the frontend
+  can warn about it, rather than failing the whole download.
+
+- Added "Save as draft" in the Generate YAML dialog, next to "Copy to
+  clipboard", so publishing Designer changes into an existing ESPHome
+  config no longer needs a manual copy/switch-tab/paste round trip. Picking
+  a target configuration merges the project's `color:`/`font:`/`image:`/
+  `lvgl:` blocks into that file's draft (or its active content, if there is
+  no draft yet) by replacing only those top-level keys' own line ranges -
+  new backend module `backend/lvgl_merge.py`. Everything else in the file
+  (`esphome:`, `wifi:`, `api:`, comments, formatting) stays byte-identical,
+  since it is never re-parsed or re-dumped; a full YAML round-trip would
+  have silently dropped comments and reformatted the rest of the file, which
+  is why this splices line ranges instead of reading-and-rewriting the whole
+  document. A key the project has nothing for (e.g. no colours defined) is
+  left exactly as it already was in the target file - merge only ever adds
+  or updates, never deletes something the Designer did not touch. Requires
+  the same `configuration.write_draft` capability (editor role) the
+  existing "Konfigurationen" tab draft editor already requires - this gives
+  the Designer the same write access an editor already has there, nothing
+  new the role model didn't already grant, and it still only ever writes a
+  draft, never the active file (matches "Active files are changed only by
+  the explicit publish operation" everywhere else in the app). After
+  saving, the app switches to the Konfigurationen tab with that file's
+  merged draft already open, so Diff/Validate/Publish remain their own
+  explicit clicks - the safety boundary is unchanged, only the copy-paste
+  step is gone. Locally-sourced images/fonts are referenced by their
+  existing path rather than re-copied into a new `assets/` folder, since
+  they are already written to the config root's `images:`/`fonts:` folders
+  the moment they are uploaded through the Designer, independent of drafts
+  or publishing.
+
+- Fixed: hiding a container on the design canvas left its children fully
+  visible and opaque, unlike real LVGL where a hidden widget's whole
+  subtree disappears with it. The canvas rendered every widget as an
+  independent sibling `.canvas-widget` node and only ever looked at that
+  widget's own `hidden` flag, never an ancestor's. Added
+  `effectivelyHiddenWidgets()`, walking the active surface's tree to also
+  catch a widget hidden two-or-more levels under a hidden ancestor, and
+  wired it into the canvas's opacity. A child's own `hidden` flag is left
+  untouched by this - it is a purely visual cascade, so un-hiding the
+  parent reveals exactly what was visible before, and the exported YAML is
+  unaffected (matches how ESPHome/LVGL itself only tracks `hidden` on the
+  widget it is set on).
+
+- Fixed: clicking empty canvas space (the root surface, not a widget) no
+  longer left the previously selected widget stuck selected. `beginDrag()`
+  (fired on a widget's own `pointerdown`) only ever set a selection - there
+  was no matching handler anywhere that cleared one on an empty-space
+  click, so the selection could only ever change to a different widget or
+  be cleared through the sidebar, never by clicking away on the canvas
+  itself. Added a `click` listener on `#canvas` that deselects when the
+  click target isn't inside a `.canvas-widget`/`.resize-handle`.
+
+- Fixed: images from an imported config (referenced by a local path like
+  `images/panel_bg.png`, not an http(s) URL) showed the "image not found"
+  ⚠ placeholder in the browser Viewer, even though the same image already
+  displayed correctly on the design canvas and was selectable everywhere
+  in the editor. Root cause: the editor canvas already resolves such
+  local paths through the existing read-only `/api/v1/designer/assets/read/`
+  endpoint (`assetUrl()`/`displayableImageSource()` in `app.js`, added
+  earlier specifically for this case), but the Viewer's own `imageSource()`
+  only ever accepted `http(s)://` URLs and silently returned nothing for
+  anything else. Ported the same resolution logic into `viewer.js`
+  (`resolveImageUrl()`) - no backend change needed, the endpoint already
+  existed and is safely confined to the config root. Verified live with an
+  imported config referencing a local PNG: the Viewer now loads and
+  displays it instead of the warning triangle.
+
 ## 0.16.0
 
 - Added editable style properties, available on (almost) every widget:

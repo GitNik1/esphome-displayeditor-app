@@ -8,7 +8,7 @@ import io
 import re
 import socket
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -20,6 +20,23 @@ from .filesystem import FilesystemBackend
 
 _FONT_MAGICS = (b"\x00\x01\x00\x00", b"OTTO", b"true", b"typ1")
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_-]+")
+
+#: The MDI webfont this add-on vendors for the "mdi_local" option - lets the
+#: icon catalog preview and the "Add MDI icons" pin both work with no
+#: internet access. Lives under frontend/, not backend/, so the exact same
+#: file is also reachable by the browser (frontend/ is mounted as static
+#: files) without a second copy to keep in sync.
+BUNDLED_MDI_FONT_PATH = (
+    Path(__file__).resolve().parent.parent / "frontend" / "vendor" / "materialdesignicons-webfont.ttf"
+)
+#: Same check as designer_core/yamlexport.py's _is_mdi_webfont_url() -
+#: duplicated rather than imported, since that module is a verbatim,
+#: desktop-shared copy and this is an add-on-only concern.
+_MDI_WEBFONT_PATTERN = re.compile(r"materialdesignicons-webfont\.ttf(\?.*)?$", re.IGNORECASE)
+
+
+def is_mdi_webfont_url(url: str) -> bool:
+    return bool(_MDI_WEBFONT_PATTERN.search(str(url or "").strip()))
 
 
 class FontSourceService:
@@ -189,6 +206,33 @@ class FontSourceService:
         name = f"{safe_id[:63]}-{downloaded['sha256'][:12]}{suffix}"
         stored = self.filesystem.write_font_asset(name, downloaded.pop("content"), max_size=self.max_size)
         return {**downloaded, "path": stored["path"]}
+
+    def pin_bundled_mdi(self, font_id: str, url: str) -> dict:
+        """Same result shape as update(), but copies the MDI font this
+        add-on already ships instead of reaching out to GitHub - the
+        "mdi_local" option's whole point is that this step needs no
+        internet access at all. `url` is recorded as-is (the frontend's
+        MDI_WEBFONT_URL) purely for the font source metadata shown in the
+        UI - it is never actually fetched here."""
+        try:
+            content = BUNDLED_MDI_FONT_PATH.read_bytes()
+        except OSError as exc:
+            raise ApiError(
+                "font_source_unavailable", "Bundled MDI font is missing from this add-on build.", 500,
+            ) from exc
+        digest = hashlib.sha256(content).hexdigest()
+        safe_id = _SAFE_ID.sub("_", str(font_id).strip()).strip("_-") or "font"
+        name = f"{safe_id[:63]}-{digest[:12]}.ttf"
+        stored = self.filesystem.write_font_asset(name, content, max_size=self.max_size)
+        return {
+            "url": url,
+            "etag": "",
+            "last_modified": "",
+            "size": len(content),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "sha256": digest,
+            "path": stored["path"],
+        }
 
     def glyph_coverage(self, path: str, codepoints: list[int]) -> dict:
         """Report whether requested Unicode codepoints exist in a local font."""

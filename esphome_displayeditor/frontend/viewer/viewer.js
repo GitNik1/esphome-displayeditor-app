@@ -1,4 +1,4 @@
-import { computeLayout } from "../layout.js";
+import { computeLayout, fontFamilyId, resolvedFontFamily } from "../layout.js";
 import { drawDocument, hasFlow } from "../glowline/renderer.js";
 import { t } from "../i18n.js";
 
@@ -130,13 +130,72 @@ export function viewerGradientBackground(project, style) {
   return `linear-gradient(${cssDirection}, ${colorWithOpacity(background, opacity)}, ${colorWithOpacity(gradient, opacity)})`;
 }
 
+// A local path (e.g. from an imported config's own `image:`/`font:` entry)
+// isn't something the browser can fetch directly - it lives on the HA host,
+// not the web. Route it through the read-only asset endpoint instead, the
+// same one the main editor canvas already uses for this exact case (see
+// assetUrl()/displayableImageSource() in app.js) - without this, an
+// imported image is selectable in the editor (only the id/path string is
+// needed for that) but the Viewer, which needs the actual bytes, could only
+// ever show its "image not found" fallback for anything but an http(s) URL.
+function resolveImageUrl(filePath) {
+  const path = String(filePath || "");
+  if (/^https?:\/\//i.test(path)) return path;
+  if (!path) return null;
+  const appBase = window.location.pathname.endsWith("/")
+    ? window.location.pathname
+    : `${window.location.pathname}/`;
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  return `${appBase}api/v1/designer/assets/read/${encoded}`;
+}
+
+// Mirrors ensureFontLoaded() in app.js's Designer canvas. Without this, a
+// project font backed by a real file (uploaded, imported, or a pinned
+// web/MDI revision) never got its actual glyphs in the Viewer - only Google
+// Fonts (by family name) and LVGL builtin bitmap fonts (by name, only ever
+// approximated) got a font-family at all; anything else silently fell back
+// to the browser's default font. Invisible for ordinary prose text, but it
+// turns an inserted MDI icon glyph into a tofu box instead of the icon.
+// One attempt per font id - "failed" is sticky, matching the canvas's
+// fontLoadState cache.
+const viewerFontLoadState = new Map();
+const VIEWER_FONT_LOADED_EVENT = "esphome-viewer-font-loaded";
+
+function ensureViewerFontLoaded(project, fontId) {
+  if (!fontId || viewerFontLoadState.has(fontId)) return;
+  const entry = (project.fonts || []).find((font) => font.id === fontId);
+  // A `font: file: {type: web, url: ...}` entry keeps its URL in web_url,
+  // not file_path (which stays empty for that source kind) - web_url is
+  // already a full http(s) URL, so resolveImageUrl() returns it as-is.
+  const source = entry?.file_path || entry?.web_url;
+  if (!source) return;
+  viewerFontLoadState.set(fontId, "loading");
+  const face = new FontFace(fontFamilyId(fontId), `url(${JSON.stringify(resolveImageUrl(source))})`);
+  face.load().then((loaded) => {
+    document.fonts.add(loaded);
+    viewerFontLoadState.set(fontId, "loaded");
+    document.dispatchEvent(new CustomEvent(VIEWER_FONT_LOADED_EVENT));
+  }).catch(() => {
+    viewerFontLoadState.set(fontId, "failed");
+  });
+}
+
 function viewerFont(project, reference) {
   if (!reference) return null;
   const raw = String(reference);
   const entry = (project.fonts || []).find((font) => font.id === raw);
   const inferredSize = Number.parseInt(raw.match(/(\d+)(?!.*\d)/)?.[1] || "", 10);
+  const namedFamily = entry?.gfonts_family || entry?.builtin_name || null;
+  const hasRealFile = Boolean(entry?.file_path || entry?.web_url);
+  if (!namedFamily && hasRealFile) ensureViewerFontLoaded(project, raw);
+  // Plain family names (Google/builtin) still need JSON.stringify at the
+  // call site to become a valid CSS value; resolvedFontFamily() already
+  // returns one (with its own sans-serif fallback baked in), so it is
+  // marked pre-formatted here to tell applyStyleObject not to quote it
+  // again.
   return {
-    family: entry?.gfonts_family || entry?.builtin_name || null,
+    family: namedFamily,
+    familyCss: namedFamily ? null : (hasRealFile ? resolvedFontFamily(raw) : null),
     size: Number(entry?.size) || inferredSize || null,
     weight: Number(entry?.gfonts_weight) || null,
     italic: Boolean(entry?.gfonts_italic),
@@ -145,8 +204,7 @@ function viewerFont(project, reference) {
 
 function imageSource(project, id) {
   const entry = (project.images || []).find((image) => image.id === id);
-  const source = String(entry?.file_path || "");
-  return /^https?:\/\//i.test(source) ? source : null;
+  return resolveImageUrl(entry?.file_path);
 }
 
 //: The `tile` a `tileview` currently shows - explicit `lvgl.tileview.select`
@@ -277,6 +335,7 @@ function applyStyleObject(node, project, style) {
   if (textAlign) node.style.textAlign = textAlign;
   const font = viewerFont(project, style.text_font);
   if (font?.family) node.style.fontFamily = JSON.stringify(font.family);
+  else if (font?.familyCss) node.style.fontFamily = font.familyCss;
   if (font?.size) node.style.fontSize = `${font.size}px`;
   if (font?.weight) node.style.fontWeight = String(font.weight);
   if (font?.italic) node.style.fontStyle = "italic";
@@ -1285,6 +1344,14 @@ export class ViewerController {
       if (this.dialog.open && this.fitMode) this.fit();
     });
     this.resizeObserver.observe(this.stage);
+    // ensureViewerFontLoaded() above resolves asynchronously (it has no
+    // access to this controller instance from inside a plain render
+    // helper) - it announces a finished font load on the document instead,
+    // and re-renders here so the widget that triggered it picks up the
+    // real glyphs without the user having to reopen the dialog.
+    document.addEventListener(VIEWER_FONT_LOADED_EVENT, () => {
+      if (this.dialog.open) this.render();
+    });
   }
 
   open(project, {

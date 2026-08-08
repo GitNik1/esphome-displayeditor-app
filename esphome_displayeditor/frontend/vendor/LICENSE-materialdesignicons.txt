@@ -1,0 +1,14 @@
+materialdesignicons-webfont.ttf
+
+Vendored from the Pictogrammers Material Design Icons project for offline
+use when the "MDI local" add-on option is enabled (no internet access
+required to preview or use MDI icons).
+
+Source: https://github.com/Templarian/MaterialDesign-Webfont
+License: Apache License 2.0
+Copyright: Pictogrammers (https://github.com/Templarian)
+
+No NOTICE file accompanies the upstream project, so none is reproduced here.
+
+Full license text: see LICENSE-Apache-2.0.txt in this same folder, or
+https://github.com/Templarian/MaterialDesign-Webfont/blob/master/LICENSE
