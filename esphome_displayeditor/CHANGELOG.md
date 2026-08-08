@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.18.0
+
+- Fixed: a widget's "Hintergrundbild"/`bg_image_src` style property (e.g.
+  on a `container`/`obj` widget) rendered correctly on the Designer canvas
+  but never showed up in the read-only Viewer at all -
+  `applyStyleObject()` in `viewer.js` set background colour, gradient,
+  border, font, padding and shadow from a widget's style, but never
+  touched `bg_image_src`. Added the same `background-image`/`cover`
+  handling `renderWidget()` in `app.js` already applies on the canvas
+  (`bg_image_src` wins over a gradient background, matching real LVGL),
+  reusing `viewer.js`'s own `imageSource()` resolver. Confirmed live: a
+  container's background image now renders in the Viewer with the correct
+  resolved URL.
+
 ## 0.17.0
 
 - Fixed: the top-right health indicator showed two green dots instead of
