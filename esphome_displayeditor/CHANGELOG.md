@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.19.0
+
 - Added: picking "+ Neue Bildquelle …" for any image property now offers
   images already sitting in the host's `images/` folder, not only an
   http(s) URL - so a brand-new project (nothing imported yet) can reuse an
