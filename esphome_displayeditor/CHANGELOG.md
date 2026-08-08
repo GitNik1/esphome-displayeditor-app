@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+## 0.19.0
+
+- Added: picking "+ Neue Bildquelle …" for any image property now offers
+  images already sitting in the host's `images/` folder, not only an
+  http(s) URL - so a brand-new project (nothing imported yet) can reuse an
+  image someone already uploaded/pinned instead of needing an external
+  URL. Gated by the `designer.asset_read` capability ("wenn es die
+  Berechtigung erlaubt"): with it, `addImageSource()` in `frontend/app.js`
+  lists existing files (via the new `GET /api/v1/designer/assets/images`
+  endpoint, `FilesystemBackend.list_image_assets()` in
+  `backend/filesystem.py`) not already used by the project, and picking
+  one registers it the same way an uploaded baked frame is registered
+  (`external: true`, so export references the file at its existing path
+  instead of trying to copy it from this process's own working directory -
+  the same class of bug the MDI font fix earlier avoided). Without the
+  capability, or once every existing file is already in use, the dialog
+  falls back to the original http(s)-URL-only prompt unchanged. Confirmed
+  live end-to-end: picked two different existing files across two
+  container widgets, exported YAML shows both `image:` entries with their
+  original `images/<name>.png` paths untouched. A transient fetch failure
+  is not cached, so a later retry can still succeed instead of the dialog
+  wrongly remembering "no images exist" for the rest of the session.
+
+- Fixed: the "Referenzbild" (reference image) sidebar section, and four
+  others (Theme, Farbbibliothek, Schriftbibliothek, Message boxes), stayed
+  visibly expanded after being closed - a known Chromium `<details>` quirk
+  already documented and worked around for the Palette/Hierarchy sections
+  (`.designer-sidebar-details` in `styles.css`: "without an explicit
+  :not([open]) rule, a details's own content can stay visible even after
+  it is closed") but never applied to these five. Added the same
+  `:not([open]) > .content { display: none }` rule for each. Confirmed
+  live for all five: closing now actually hides the content
+  (`offsetParent` goes to `null`), not just toggling the `open` attribute
+  with no visible effect.
+
+- Fixed: clicking a spot on the canvas where a hidden widget sits in front
+  of a visible one kept selecting the hidden widget instead of whatever is
+  actually visible there. `renderWidget()` in `frontend/app.js` only ever
+  set `opacity: 0` for an effectively-hidden widget - opacity alone does
+  not remove an element from hit-testing, so it still sat in front for
+  clicks even though nothing was drawn. Now also sets
+  `pointer-events: none` on a hidden widget's node, so a click passes
+  through to whatever is actually visible underneath; its resize handle
+  (only rendered while the widget is selected, e.g. via the Hierarchy
+  tree) explicitly keeps its own `pointer-events: auto` so a
+  hidden-but-selected widget can still be resized from the canvas. The
+  Viewer already handled this correctly (it uses the native `hidden`
+  attribute, not opacity, for a genuinely hidden widget) - only the
+  Designer canvas had the gap. Confirmed live: two overlapping containers,
+  front one hidden, a real click at the overlap now resolves to the back
+  (visible) one via `elementFromPoint()`.
+
 ## 0.18.0
 
 - Fixed: a widget's "Hintergrundbild"/`bg_image_src` style property (e.g.

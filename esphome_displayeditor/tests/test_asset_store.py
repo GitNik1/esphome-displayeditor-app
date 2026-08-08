@@ -314,6 +314,57 @@ def test_read_asset_http_endpoint_available_in_read_only_profile(tmp_path: Path)
     assert response.status_code == 200
 
 
+# --- listing existing images/ for a brand-new project -------------------------
+#
+# The images/ folder already fills up from uploads/pins - a new project (no
+# import yet) should be able to reuse what's already there instead of only
+# ever accepting an http(s) URL or a fresh upload.
+
+def test_list_image_assets_returns_existing_files(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    (fs.root / "images").mkdir(parents=True)
+    (fs.root / "images" / "panel_bg.png").write_bytes(PNG_1X1)
+    (fs.root / "images" / "icon.jpg").write_bytes(b"not a real jpeg, just bytes")
+
+    assert fs.list_image_assets() == ["images/icon.jpg", "images/panel_bg.png"]
+
+
+def test_list_image_assets_empty_when_folder_is_missing(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    assert fs.list_image_assets() == []
+
+
+def test_list_image_assets_skips_non_image_and_hidden_files(tmp_path: Path) -> None:
+    fs = FilesystemBackend(_settings(tmp_path))
+    (fs.root / "images").mkdir(parents=True)
+    (fs.root / "images" / "panel_bg.png").write_bytes(PNG_1X1)
+    (fs.root / "images" / "notes.txt").write_text("not an image")
+    (fs.root / "images" / ".hidden.png").write_bytes(PNG_1X1)
+
+    assert fs.list_image_assets() == ["images/panel_bg.png"]
+
+
+def test_list_image_assets_http_endpoint_needs_no_ingress_user(tmp_path: Path) -> None:
+    """Read-only, mirrors read_designer_asset() - available to any viewer."""
+    settings = _settings(tmp_path)
+    (settings.config_root / "images").mkdir(parents=True, exist_ok=True)
+    (settings.config_root / "images" / "panel_bg.png").write_bytes(PNG_1X1)
+    client = TestClient(create_app(settings, serve_frontend=False))
+
+    response = client.get("/api/v1/designer/assets/images")
+    assert response.status_code == 200
+    assert response.json()["images"] == ["images/panel_bg.png"]
+
+
+def test_list_image_assets_http_endpoint_unavailable_in_native_only_profile(tmp_path: Path) -> None:
+    settings = _settings(tmp_path, access_level="none")
+    client = TestClient(create_app(settings, serve_frontend=False))
+
+    response = client.get("/api/v1/designer/assets/images")
+    assert response.status_code == 403
+    assert response.json()["error"] == "capability_unavailable"
+
+
 def test_the_uploaded_file_can_be_referenced_from_a_saved_project(tmp_path: Path) -> None:
     """The point of the whole feature: a baked frame must be usable as a
     normal, exportable image entry, not just sit on disk."""

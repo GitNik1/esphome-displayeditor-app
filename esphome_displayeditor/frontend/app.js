@@ -3131,6 +3131,14 @@ function renderWidget(item) {
   node.style.width = `${Math.max(1, width)}px`;
   node.style.height = `${Math.max(1, height)}px`;
   node.style.opacity = effectivelyHidden ? "0" : "1";
+  // A hidden widget is invisible but, without this, still sat in front for
+  // hit-testing (opacity alone doesn't affect it) - stacking several
+  // widgets and hiding the front one meant every click on that spot kept
+  // selecting the widget you can't see instead of whatever is now visible
+  // underneath it. The resize handle below restores its own pointer-events
+  // so a hidden widget that is already selected (e.g. via the Hierarchy
+  // tree) can still be resized from the canvas.
+  node.style.pointerEvents = effectivelyHidden ? "none" : "";
   if (widget.locked) node.classList.add("locked");
   // The state selected in the property panel is also the state previewed on
   // the canvas. This is especially useful for a button's pressed/checked
@@ -3203,6 +3211,10 @@ function renderWidget(item) {
   if (state.selectedWidget === widget && !widget.locked && !managed) {
     const handle = document.createElement("span");
     handle.className = "resize-handle";
+    // Regains interactivity even under a pointer-events:none parent (see
+    // the effectivelyHidden node above) - a hidden widget selected via the
+    // Hierarchy tree should still be resizable from the canvas.
+    handle.style.pointerEvents = "auto";
     handle.addEventListener("pointerdown", (event) => beginResize(event, widget));
     node.append(handle);
   }
@@ -5616,11 +5628,11 @@ function themePropertyTarget(typeKey, property, create) {
   return root[property.part];
 }
 
-function updateThemeProperty(property, control) {
+async function updateThemeProperty(property, control) {
   const target = themePropertyTarget(state.themeType, property, true);
   if (property.kind === "image_ref" && control.value === ADD_IMAGE_OPTION) {
     pushUndo();
-    const id = addImageSource();
+    const id = await addImageSource();
     control.value = id || target[property.key] || "";
     if (!id) return;
     target[property.key] = id;
@@ -5844,8 +5856,63 @@ function displayableImageSource(id) {
   return entry && entry.file_path ? assetUrl(entry.file_path) : null;
 }
 
-function addImageSource() {
-  const url = (prompt(t("prompt.image.url"), "https://") || "").trim();
+// Cached for the session once fetched - the images/ folder only grows while
+// the app is open (uploads/pins go through this same app), so a stale list
+// only ever misses a file someone else added on the host in the meantime,
+// same trade-off the font library's "check for update" already accepts.
+let serverImageAssetsCache = null;
+
+async function availableServerImages() {
+  if (!state.capabilities["designer.asset_read"]) return [];
+  if (serverImageAssetsCache === null) {
+    try {
+      const result = await api("designer/assets/images");
+      serverImageAssetsCache = result.images || [];
+    } catch {
+      // Leave the cache empty (not []) so a transient failure - the request
+      // simply didn't reach the backend this once - gets retried next time
+      // instead of being remembered forever as "no images exist".
+      return [];
+    }
+  }
+  const used = new Set(imageLibrary().map((entry) => entry.file_path));
+  return serverImageAssetsCache.filter((path) => !used.has(path));
+}
+
+// Registers an image already sitting in the host's images/ folder (as
+// reported by the server itself, not typed by the user - see addImageSource()
+// below for why that distinction matters) as a project image, the same way
+// a baked animation frame is registered after upload.
+function registerServerImageAsset(path) {
+  const base = (path.split("/").pop() || "bild").replace(/\.[^.]*$/, "");
+  const slug = base.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "bild";
+  let id = `img_${slug}`;
+  let counter = 2;
+  while (imageEntry(id)) id = `img_${slug}_${counter++}`;
+  // external:true - this path is already exactly where it needs to be
+  // (images/<name>.png under the config root), so export must reference it
+  // as-is rather than trying to copy it from this process's own working
+  // directory, which is a different, unrelated location.
+  imageLibrary().push({
+    id, file_path: path, resize: "", dither: "", transparency: "opaque", img_type: "", external: true,
+  });
+  return id;
+}
+
+async function addImageSource() {
+  const existing = await availableServerImages();
+  let url;
+  if (existing.length) {
+    const list = existing.map((path, index) => `${index + 1}: ${path}`).join("\n");
+    const answer = (prompt(t("prompt.image.urlOrExisting", { list }), "https://") || "").trim();
+    const index = Number.parseInt(answer, 10);
+    if (Number.isInteger(index) && index >= 1 && index <= existing.length) {
+      return registerServerImageAsset(existing[index - 1]);
+    }
+    url = answer;
+  } else {
+    url = (prompt(t("prompt.image.url"), "https://") || "").trim();
+  }
   if (!url || url === "https://") return null;
   if (!isRemoteAsset(url)) {
     toast(t("toast.image.onlyHttpUrls"), true);
@@ -5941,11 +6008,11 @@ function parseListValue(property, text) {
   return items.map((part) => (/^-?\d+$/.test(part) ? Number(part) : part));
 }
 
-function updateDynamicProperty(widget, property, control, targetKind = property.category) {
+async function updateDynamicProperty(widget, property, control, targetKind = property.category) {
   const target = propertyTarget(widget, property, true, targetKind);
   if (property.kind === "image_ref" && control.value === ADD_IMAGE_OPTION) {
     pushUndo();
-    const id = addImageSource();
+    const id = await addImageSource();
     // Cancelling the prompt must not leave the sentinel option selected.
     control.value = id || target[property.key] || "";
     if (!id) return;

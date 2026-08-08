@@ -1337,6 +1337,15 @@ def create_app(
         canvas = (body.canvas.width, body.canvas.height) if body.canvas else None
         return designer.import_yaml(text, canvas=canvas, source_name=name)
 
+    @application.get("/api/v1/designer/assets/images")
+    async def list_image_assets() -> dict:
+        # Read-only, same gating as read_designer_asset() - lets a brand-new
+        # project (nothing imported yet) offer images already sitting in the
+        # images/ folder as pickable sources, not only http(s) URLs or a
+        # fresh upload.
+        ensure_capability_available("designer.asset_read")
+        return {"images": filesystem.list_image_assets()}
+
     @application.post("/api/v1/designer/assets/images")
     async def upload_image_asset(body: AssetImageRequest, request: Request) -> dict:
         user_id = require_capability(request, "designer.asset_write")
