@@ -105,6 +105,26 @@ def test_merge_appends_lvgl_when_the_target_has_none_yet() -> None:
     assert "button_1" in result.content
 
 
+def test_merge_flags_a_background_image_id_colliding_with_a_real_image() -> None:
+    """The bug this regresses: the reference-image background exports its
+    own synthetic image: entry using project.background.image_id - unless
+    that id is checked against the project's real images too, it can
+    silently collide and the merged image: block ends up defining the same
+    id twice, which ESPHome rejects at compile time with "ID ... redefined!"."""
+    existing = "esphome:\n  name: test-device\n"
+    project = project_with_button()
+    image = ImageLibraryEntry(id="img_flow_00")
+    image.file_path = "images/flow_00.png"
+    project.images.append(image)
+    project.background.path = "https://example.invalid/mockup.png"
+    project.background.export_as_lvgl_image = True
+    project.background.image_id = "img_flow_00"
+
+    result = merge_project_into_yaml(project, existing)
+
+    assert any("img_flow_00" in issue.message for issue in result.issues)
+
+
 def test_merge_rejects_a_duplicate_top_level_key() -> None:
     existing = "lvgl:\n  widgets: []\nlvgl:\n  widgets: []\n"
 

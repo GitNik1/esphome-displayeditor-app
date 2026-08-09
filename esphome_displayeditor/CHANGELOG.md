@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+## 0.20.0
+
+- Added a "Transparenz" (`transparency:`) dropdown next to the existing
+  image-format dropdown for every image-picking property (opaque/
+  chroma_key/alpha_channel) - previously this was hard-coded to `opaque`
+  for every image the Designer itself creates, with no way to change it,
+  even though the model/export already supported the field. Only affects
+  the real device: the preview here already showed the PNG's actual alpha
+  data regardless (see the earlier alpha-channel fix), so this only
+  matters for what gets compiled. Confirmed live: setting it to
+  `alpha_channel` and exporting shows `transparency: alpha_channel` on the
+  `image:` entry.
+
+- Fixed: two entries sharing an id (e.g. two images, both named
+  `img_..._flow_00`) could pass validation and get written into the
+  exported YAML's `image:` block twice - ESPHome then rejects the whole
+  config at compile time with "ID ... redefined!". Root cause was in the
+  shared `IdRegistry.claim()` (`backend/designer_core/idgen.py`): it only
+  flagged a collision when the new claim's "owner" label differed from the
+  existing one, but `yamlexport.py`/`lvgl_merge.py` build that label purely
+  from the id being claimed (e.g. `f"image '{i.id}'"`) - so two different
+  images sharing an id produced the *identical* label both times, making
+  the check blind to same-kind duplicates. Fixed `claim()` to flag any
+  second claim of an id regardless of label; also fixed a real, previously
+  undetected instance of this the check now catches: the reference-image
+  background's synthetic `image:` entry
+  (`project.background.image_id`) was never registered against the
+  project's real images at all, in `designer.py`, `yamlexport.py`, and
+  `lvgl_merge.py` alike - so a background image id that happened to match
+  an existing image's id sailed through unnoticed. All three now claim it
+  the same way every other id is claimed. Confirmed live: the exact
+  colliding-background-and-image scenario now returns `422 invalid_project`
+  with `"Duplicate id 'img_flow_00': used by image[0] and background
+  image."` instead of silently producing broken YAML.
+
 ## 0.19.0
 
 - Added: picking "+ Neue Bildquelle …" for any image property now offers

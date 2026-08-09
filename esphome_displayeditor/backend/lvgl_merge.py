@@ -93,6 +93,16 @@ def _build_merge_doc(project: Project) -> tuple[dict[str, Any], list[ExportIssue
         registry.claim(i.id, f"image '{i.id}'")
     for c in project.colors:
         registry.claim(c.id, f"color '{c.id}'")
+    # The reference-image background gets its own synthetic image: entry
+    # below (via _image_block_for_merge()) when exported - without this its
+    # id could silently collide with a real image's id, emitting the same
+    # id twice in the merged image: block. designer.validate() already
+    # claims this too and is called before this function in every current
+    # caller, but claiming it here as well keeps this function correct on
+    # its own, the same way it already re-claims every other id rather than
+    # trusting an earlier validation pass.
+    if project.background.export_as_lvgl_image and project.background.path:
+        registry.claim(project.background.image_id, "background image")
     issues.extend(ExportIssue("A", msg) for msg in registry.collisions())
 
     doc: dict[str, Any] = {}

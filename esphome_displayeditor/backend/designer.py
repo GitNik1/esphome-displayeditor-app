@@ -310,6 +310,19 @@ class DesignerService:
                 if not _ID_PATTERN.fullmatch(entry.id):
                     issues.append({"severity": "error", "resource": entry.id, "message": f"Invalid {kind} id."})
                 registry.claim(entry.id, f"{kind}[{index}]")
+        # The reference-image background gets its own synthetic image: entry
+        # when exported (see build_image_block() in yamlexport.py) - if its
+        # id happens to collide with a real image (or anything else), that
+        # was never caught here before, so export could silently emit the
+        # same id twice: once from project.images, once from this synthetic
+        # entry. ESPHome then rejects the whole config with "ID ... redefined!".
+        if project.background.export_as_lvgl_image and project.background.path:
+            if not _ID_PATTERN.fullmatch(project.background.image_id):
+                issues.append({
+                    "severity": "error", "resource": project.background.image_id,
+                    "message": "Invalid background image id.",
+                })
+            registry.claim(project.background.image_id, "background image")
         issues.extend({"severity": "error", "message": message} for message in registry.collisions())
 
         # Importing assets from the local filesystem stays disabled until

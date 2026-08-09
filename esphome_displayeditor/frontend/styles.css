@@ -341,7 +341,7 @@ input:focus { border-color: var(--accent); }
 .color-library-form input { margin-top: 4px; }
 .color-input-row { display: grid; grid-template-columns: minmax(0, 1fr) 38px; gap: 6px; align-items: center; }
 .image-ref-row { display: flex; flex-direction: column; gap: 5px; }
-.image-ref-format { font-size: 11px; }
+.image-ref-format, .image-ref-transparency { font-size: 11px; }
 .color-input-row input[type="color"] { width: 38px; height: 36px; margin-top: 5px; padding: 3px; cursor: pointer; }
 .color-library-form .color-input-row input[type="color"] { margin-top: 4px; }
 .font-library-details { border-top: 1px solid var(--line); }

@@ -38,7 +38,16 @@ class IdRegistry:
         if not widget_id:
             return
         existing = self._owners.get(widget_id)
-        if existing is not None and existing != owner:
+        if existing is not None:
+            # Any second claim is a collision, even if `owner` happens to be
+            # spelled identically to `existing` (e.g. two different images
+            # both labelled "image '<their-shared-id>'", since that label is
+            # built from the id itself) - two distinct entries sharing an id
+            # is exactly as invalid as it is between two different kinds of
+            # entity. A prior version compared the label strings here, which
+            # made two same-kind duplicates invisible to this check whenever
+            # their owner label happened to be generated purely from the id
+            # being claimed.
             self._collisions.append(
                 f"Duplicate id '{widget_id}': used by {existing} and {owner}.")
             return

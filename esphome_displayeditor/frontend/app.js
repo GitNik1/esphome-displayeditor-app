@@ -5386,8 +5386,8 @@ function propertyField(widget, property, index, targetKind) {
 
 // ESPHome's `image: type:` values - the colour format a PNG gets converted
 // to. There is no per-image-entry editor anywhere else in the app (resize/
-// dither/transparency aren't editable either), so this rides along with
-// whatever control already lets you pick the image itself.
+// dither aren't editable either), so this rides along with whatever
+// control already lets you pick the image itself.
 const IMAGE_TYPE_OPTIONS = [
   ["", "— Standard —"],
   ["BINARY", "BINARY"],
@@ -5396,6 +5396,20 @@ const IMAGE_TYPE_OPTIONS = [
   ["RGB565", "RGB565"],
   ["RGB", "RGB"],
   ["RGBA", "RGBA"],
+];
+
+// ESPHome's `image: transparency:` values - how (or whether) the compiled
+// firmware image keeps an alpha channel. This only affects the real
+// device: the browser preview always shows the PNG's actual alpha data
+// regardless of this setting (see displayableImageSource()/assetUrl()),
+// which is why a project could look correctly transparent here while
+// compiling opaque - "opaque" (the ESPHome default) silently drops alpha
+// unless the source's own type already implies transparency (see
+// IMAGE_TYPE_OPTIONS's TRANSPARENT_BINARY/RGBA).
+const IMAGE_TRANSPARENCY_OPTIONS = [
+  ["opaque", "opaque"],
+  ["chroma_key", "chroma_key"],
+  ["alpha_channel", "alpha_channel"],
 ];
 
 function appendPropertyControl(label, control, property, widget) {
@@ -5436,6 +5450,25 @@ function appendPropertyControl(label, control, property, widget) {
       markProjectDirty();
     });
     row.append(format);
+    const transparency = document.createElement("select");
+    transparency.className = "image-ref-transparency";
+    transparency.title = t("properties.imageTransparencyTitle");
+    IMAGE_TRANSPARENCY_OPTIONS.forEach(([value, text]) => transparency.append(new Option(text, value)));
+    const syncTransparency = () => {
+      const entry = imageEntry(control.value);
+      transparency.disabled = !entry;
+      transparency.value = entry ? (entry.transparency || "opaque") : "opaque";
+    };
+    syncTransparency();
+    control.addEventListener("change", syncTransparency);
+    transparency.addEventListener("change", () => {
+      const entry = imageEntry(control.value);
+      if (!entry) return;
+      pushUndo();
+      entry.transparency = transparency.value;
+      markProjectDirty();
+    });
+    row.append(transparency);
     label.append(row);
     return;
   }
