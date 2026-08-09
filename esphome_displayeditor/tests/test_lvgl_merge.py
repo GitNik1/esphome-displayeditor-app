@@ -105,6 +105,34 @@ def test_merge_appends_lvgl_when_the_target_has_none_yet() -> None:
     assert "button_1" in result.content
 
 
+def test_merging_the_same_project_twice_in_a_row_does_not_duplicate_entries() -> None:
+    """The bug this regresses: a top-level key whose value is a bare list
+    (color:/font:/image: - never lvgl:, whose own lists like widgets: are
+    always nested under another key and therefore genuinely indented)
+    dumps its list items starting at column 0 with "-", not indented.
+    _find_top_level_block() only recognised whitespace-indented
+    continuation lines, so it measured a list-valued block as just its own
+    "key:" line - a *replace* (the key already existed, e.g. from a
+    previous merge) then only overwrote that one line, leaving every old
+    entry sitting right after the freshly-inserted new ones. Saving the
+    same project as a draft twice in a row silently duplicated every
+    image:/font: entry."""
+    existing = "esphome:\n  name: test-device\n"
+    project = project_with_button()
+    image = ImageLibraryEntry(id="img_x")
+    image.file_path = "images/x.png"
+    image.external = True
+    project.images.append(image)
+
+    first = merge_project_into_yaml(project, existing)
+    second = merge_project_into_yaml(project, first.content)
+    third = merge_project_into_yaml(project, second.content)
+
+    assert second.replaced_keys == ["image", "lvgl"]
+    assert third.content.count("id: img_x") == 1
+    assert third.content.count("- platform: file") == 1
+
+
 def test_merge_flags_a_background_image_id_colliding_with_a_real_image() -> None:
     """The bug this regresses: the reference-image background exports its
     own synthetic image: entry using project.background.image_id - unless
