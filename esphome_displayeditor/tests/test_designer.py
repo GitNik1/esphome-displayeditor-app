@@ -566,6 +566,51 @@ def test_duplicate_ids_fail_validation(tmp_path: Path) -> None:
     assert any("Duplicate id" in issue["message"] for issue in issues)
 
 
+def test_two_images_sharing_an_id_fail_validation(tmp_path: Path) -> None:
+    """The user-facing symptom this guards against: ESPHome rejects the
+    compiled config with "ID ... redefined!" once two image: entries share
+    an id - this must be caught here, before export, not discovered only
+    once ESPHome itself compiles the result."""
+    project = project_with_button()
+    project["images"] = [
+        {"id": "img_flow_00", "file_path": "images/flow_00.png"},
+        {"id": "img_flow_00", "file_path": "images/other.png"},
+    ]
+    _parsed, issues = DesignerService(tmp_path).validate(project)
+    assert any("Duplicate id" in issue["message"] and "img_flow_00" in issue["message"] for issue in issues)
+
+
+def test_background_image_id_colliding_with_a_project_image_fails_validation(tmp_path: Path) -> None:
+    """The actual bug report this regresses: the reference-image background
+    exports its own synthetic image: entry (see build_image_block() in
+    yamlexport.py) using project.background.image_id - if that id was never
+    checked against the project's real images, it could silently collide
+    and get written into the image: block twice, which ESPHome then
+    rejects at compile time with "ID ... redefined!"."""
+    project = project_with_button()
+    project["images"] = [{"id": "img_flow_00", "file_path": "images/flow_00.png"}]
+    project["background"] = {
+        "path": "https://example.invalid/mockup.png",
+        "export_as_lvgl_image": True,
+        "image_id": "img_flow_00",
+    }
+    _parsed, issues = DesignerService(tmp_path).validate(project)
+    assert any("Duplicate id" in issue["message"] and "img_flow_00" in issue["message"] for issue in issues)
+
+
+def test_background_image_export_is_blocked_once_its_id_collides(tmp_path: Path) -> None:
+    project = project_with_button()
+    project["images"] = [{"id": "img_flow_00", "file_path": "images/flow_00.png"}]
+    project["background"] = {
+        "path": "https://example.invalid/mockup.png",
+        "export_as_lvgl_image": True,
+        "image_id": "img_flow_00",
+    }
+    with pytest.raises(ApiError) as raised:
+        DesignerService(tmp_path).export_yaml(project)
+    assert raised.value.error == "invalid_project"
+
+
 def test_widget_id_colliding_with_a_reserved_id_fails_validation(tmp_path: Path) -> None:
     """``reserved_ids`` records ids used by hardware entities elsewhere in an
     imported source config (binary_sensor:, button:, ...) that this designer

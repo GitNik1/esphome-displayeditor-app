@@ -494,6 +494,14 @@ def export_project(project: Project, output_path: str) -> ExportResult:
         registry.claim(i.id, f"image '{i.id}'")
     for c in project.colors:
         registry.claim(c.id, f"color '{c.id}'")
+    # The reference-image background gets its own synthetic image: entry
+    # further down (see the project.background.export_as_lvgl_image branch
+    # below) when exported - without claiming its id here too, that entry
+    # could silently collide with a real image's id and emit the same id
+    # twice in the image: block, which ESPHome rejects at compile time as
+    # "ID ... redefined!".
+    if project.background.export_as_lvgl_image and project.background.path:
+        registry.claim(project.background.image_id, "background image")
     issues.extend(ExportIssue("A", msg) for msg in registry.collisions())
 
     assets_dir = os.path.join(os.path.dirname(os.path.abspath(output_path)), "assets")

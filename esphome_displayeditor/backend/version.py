@@ -1,3 +1,3 @@
 """Single application-version fallback used outside container builds."""
 
-APP_VERSION = "0.19.0"
+APP_VERSION = "0.20.0"
