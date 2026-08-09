@@ -559,6 +559,41 @@ def test_non_mdi_fonts_are_never_glyph_restricted(tmp_path: Path) -> None:
     assert "glyphs" not in font_block
 
 
+def test_animimg_duration_gets_a_time_unit_suffix(tmp_path: Path) -> None:
+    """ESPHome's animimg `duration:` is a time period
+    (cv.positive_time_period) and rejects a bare number at compile time
+    ("Don't know what '1800' means as it has no time *unit*!"). The
+    designer's own "Dauer (ms)" field (and the baked-flow-animation
+    feature, which sets this from frameCount * 300) always store it as a
+    plain millisecond int, so export must add the unit back."""
+    project = project_with_button()
+    project["widgets"] = [{
+        "id": "anim_1", "widget_type": "animimg", "x": 0, "y": 0, "width": 100, "height": 50,
+        "properties": {
+            "src": ["frame_00", "frame_01"], "duration": 1800,
+            "repeat_count": "forever", "auto_start": True,
+        },
+        "style_tree": {}, "children": [],
+    }]
+    exported = DesignerService(tmp_path).export_yaml(project)["yaml"]
+    assert "duration: 1800ms" in exported
+    assert "duration: 1800\n" not in exported
+
+
+def test_anim_time_style_value_gets_a_time_unit_suffix(tmp_path: Path) -> None:
+    """Same bug, reached a different way: importing a config with
+    `anim_time: 500ms` normalises it to a plain int (500) so the value is
+    editable, but re-exporting it unchanged must add the unit back too -
+    otherwise a round-tripped import/export alone breaks the config.
+    ("anim_time" is also remapped to the canonical "anim_duration" on
+    export - a separate, pre-existing legacy-alias rule, not part of this
+    fix - so that is the key name that actually shows up below.)"""
+    project = project_with_button()
+    project["widgets"][0]["style_tree"]["anim_time"] = 500
+    exported = DesignerService(tmp_path).export_yaml(project)["yaml"]
+    assert "anim_duration: 500ms" in exported
+
+
 def test_duplicate_ids_fail_validation(tmp_path: Path) -> None:
     project = project_with_button()
     project["widgets"].append(dict(project["widgets"][0]))

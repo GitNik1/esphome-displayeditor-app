@@ -2994,16 +2994,26 @@ async function uploadBakedFrame(name, blob) {
   return result.path;
 }
 
+// Only ever called for a baked glow-line frame (see bakeSelectedStroke()):
+// renderStrokeFrame() draws onto a blank <canvas>, which starts fully
+// transparent, and only ever paints the stroke itself on top of that - so
+// the frame's background pixels are genuinely alpha=0, not opaque black.
+// "opaque"/default type (this function's old default) would flatten that
+// away, baking the frame in as an opaque box instead of a see-through
+// glow line. RGB565 matches the colour depth renderStrokeFrame() already
+// quantizes every pixel to before it leaves the browser.
 function ensureImageEntry(id, filePath) {
   if (!Array.isArray(state.project.images)) state.project.images = [];
   let entry = state.project.images.find((img) => img.id === id);
   if (!entry) {
-    entry = { id, file_path: filePath, resize: "", dither: "", transparency: "opaque",
-             img_type: "", external: true, extra: {} };
+    entry = { id, file_path: filePath, resize: "", dither: "", transparency: "alpha_channel",
+             img_type: "RGB565", external: true, extra: {} };
     state.project.images.push(entry);
   } else {
     entry.file_path = filePath;
     entry.external = true;
+    entry.transparency = "alpha_channel";
+    entry.img_type = "RGB565";
   }
   return entry;
 }
@@ -4804,6 +4814,24 @@ function saveFontLibraryEntry(event) {
     fail(t("validation.font.needsWebUrl"));
     return;
   }
+  if (!state.editingFontId) {
+    const candidate = {
+      source_kind: source,
+      size: clamp(Number($("#font-library-size").value) || 16, 1, 255),
+      bpp: Number($("#font-library-bpp").value) || 4,
+      builtin_name: source === "builtin" ? $("#font-library-builtin-name").value.trim() : "",
+      gfonts_family: source === "gfonts" ? currentGfontsFamilyInput() : "",
+      gfonts_weight: source === "gfonts" ? (Number($("#font-library-gfonts-weight").value) || 400) : 400,
+      gfonts_italic: source === "gfonts" && $("#font-library-gfonts-italic").checked,
+      file_path: source === "file" ? $("#font-library-file-path").value.trim() : "",
+      web_url: source === "web" ? $("#font-library-web-url").value.trim() : "",
+    };
+    const duplicate = findEquivalentFontEntry(candidate);
+    if (duplicate) {
+      fail(t("validation.font.alreadyExists", { id: duplicate.id }));
+      return;
+    }
+  }
 
   pushUndo();
   let entry;
@@ -5820,6 +5848,29 @@ function fontLibrary() {
   return state.project.fonts;
 }
 
+// Whether `candidate` (the not-yet-saved shape saveFontLibraryEntry() is
+// about to write) already exists under a different id - same source,
+// same size/bpp (a different size is a genuinely different font: block,
+// not a duplicate, matching ensureMdiFontAtSize()'s own per-size entries),
+// and the fields identifying that source. Two font: entries that would
+// bake the identical source at the identical size is pure YAML/flash
+// bloat, never something a user actually wants.
+function findEquivalentFontEntry(candidate) {
+  return fontLibrary().find((entry) => {
+    if (entry.source_kind !== candidate.source_kind) return false;
+    if (Number(entry.size) !== candidate.size || Number(entry.bpp) !== candidate.bpp) return false;
+    if (candidate.source_kind === "builtin") return entry.builtin_name === candidate.builtin_name;
+    if (candidate.source_kind === "gfonts") {
+      return entry.gfonts_family === candidate.gfonts_family
+        && Number(entry.gfonts_weight) === candidate.gfonts_weight
+        && Boolean(entry.gfonts_italic) === candidate.gfonts_italic;
+    }
+    if (candidate.source_kind === "file") return entry.file_path === candidate.file_path;
+    if (candidate.source_kind === "web") return webFontUrl(entry) === candidate.web_url;
+    return false;
+  });
+}
+
 // ESPHome bitmap fonts are baked at one fixed pixel size per font: entry
 // (LVGL v9 has no runtime scaling for them), so - like resolvedFontFamily()
 // - "the font's size" lives on the library entry, not per widget instance.
@@ -5915,8 +5966,13 @@ async function availableServerImages() {
 // Registers an image already sitting in the host's images/ folder (as
 // reported by the server itself, not typed by the user - see addImageSource()
 // below for why that distinction matters) as a project image, the same way
-// a baked animation frame is registered after upload.
+// a baked animation frame is registered after upload. Reuses an existing
+// entry for the same path rather than ever creating a second one - two
+// image: entries pointing at the identical file is pure YAML/flash bloat,
+// never something a user actually wants.
 function registerServerImageAsset(path) {
+  const existing = imageLibrary().find((entry) => entry.file_path === path);
+  if (existing) return existing.id;
   const base = (path.split("/").pop() || "bild").replace(/\.[^.]*$/, "");
   const slug = base.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "bild";
   let id = `img_${slug}`;
@@ -5951,6 +6007,10 @@ async function addImageSource() {
     toast(t("toast.image.onlyHttpUrls"), true);
     return null;
   }
+  // Typing a URL that already backs another entry must not create a
+  // second, functionally-identical image: block - reuse the existing one.
+  const existingEntry = imageLibrary().find((entry) => entry.file_path === url);
+  if (existingEntry) return existingEntry.id;
   const base = (url.split("/").pop() || "bild").replace(/\.[^.]*$/, "");
   const slug = base.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "bild";
   let id = `img_${slug}`;

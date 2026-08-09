@@ -118,11 +118,25 @@ def resolve_border_side(raw) -> list[str]:
     return seen or ["NONE"]
 
 
+#: Style keys ESPHome accepts as a time literal (``500ms``, ``1s``) rather
+#: than a bare number of milliseconds - mirrors yamlimport.py's
+#: _DURATION_KEYS minus "duration" itself, which is a widget *content*
+#: property (handled in _widget_content_dict()), not a style key.
+_TIME_STYLE_KEYS = {"anim_time", "anim_duration"}
+
+
 def _resolve_style_value(key: str, value: Any) -> Any:
     if key == "border_side":
         return resolve_border_side(value)
     if key.endswith("_color"):
         return resolve_color(value)
+    if key in _TIME_STYLE_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
+        # yamlimport.py's _normalise_duration() turns an imported "500ms"
+        # into a plain int on the way in so a numeric UI control can edit
+        # it; without the reverse conversion here, re-exporting it
+        # unchanged writes a bare number, which ESPHome's
+        # cv.positive_time_period rejects at compile time.
+        return f"{value}ms"
     return value
 
 
@@ -164,7 +178,19 @@ def clean_style_dict(style_tree: dict[str, Any]) -> dict[str, Any]:
 def _widget_content_dict(node: WidgetNode) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in node.properties.items():
-        out[key] = resolve_color(value) if key.endswith("_color") else value
+        if key.endswith("_color"):
+            out[key] = resolve_color(value)
+        elif node.widget_type == "animimg" and key == "duration" and isinstance(value, (int, float)):
+            # ESPHome's animimg `duration:` is a time period
+            # (cv.positive_time_period) and rejects a bare number at compile
+            # time ("Don't know what '1800' means as it has no time
+            # *unit*!"). The designer's own "Dauer (ms)" field (and the
+            # baked-flow-animation feature, which sets this from
+            # frameCount * 300) always store it as a plain millisecond
+            # count, so the unit is always "ms" here.
+            out[key] = f"{value}ms"
+        else:
+            out[key] = value
     return out
 
 

@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+## 0.21.0
+
+- Fixed: adding an image or font that's already identical to an existing
+  library entry created a second, functionally-duplicate one instead of
+  reusing it - e.g. typing the same image URL into "+ Neue Bildquelle …"
+  twice produced `img_shared`/`img_shared_2`, both baking the same file
+  into two separate `image:` entries. `addImageSource()`/
+  `registerServerImageAsset()` in `frontend/app.js` now look for an
+  existing entry with the same `file_path` first and reuse its id instead
+  of creating a new one. The generic "add font" form
+  (`saveFontLibraryEntry()`) gained the equivalent check
+  (`findEquivalentFontEntry()`): same source (builtin name / Google Fonts
+  family+weight+italic / file path / web URL) *and* the same size+bpp now
+  blocks the save with a clear error naming the existing entry, rather
+  than silently creating a duplicate `font:` block - a different size for
+  the same font is still allowed, since ESPHome bakes bitmap fonts at one
+  fixed size per entry and that is a genuinely different asset (matches
+  the icon dialog's own per-size auto-provisioning). Confirmed live: the
+  same URL twice now lands both widgets on one shared image entry; the
+  same Google Fonts family+size twice is rejected with "Diese Schrift
+  gibt es bereits als …", while the same family at a different size is
+  still accepted as a separate entry.
+
+- Fixed: the images baked from a glow-line animation (used by the
+  resulting `animimg` widget's frames) exported with no `type:`/
+  `transparency:` at all, defaulting to ESPHome's plain opaque handling -
+  flattening what `renderStrokeFrame()` actually draws: a blank, fully
+  transparent `<canvas>` with only the stroke itself painted on top, every
+  pixel already quantized to RGB565 before the PNG leaves the browser.
+  `ensureImageEntry()` in `frontend/app.js` (the baking feature's only
+  caller) now creates - and, when re-baking, corrects - these entries with
+  `img_type: "RGB565"` and `transparency: "alpha_channel"` instead of the
+  previous always-opaque default, so the exported `image:` block matches
+  what the frame data actually is. Confirmed the resulting entry shape
+  exports as `type: RGB565` / `transparency: alpha_channel`.
+
+- Fixed: an `animimg` widget's `duration:` (and any imported `anim_time:`/
+  `anim_duration:` style value) exported as a bare number
+  (`duration: 1800`), which ESPHome's `cv.positive_time_period` rejects at
+  compile time - "Don't know what '1800' means as it has no time *unit*!
+  Did you mean '1800s'?.". The designer's own "Dauer (ms)" field, and the
+  baked-flow-animation feature (`frameCount * 300`), always store this as
+  a plain millisecond int so the numeric UI control works -
+  `yamlimport.py`'s `_normalise_duration()` already does the matching
+  reverse conversion on import (`"500ms"` → `500`), but nothing did the
+  forward direction again on export. Added it in
+  `backend/designer_core/yamlexport.py`: `_widget_content_dict()` for
+  `animimg`'s `duration`, `_resolve_style_value()` for `anim_time`/
+  `anim_duration` style values. Confirmed live with the exact reported
+  widget: exports `duration: 1800ms` instead of `duration: 1800`.
+
 ## 0.20.0
 
 - Added a "Transparenz" (`transparency:`) dropdown next to the existing
