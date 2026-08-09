@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 0.22.0
+
+- Fixed: saving the same project as a draft ("Als Entwurf speichern") more
+  than once in a row duplicated every entry in the merged `color:`/
+  `font:`/`image:` blocks (never `lvgl:`). Root cause in
+  `_find_top_level_block()` (`backend/lvgl_merge.py`): PyYAML dumps a
+  top-level key whose value is a bare list with its items starting at
+  column 0 with `-`, not indented - the block-end scan only recognised
+  whitespace-indented continuation lines, so it measured the block as just
+  the `key:` line itself. On a *replace* (the key already existed, e.g.
+  from an earlier merge), that one-line range got overwritten with the
+  full new block, leaving every old entry sitting right after it -
+  invisible on a single merge (which only ever appends the first time),
+  but compounding on every subsequent save. Now also recognises `-`
+  block-sequence lines as part of the block. Confirmed live: the same
+  project merged into the same draft three times in a row now ends with
+  exactly one `font:` and one `image:` entry each, and the file stops
+  changing at all once it's already correctly merged (same revision hash
+  on the 2nd and 3rd save).
+
 ## 0.21.0
 
 - Fixed: adding an image or font that's already identical to an existing

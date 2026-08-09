@@ -142,8 +142,22 @@ def build_project_yaml_for_bundle(project: Project) -> tuple[str, list[ExportIss
 def _find_top_level_block(lines: list[str], key: str) -> tuple[int, int] | None:
     """Return the [start, end) line-index range of an existing top-level
     ``key:`` block, or None if it isn't present. A line belongs to the
-    block if it is blank or starts with whitespace (i.e. is indented under
-    the key); the first line back at column 0 - or end of file - ends it.
+    block if it is blank, starts with whitespace (indented under the key),
+    or starts with ``-`` (a block-sequence item at column 0 - PyYAML dumps
+    a top-level list value, e.g. ``color:``/``font:``/``image:``, with its
+    items starting at column 0, not indented under the key); the first
+    line back at column 0 that is neither - or end of file - ends it.
+
+    Getting this wrong previously mistook a sequence item's own ``-`` for
+    the start of a new top-level key, so the "block" for a list-valued key
+    was measured as just its own ``key:`` line. On a *replace* (the key
+    already existed), that line-range replacement then only ever
+    overwrote the ``key:`` line itself, leaving every one of its old
+    entries in place right after the freshly-inserted new ones - so
+    merging the same project into the same file twice in a row silently
+    duplicated every entry in ``color:``/``font:``/``image:`` (never
+    ``lvgl:``, since its own list values - e.g. ``widgets:`` - are always
+    nested *under* another key and therefore genuinely indented).
     """
     start = None
     for index, line in enumerate(lines):
@@ -154,7 +168,7 @@ def _find_top_level_block(lines: list[str], key: str) -> tuple[int, int] | None:
     if start is None:
         return None
     end = start + 1
-    while end < len(lines) and (lines[end] in ("\n", "\r\n") or lines[end].startswith((" ", "\t"))):
+    while end < len(lines) and (lines[end] in ("\n", "\r\n") or lines[end].startswith((" ", "\t", "-"))):
         end += 1
     return start, end
 
