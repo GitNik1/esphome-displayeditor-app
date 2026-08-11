@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- Added: three new entries in the widget "Aktionen" catalog for animimg
+  (glow-line) widgets: "Animation starten"/"Animation stoppen"
+  (`lvgl.animimg.start`/`.stop`), and a new "Energiefluss (Glow-Line)"
+  action for driving a flow animation's visibility, direction, and speed
+  straight from a numeric `on_value` trigger (e.g. a slider). Non-bidirectional
+  mode targets a single animimg widget: below the configured "aus" threshold
+  it hides the widget, otherwise it shows it, starts it, and picks a
+  normal/fast `duration` via a second threshold. Bidirectional mode targets a
+  forward+reverse widget pair and additionally branches on the sign of the
+  triggering value to decide which one is shown/started while the other
+  stays hidden. `frontend/app.js`'s `addWidgetAction()` builds this as
+  nested `if:` actions with a `lambda:` condition (the exact
+  `return x;`-style pattern already used for the checked/unchecked
+  condition), calling only plain ESPHome-native actions
+  (`lvgl.widget.show`/`.hide`, `lvgl.animimg.start`, `lvgl.animimg.update`)
+  - no raw/uncertain C++ needed, since `duration` is passed as a fixed
+  string per branch rather than computed inline. `describeWidgetAction()`
+  gained `describeFlowAction()`, a structural recognizer (no extra metadata
+  is stored on the action, since it still has to export as plain ESPHome
+  YAML) that turns the nested `if:` shape back into a readable "Fluss: id ⇄
+  id" summary in the action list. Verified by hand-building the exact
+  generated bidirectional structure into a real ESPHome device config
+  (animimg pair + slider) and running both `esphome config` and a full
+  `esphome compile` against it (ESP-IDF/ESP32) - compiled successfully with
+  no errors.
+
+- Added: the "Aktionen" (on_click/on_press/on_release/on_value) builder is
+  no longer restricted to button widgets - it's now available for any
+  widget type, so e.g. a glow-line's baked `image`/`animimg` can react to
+  a click too. `frontend/app.js`'s `renderWidgetActions()`/
+  `renderWidgetActionBuilder()`/`addWidgetAction()` no longer gate on
+  `widget_type === "button"`. The "on_value" trigger's checked/unchecked
+  condition sub-field stays restricted to widgets with a genuinely
+  boolean value - switch, checkbox (always), or a button with
+  "checkable" on (`widgetSupportsValueCondition()`) - a plain
+  `return x;`/`return !x;` lambda has nothing meaningful to compare for
+  e.g. a slider's numeric value; for every other widget type the field
+  stays hidden and the condition resets to "always" rather than silently
+  keeping a stale checked/unchecked choice from a previously selected
+  widget. Confirmed live: an `obj` (container) widget's on_click now
+  exports as `on_click:\n- lvgl.widget.hide: obj_1`, and its on_value
+  condition field stays correctly hidden.
+
 ## 0.22.0
 
 - Fixed: saving the same project as a draft ("Als Entwurf speichern") more

@@ -900,6 +900,7 @@ function bindDesigner() {
   $("#widget-action-trigger").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-type").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-target").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
+  $("#widget-action-flow-bidir").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#add-widget-action").addEventListener("click", addWidgetAction);
   $("#apply-image-button").addEventListener("click", applyImageButtonSettings);
   $("#runtime-binding-target").addEventListener("change", () => renderRuntimeBinding(state.selectedWidget));
@@ -3589,6 +3590,34 @@ function generatedActionCondition(action) {
   return { condition: expression === "returnx;" ? "checked" : "unchecked", action: branch };
 }
 
+// Recognises the specific nested if/show/hide/animimg.start structure
+// addWidgetAction() builds for type === "flow" (see there), purely from its
+// shape - no extra metadata is stored on the action itself, since it must
+// still export as plain ESPHome-native actions.
+function describeFlowAction(action) {
+  const entry = actionObjectEntry(action);
+  if (entry?.[0] !== "if") return null;
+  const outer = entry[1];
+  if (typeof outer?.condition?.lambda !== "string" || !outer.condition.lambda.includes("abs((int)x)")) return null;
+  const ids = new Set();
+  const collect = (branch) => {
+    if (!Array.isArray(branch)) return;
+    branch.forEach((item) => {
+      const e = actionObjectEntry(item);
+      if (!e) return;
+      if (["lvgl.widget.hide", "lvgl.widget.show", "lvgl.animimg.start"].includes(e[0])) ids.add(e[1]);
+      if (e[0] === "if") {
+        collect(e[1]?.then);
+        collect(e[1]?.else);
+      }
+    });
+  };
+  collect(outer.then);
+  collect(outer.else);
+  if (!ids.size) return null;
+  return { text: `${t("action.desc.flow")}: ${[...ids].join(" ⇄ ")}`, targetIds: [...ids], supported: true };
+}
+
 function describeWidgetAction(action) {
   const conditional = generatedActionCondition(action);
   if (conditional) {
@@ -3596,6 +3625,8 @@ function describeWidgetAction(action) {
     const inner = describeWidgetAction(conditional.action);
     return { ...inner, text: `${prefix}${inner.text}` };
   }
+  const flow = describeFlowAction(action);
+  if (flow) return flow;
   const entry = actionObjectEntry(action);
   if (!entry) return { text: t("action.desc.unsupported"), targetIds: [], supported: false };
   const [name, payload] = entry;
@@ -3607,10 +3638,17 @@ function describeWidgetAction(action) {
       supported: Boolean(targetIds.length),
     };
   }
+  if (["lvgl.animimg.start", "lvgl.animimg.stop"].includes(name)) {
+    return {
+      text: `${name.endsWith(".start") ? t("action.desc.animimgStart") : t("action.desc.animimgStop")}: ${targetIds.join(", ") || t("action.desc.noTarget")}`,
+      targetIds,
+      supported: Boolean(targetIds.length),
+    };
+  }
   if (name === "lvgl.page.show") {
     return { text: `${t("action.desc.openPage")}${targetIds.join(", ") || t("action.desc.noTarget")}`, targetIds: [], supported: Boolean(targetIds.length) };
   }
-  if (["lvgl.widget.update", "lvgl.label.update", "lvgl.button.update", "lvgl.image.update"].includes(name)
+  if (["lvgl.widget.update", "lvgl.label.update", "lvgl.button.update", "lvgl.image.update", "lvgl.animimg.update"].includes(name)
       && payload && typeof payload === "object" && !Array.isArray(payload)) {
     const fields = Object.keys(payload).filter((key) => key !== "id");
     return {
@@ -3622,9 +3660,21 @@ function describeWidgetAction(action) {
   return { text: t("action.desc.yamlOnly", { name }), targetIds, supported: false };
 }
 
+// "on_value" + a checked/unchecked condition only makes sense for a widget
+// whose value is fundamentally a boolean - a plain lambda `return x;`/
+// `return !x;` has nothing meaningful to compare against for e.g. a
+// slider's numeric value. A button only qualifies once "checkable" is on
+// (otherwise it never reports a checked state to begin with); switch and
+// checkbox are inherently boolean, no extra flag needed.
+function widgetSupportsValueCondition(widget) {
+  if (!widget) return false;
+  if (widget.widget_type === "switch" || widget.widget_type === "checkbox") return true;
+  return widget.widget_type === "button" && Boolean(widget.properties?.checkable);
+}
+
 function renderWidgetActions(widget) {
   const section = $("#widget-actions-section");
-  const visible = widget?.widget_type === "button";
+  const visible = Boolean(widget);
   section.classList.toggle("hidden", !visible);
   if (!visible) return;
 
@@ -3662,18 +3712,23 @@ function renderWidgetActions(widget) {
 }
 
 function renderWidgetActionBuilder(widget) {
-  if (!widget || widget.widget_type !== "button") return;
+  if (!widget) return;
   const trigger = $("#widget-action-trigger").value;
   const type = $("#widget-action-type").value;
+  const flow = type === "flow";
   const conditionField = $("#widget-action-condition-field");
-  conditionField.classList.toggle("hidden", trigger !== "on_value");
-  if (trigger !== "on_value") $("#widget-action-condition").value = "always";
+  const supportsCondition = trigger === "on_value" && !flow && widgetSupportsValueCondition(widget);
+  conditionField.classList.toggle("hidden", !supportsCondition);
+  if (!supportsCondition) $("#widget-action-condition").value = "always";
 
+  const animimgOnly = flow || type === "animimg_start" || type === "animimg_stop";
   const target = $("#widget-action-target");
   const previous = target.value;
   const choices = type === "page_show"
     ? (state.project.pages || []).map((page) => ({ value: page.id, label: `${page.id} · Seite` }))
-    : projectWidgetEntries().map((item) => ({ value: item.id, label: `${item.id} · ${item.widget_type}` }));
+    : projectWidgetEntries()
+      .filter((item) => !animimgOnly || item.widget_type === "animimg")
+      .map((item) => ({ value: item.id, label: `${item.id} · ${item.widget_type}` }));
   target.replaceChildren();
   choices.forEach((choice) => target.append(new Option(choice.label, choice.value)));
   if (choices.some((choice) => choice.value === previous)) target.value = previous;
@@ -3688,6 +3743,22 @@ function renderWidgetActionBuilder(widget) {
     "hidden", !update || targetWidget?.widget_type !== "image",
   );
   populateImageChoice($("#widget-action-image"), "");
+
+  $("#widget-action-flow-fields").classList.toggle("hidden", !flow);
+  if (flow) {
+    const bidir = $("#widget-action-flow-bidir").checked;
+    const reverseField = $("#widget-action-flow-reverse-field");
+    reverseField.classList.toggle("hidden", !bidir);
+    if (bidir) {
+      const reverse = $("#widget-action-flow-reverse");
+      const previousReverse = reverse.value;
+      const reverseChoices = projectWidgetEntries()
+        .filter((item) => item.widget_type === "animimg" && item.id !== target.value);
+      reverse.replaceChildren();
+      reverseChoices.forEach((item) => reverse.append(new Option(`${item.id} · ${item.widget_type}`, item.id)));
+      if (reverseChoices.some((item) => item.id === previousReverse)) reverse.value = previousReverse;
+    }
+  }
   $("#widget-action-error").classList.add("hidden");
 }
 
@@ -3699,7 +3770,7 @@ function normaliseActionColor(value) {
 
 function addWidgetAction() {
   const widget = state.selectedWidget;
-  if (!widget || widget.widget_type !== "button") return;
+  if (!widget) return;
   const trigger = $("#widget-action-trigger").value;
   const type = $("#widget-action-type").value;
   const targetId = $("#widget-action-target").value;
@@ -3712,7 +3783,8 @@ function addWidgetAction() {
     fail(type === "page_show" ? t("validation.action.noPage") : t("validation.action.noTargetWidget"));
     return;
   }
-  if (trigger === "on_value" && !widget.properties?.checkable) {
+  const condition = $("#widget-action-condition").value;
+  if (trigger === "on_value" && condition !== "always" && !widgetSupportsValueCondition(widget)) {
     fail(t("validation.action.needsCheckable"));
     return;
   }
@@ -3722,6 +3794,66 @@ function addWidgetAction() {
     action = { [`lvgl.widget.${type}`]: targetId };
   } else if (type === "page_show") {
     action = { "lvgl.page.show": targetId };
+  } else if (type === "animimg_start" || type === "animimg_stop") {
+    action = { [`lvgl.animimg.${type === "animimg_start" ? "start" : "stop"}`]: targetId };
+  } else if (type === "flow") {
+    if (trigger !== "on_value") {
+      fail(t("validation.action.flowNeedsValueTrigger"));
+      return;
+    }
+    const bidir = $("#widget-action-flow-bidir").checked;
+    const reverseId = bidir ? $("#widget-action-flow-reverse").value : "";
+    if (bidir && !reverseId) {
+      fail(t("validation.action.flowNeedsReverseTarget"));
+      return;
+    }
+    if (bidir && reverseId === targetId) {
+      fail(t("validation.action.flowReverseSameAsForward"));
+      return;
+    }
+    const off = Math.max(0, Number($("#widget-action-flow-off").value) || 0);
+    const fastThreshold = Number($("#widget-action-flow-fast").value) || 0;
+    const normalDuration = Math.max(10, Number($("#widget-action-flow-normal-duration").value) || 0);
+    const fastDuration = Math.max(10, Number($("#widget-action-flow-fast-duration").value) || 0);
+    if (fastThreshold <= off) {
+      fail(t("validation.action.flowInvalidThresholds"));
+      return;
+    }
+    const speedBranch = (id) => [
+      { "lvgl.animimg.start": id },
+      {
+        if: {
+          condition: { lambda: "return abs((int)x) >= " + fastThreshold + ";" },
+          then: [{ "lvgl.animimg.update": { id, duration: `${fastDuration}ms` } }],
+          else: [{ "lvgl.animimg.update": { id, duration: `${normalDuration}ms` } }],
+        },
+      },
+    ];
+    if (!bidir) {
+      action = {
+        if: {
+          condition: { lambda: "return abs((int)x) <= " + off + ";" },
+          then: [{ "lvgl.widget.hide": targetId }],
+          else: [{ "lvgl.widget.show": targetId }, ...speedBranch(targetId)],
+        },
+      };
+    } else {
+      action = {
+        if: {
+          condition: { lambda: "return abs((int)x) <= " + off + ";" },
+          then: [{ "lvgl.widget.hide": targetId }, { "lvgl.widget.hide": reverseId }],
+          else: [
+            {
+              if: {
+                condition: { lambda: "return x > 0;" },
+                then: [{ "lvgl.widget.hide": reverseId }, { "lvgl.widget.show": targetId }, ...speedBranch(targetId)],
+                else: [{ "lvgl.widget.hide": targetId }, { "lvgl.widget.show": reverseId }, ...speedBranch(reverseId)],
+              },
+            },
+          ],
+        },
+      };
+    }
   } else {
     const targetWidget = projectWidgetEntries().find((item) => item.id === targetId);
     const payload = { id: targetId };
@@ -3750,7 +3882,6 @@ function addWidgetAction() {
     action = { [actionName]: payload };
   }
 
-  const condition = $("#widget-action-condition").value;
   if (trigger === "on_value" && condition !== "always") {
     action = {
       if: {

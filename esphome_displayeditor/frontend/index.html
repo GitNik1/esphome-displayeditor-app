@@ -402,7 +402,7 @@
 
             <details id="widget-actions-section" class="hidden property-group">
               <summary data-i18n="actions.section">Aktionen</summary>
-              <p class="hint" data-i18n="actions.hint">Ändert andere Widgets beim Drücken, Loslassen oder Umschalten dieses Buttons.</p>
+              <p class="hint" data-i18n="actions.hint">Ändert andere Widgets beim Klicken, Drücken, Loslassen oder bei Wertänderung dieses Widgets.</p>
               <div id="widget-action-list" class="widget-action-list"></div>
               <div class="widget-action-builder">
                 <label><span data-i18n="actions.trigger">Auslöser</span>
@@ -410,7 +410,7 @@
                     <option value="on_click" data-i18n="actions.trigger.click">Klick</option>
                     <option value="on_press" data-i18n="actions.trigger.press">Drücken</option>
                     <option value="on_release" data-i18n="actions.trigger.release">Loslassen</option>
-                    <option value="on_value" data-i18n="actions.trigger.value">Schalterzustand geändert</option>
+                    <option value="on_value" data-i18n="actions.trigger.value">Wert geändert</option>
                   </select>
                 </label>
                 <label id="widget-action-condition-field" class="hidden"><span data-i18n="actions.condition">Bedingung</span>
@@ -426,11 +426,35 @@
                     <option value="show" data-i18n="actions.type.show">Widget anzeigen</option>
                     <option value="hide" data-i18n="actions.type.hide">Widget ausblenden</option>
                     <option value="page_show" data-i18n="actions.type.pageShow">Seite öffnen</option>
+                    <option value="animimg_start" data-i18n="actions.type.animimgStart">Animation starten</option>
+                    <option value="animimg_stop" data-i18n="actions.type.animimgStop">Animation stoppen</option>
+                    <option value="flow" data-i18n="actions.type.flow">Energiefluss (Glow-Line)</option>
                   </select>
                 </label>
                 <label><span data-i18n="actions.target">Ziel</span>
                   <select id="widget-action-target"></select>
                 </label>
+                <div id="widget-action-flow-fields" class="hidden">
+                  <label class="checkbox-field"><span data-i18n="actions.flow.bidir">Bidirektional</span>
+                    <input id="widget-action-flow-bidir" type="checkbox">
+                  </label>
+                  <label id="widget-action-flow-reverse-field" class="hidden"><span data-i18n="actions.flow.reverseTarget">Ziel-Widget (rückwärts)</span>
+                    <select id="widget-action-flow-reverse"></select>
+                  </label>
+                  <label><span data-i18n="actions.flow.offThreshold">Schwelle: Fluss aus</span>
+                    <input id="widget-action-flow-off" type="number" min="0" value="5">
+                  </label>
+                  <label><span data-i18n="actions.flow.fastThreshold">Schwelle: schnell</span>
+                    <input id="widget-action-flow-fast" type="number" min="0" value="500">
+                  </label>
+                  <label><span data-i18n="actions.flow.normalDuration">Dauer normal (ms)</span>
+                    <input id="widget-action-flow-normal-duration" type="number" min="10" value="800">
+                  </label>
+                  <label><span data-i18n="actions.flow.fastDuration">Dauer schnell (ms)</span>
+                    <input id="widget-action-flow-fast-duration" type="number" min="10" value="200">
+                  </label>
+                  <p class="hint" data-i18n="actions.flow.hint">Der Wert (x) aus „Wert geändert“ steuert Sichtbarkeit, Richtung und Tempo. Nur mit Auslöser „Wert geändert“ nutzbar.</p>
+                </div>
                 <div id="widget-action-update-fields">
                   <label id="widget-action-text-field"><span data-i18n="actions.text">Text</span>
                     <input id="widget-action-text" maxlength="256" data-i18n-attr="placeholder:actions.placeholder.unchanged" placeholder="unverändert">
