@@ -377,3 +377,59 @@ assert.equal(msgboxProject.msgboxes[0].hidden, true);
 const showButtonResult = applyViewerAction(msgboxProject, { "lvgl.widget.hide": "msgbox_close" }, {});
 assert.equal(showButtonResult.changed, true, "a msgbox button id must also be reachable, since it is a normal WidgetNode");
 assert.equal(msgboxProject.msgboxes[0].buttons[0].hidden, true);
+
+// The "Energiefluss" widget action (frontend/app.js addWidgetAction(), type
+// "flow") generates nested if: actions whose lambda conditions are
+// `return abs((int)x) <= N;`/`return x > 0;`/etc - not the plain
+// `return x;`/`return !x;` pair the viewer used to be the only recognised
+// shape, which made every flow action silently report
+// "not executed in the browser" no matter the slider value.
+const flowProject = {
+  widgets: [
+    { id: "flow_fwd", widget_type: "animimg", hidden: true, properties: { duration: "800ms", auto_start: false }, children: [] },
+    { id: "flow_rev", widget_type: "animimg", hidden: true, properties: { duration: "800ms", auto_start: false }, children: [] },
+  ],
+};
+const flowAction = (fwd, rev) => ({
+  if: {
+    condition: { lambda: "return abs((int)x) <= 5;" },
+    then: [{ "lvgl.widget.hide": fwd }, { "lvgl.widget.hide": rev }],
+    else: [{
+      if: {
+        condition: { lambda: "return x > 0;" },
+        then: [
+          { "lvgl.widget.hide": rev }, { "lvgl.widget.show": fwd }, { "lvgl.animimg.start": fwd },
+          { if: { condition: { lambda: "return abs((int)x) >= 500;" },
+            then: [{ "lvgl.animimg.update": { id: fwd, duration: "200ms" } }],
+            else: [{ "lvgl.animimg.update": { id: fwd, duration: "800ms" } }] } },
+        ],
+        else: [
+          { "lvgl.widget.hide": fwd }, { "lvgl.widget.show": rev }, { "lvgl.animimg.start": rev },
+          { if: { condition: { lambda: "return abs((int)x) >= 500;" },
+            then: [{ "lvgl.animimg.update": { id: rev, duration: "200ms" } }],
+            else: [{ "lvgl.animimg.update": { id: rev, duration: "800ms" } }] } },
+        ],
+      },
+    }],
+  },
+});
+
+const flowOff = applyViewerAction(flowProject, flowAction("flow_fwd", "flow_rev"), {}, { x: 2 });
+assert.equal(flowOff.handled, true);
+assert.equal(flowOff.warning, false, "the abs()/comparison lambdas must be recognised, not reported as unsupported");
+assert.equal(flowProject.widgets[0].hidden, true);
+assert.equal(flowProject.widgets[1].hidden, true);
+
+const flowForwardSlow = applyViewerAction(flowProject, flowAction("flow_fwd", "flow_rev"), {}, { x: 27 });
+assert.equal(flowForwardSlow.warning, false);
+assert.equal(flowProject.widgets[0].hidden, false, "positive x above the off-threshold must show the forward widget");
+assert.equal(flowProject.widgets[1].hidden, true);
+assert.equal(flowProject.widgets[0].properties.auto_start, true, "lvgl.animimg.start must be recognised (real ESPHome action name, not lvgl.animation.start)");
+assert.equal(flowProject.widgets[0].properties.duration, "800ms");
+
+const flowReverseFast = applyViewerAction(flowProject, flowAction("flow_fwd", "flow_rev"), {}, { x: -800 });
+assert.equal(flowReverseFast.warning, false);
+assert.equal(flowProject.widgets[0].hidden, true, "negative x must hide the forward widget and show the reverse one");
+assert.equal(flowProject.widgets[1].hidden, false);
+assert.equal(flowProject.widgets[1].properties.auto_start, true);
+assert.equal(flowProject.widgets[1].properties.duration, "200ms", "abs(x) above the fast-threshold must pick the fast duration");

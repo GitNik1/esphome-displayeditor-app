@@ -377,6 +377,25 @@ class FlowParams:
     color565: int = 0xFFFF
     glow_radius: float = 0.0
     glow_intensity: float = 0.9
+    #: Whether this line's flow can travel in either direction on the real
+    #: device - baking then produces a *second* animated frame set (mirrored
+    #: travel direction) alongside the normal one, and the widget "Aktionen"
+    #: flow action offers switching between them from a single numeric
+    #: trigger. Purely a flag at design time; it does not itself reverse
+    #: anything (`reversed` above still controls the live preview's single
+    #: direction) - see `bake_frame_count`/`bake_crop` below for why this
+    #: lives on FlowParams rather than a one-off bake dialog.
+    bidirectional: bool = False
+    #: Baking (turning this line into PNG frames + an image/animimg widget
+    #: pair) used to be a manual, one-off dialog with its own inputs that
+    #: were lost once the dialog closed. Moving them here makes them a
+    #: persistent part of the line, so baking can run automatically before
+    #: every YAML export/draft-save without asking the user to re-enter
+    #: them, and so a later re-export with different values re-bakes with
+    #: those values instead of the ones from whenever it first happened to
+    #: be baked.
+    bake_frame_count: int = 6
+    bake_crop: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -385,6 +404,9 @@ class FlowParams:
             "use_line_color": self.use_line_color,
             "color565": int(self.color565) & 0xFFFF,
             "glow_radius": self.glow_radius, "glow_intensity": self.glow_intensity,
+            "bidirectional": self.bidirectional,
+            "bake_frame_count": self.bake_frame_count,
+            "bake_crop": self.bake_crop,
         }
 
     @staticmethod
@@ -397,6 +419,9 @@ class FlowParams:
         f.size = float(d.get("size", 14.0))
         f.width = float(d.get("width", 0.0))
         f.use_line_color = bool(d.get("use_line_color", False))
+        f.bidirectional = bool(d.get("bidirectional", False))
+        f.bake_frame_count = max(1, min(60, int(d.get("bake_frame_count", 6))))
+        f.bake_crop = bool(d.get("bake_crop", True))
         f.color565 = int(d.get("color565", 0xFFFF)) & 0xFFFF
         f.glow_radius = float(d.get("glow_radius", 0.0))
         f.glow_intensity = float(d.get("glow_intensity", 0.9))

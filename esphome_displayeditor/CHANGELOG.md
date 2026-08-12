@@ -2,6 +2,77 @@
 
 ## Unreleased
 
+- Added: a "Hintergrundfarbe" color field (hex text input + native color
+  picker, matching the widget Aktionen color fields) in the page/layer
+  settings panel ("Seite/Layer bearbeiten"), so setting a page's background
+  color no longer requires hand-typing `{"bg_color": "..."}` into the raw
+  "Stil (JSON)" textarea. Applying writes into the same `style_tree.bg_color`
+  the JSON field already reads/writes - no new data, just a friendlier way
+  to edit it. Left empty, it leaves the JSON's current value untouched
+  rather than clearing it, so the two fields can't fight over an unrelated
+  edit. Only shown for pages/layers (`entry.kind !== "root"`) - the
+  Stammfläche/root surface has no `style_tree` in the data model at all
+  (`surfaceEntries()` uses `state.project` itself as the "root" surface,
+  which the backend `Project` dataclass has no such field for), so a root
+  background color isn't wired up by this change. Verified live: setting
+  003366 and exporting produced `bg_color: 0x003366` on the page's
+  `pages:` entry in the generated YAML.
+
+- Fixed: the "Energiefluss" widget action never ran in the read-only Viewer
+  ("Diese Bedingung wird im Browser nicht ausgeführt."). Two separate causes
+  in `frontend/viewer/viewer.js`: (1) `viewerConditionValue()` only ever
+  recognised the exact `return x;`/`return !x;` lambda shapes (from the
+  checked/unchecked condition), not the `return abs((int)x) <= N;` /
+  `return x > 0;` comparisons the flow action generates - extended it with
+  two regexes covering both, so any of `<`/`<=`/`>`/`>=` against a literal
+  threshold now evaluates directly against the trigger's numeric value; (2)
+  `applyViewerAction()` only recognised `lvgl.animation.start`/`.stop`, an
+  action name that doesn't actually exist in ESPHome - the flow action (and
+  the "Animation starten/stoppen" catalog entries) use the real
+  `lvgl.animimg.start`/`.stop`/`.update` names, which are now recognised
+  too (`lvgl.animimg.update`'s `duration`/`repeat_count` fields added to the
+  simulated update-key allowlist). Also: `openLiveViewer()` didn't run
+  `bakeAllStrokes()` before opening, so a flow action's target ids (derived
+  from the glow-line stroke, see the deferred-baking change above) never
+  existed as simulatable widgets until after a YAML export - the Viewer now
+  bakes first, same as export/download. Added `tests/frontend/
+  viewer_runtime.test.mjs` coverage for the exact nested if:/animimg
+  structure `addWidgetAction()` generates (off-threshold, direction sign,
+  speed threshold). Verified live: a bidirectional flow action now shows/
+  hides/starts the correct animimg widget and picks the right duration for
+  every input range, with no more "not found"/"not executed" warnings in
+  the Viewer's event log.
+
+- Changed: glow-line baking (turning a drawn line into PNG frames + an
+  image/animimg widget pair) is no longer a manual, one-off "Bild
+  generieren" click. It now runs automatically right before every YAML
+  export/draft-save/ZIP-download (`bakeAllStrokes()` in `frontend/app.js`),
+  and reuses deterministic, stroke-derived ids so re-baking the same
+  project updates the existing widgets/images in place instead of
+  duplicating them - fixing the exact issue a manual re-bake for a
+  bidirectional flow used to have (a second, redundant static background
+  line). `GlowStroke.flow` (SHARED `backend/designer_core/model.py`, synced
+  to the desktop app) gained three persistent fields: `bidirectional`,
+  `bake_frame_count`, `bake_crop` - previously frame count/crop were
+  transient inputs on the removed bake dialog and were lost once it closed.
+  A new "Bidirektional" checkbox sits next to "Richtung umkehren" in the
+  line's Fluss section; when set, baking additionally renders a second,
+  mirrored frame set (`<name>_flow_rev_NN.png` / widget id `<name>_anim_rev`)
+  by flipping `flow.reversed` only for that render pass. The widget
+  "Aktionen" flow action (added earlier this cycle) now targets a glow-line
+  stroke directly instead of two manually-picked widget ids - the dropdown
+  lists strokes with an active flow, shows whether the selected one is
+  bidirectional, and `addWidgetAction()` derives the eventual widget ids
+  from the stroke deterministically, so the action can be wired up before
+  the line has ever been baked. `upsertBakedWidget()` refuses to silently
+  overwrite a same-id widget of a different `widget_type` (a real collision,
+  e.g. with a hand-placed widget) or a `reserved_ids` entry, surfacing a
+  clear error instead. Verified live: creating a bidirectional line + a
+  slider + a flow action and exporting produces the expected `image:`/
+  `animimg:` blocks and nested `if:` action with deterministic ids;
+  exporting the same project again produces byte-identical output (no
+  duplication).
+
 - Added: three new entries in the widget "Aktionen" catalog for animimg
   (glow-line) widgets: "Animation starten"/"Animation stoppen"
   (`lvgl.animimg.start`/`.stop`), and a new "Energiefluss (Glow-Line)"

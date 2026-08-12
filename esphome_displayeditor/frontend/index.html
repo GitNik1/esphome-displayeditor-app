@@ -239,6 +239,13 @@
                 <label><span data-i18n="surface.layoutJson">Layout (JSON)</span>
                   <textarea id="surface-layout-json" rows="3" spellcheck="false">{}</textarea>
                 </label>
+                <label><span data-i18n="surface.bgColor">Hintergrundfarbe</span>
+                  <div class="color-input-row">
+                    <input id="surface-bg-color" list="project-color-options" maxlength="32" data-i18n-attr="placeholder:surface.bgColor.placeholder" placeholder="z. B. 00A000 oder color_id">
+                    <input type="color" class="linked-color-picker" data-color-target="surface-bg-color" value="#000000" data-i18n-attr="aria-label:surface.bgColorAria" aria-label="Hintergrundfarbe auswählen">
+                  </div>
+                </label>
+                <p class="hint" data-i18n="surface.bgColorHint">Leer lassen, um den Wert im Stil-JSON unverändert zu lassen. Wird beim Übernehmen als bg_color ins Stil-JSON geschrieben.</p>
                 <label><span data-i18n="surface.styleJson">Stil (JSON)</span>
                   <textarea id="surface-style-json" rows="3" spellcheck="false">{}</textarea>
                 </label>
@@ -431,16 +438,14 @@
                     <option value="flow" data-i18n="actions.type.flow">Energiefluss (Glow-Line)</option>
                   </select>
                 </label>
-                <label><span data-i18n="actions.target">Ziel</span>
+                <label id="widget-action-target-field"><span data-i18n="actions.target">Ziel</span>
                   <select id="widget-action-target"></select>
                 </label>
                 <div id="widget-action-flow-fields" class="hidden">
-                  <label class="checkbox-field"><span data-i18n="actions.flow.bidir">Bidirektional</span>
-                    <input id="widget-action-flow-bidir" type="checkbox">
+                  <label><span data-i18n="actions.flow.stroke">Glow-Linie</span>
+                    <select id="widget-action-flow-stroke"></select>
                   </label>
-                  <label id="widget-action-flow-reverse-field" class="hidden"><span data-i18n="actions.flow.reverseTarget">Ziel-Widget (rückwärts)</span>
-                    <select id="widget-action-flow-reverse"></select>
-                  </label>
+                  <p id="widget-action-flow-stroke-hint" class="hint"></p>
                   <label><span data-i18n="actions.flow.offThreshold">Schwelle: Fluss aus</span>
                     <input id="widget-action-flow-off" type="number" min="0" value="5">
                   </label>
@@ -590,13 +595,13 @@
               <label><span data-i18n="glow.glowRadius">Glüh-Radius</span> <input id="flow-glow-radius" type="number" min="0" step="0.5"></label>
             </div>
             <label class="checkbox-field"><span data-i18n="glow.useLineColor">Farbe der Linie übernehmen</span> <input id="flow-use-line-color" type="checkbox"></label>
-
-            <div class="property-section" data-i18n="glow.imageSequence">Bildsequenz</div>
-            <label><span data-i18n="glow.frameCount">Anzahl Bilder</span> <input id="bake-frame-count" type="number" min="1" max="60" value="6"></label>
-            <label class="checkbox-field"><span data-i18n="glow.crop">Zuschneiden</span> <input id="bake-crop" type="checkbox" checked></label>
-            <div class="actions">
-              <button id="bake-line" type="button" class="button primary" data-i18n="glow.bake">Als Bilder + Widgets anlegen</button>
+            <label class="checkbox-field"><span data-i18n="glow.bidirectional">Bidirektional (Hin- und Rückrichtung)</span> <input id="flow-bidirectional" type="checkbox"></label>
+            <p class="hint" data-i18n="glow.bidirectionalHint">Erzeugt beim YAML-Export einen zweiten, gespiegelten Bildsatz und macht die Aktion „Energiefluss“ für diese Linie umschaltbar.</p>
+            <div class="field-row">
+              <label><span data-i18n="glow.frameCount">Anzahl Bilder</span> <input id="bake-frame-count" type="number" min="1" max="60" value="6"></label>
+              <label class="checkbox-field"><span data-i18n="glow.crop">Zuschneiden</span> <input id="bake-crop" type="checkbox" checked></label>
             </div>
+            <p class="hint" data-i18n="glow.bakeHint">Bilder werden erst beim YAML-Erzeugen/Download generiert - hier nur die Einstellungen dafür.</p>
 
             <div class="actions"><button id="delete-line" type="button" class="button danger" data-i18n="glow.delete">Linie löschen</button></div>
           </form>
