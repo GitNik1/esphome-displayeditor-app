@@ -29,6 +29,7 @@ def test_glow_stroke_field_names_match_the_js_renderer_contract() -> None:
     assert set(d["flow"]) == {
         "enabled", "mode", "reversed", "spacing", "size", "width",
         "use_line_color", "color565", "glow_radius", "glow_intensity",
+        "bidirectional", "bake_frame_count", "bake_crop",
     }
 
 
@@ -42,6 +43,9 @@ def test_glow_stroke_round_trips() -> None:
     stroke.flow.enabled = True
     stroke.flow.mode = "dashes"
     stroke.flow.spacing = 30
+    stroke.flow.bidirectional = True
+    stroke.flow.bake_frame_count = 10
+    stroke.flow.bake_crop = False
 
     restored = GlowStroke.from_dict(stroke.to_dict())
 
@@ -52,6 +56,9 @@ def test_glow_stroke_round_trips() -> None:
     assert restored.glow.radius == 20
     assert restored.flow.mode == "dashes"
     assert restored.flow.spacing == 30
+    assert restored.flow.bidirectional is True
+    assert restored.flow.bake_frame_count == 10
+    assert restored.flow.bake_crop is False
 
 
 def test_color565_is_masked_to_16_bits() -> None:
@@ -82,3 +89,4 @@ def test_glow_and_flow_defaults_match_glowline_editor() -> None:
 
     assert (glow.enabled, glow.radius, glow.intensity, glow.color565) == (True, 14.0, 0.85, 0x07FF)
     assert (flow.enabled, flow.mode, flow.spacing, flow.size) == (False, "arrows", 40.0, 14.0)
+    assert (flow.bidirectional, flow.bake_frame_count, flow.bake_crop) == (False, 6, True)

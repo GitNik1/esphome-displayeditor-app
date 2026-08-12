@@ -239,6 +239,13 @@
                 <label><span data-i18n="surface.layoutJson">Layout (JSON)</span>
                   <textarea id="surface-layout-json" rows="3" spellcheck="false">{}</textarea>
                 </label>
+                <label><span data-i18n="surface.bgColor">Hintergrundfarbe</span>
+                  <div class="color-input-row">
+                    <input id="surface-bg-color" list="project-color-options" maxlength="32" data-i18n-attr="placeholder:surface.bgColor.placeholder" placeholder="z. B. 00A000 oder color_id">
+                    <input type="color" class="linked-color-picker" data-color-target="surface-bg-color" value="#000000" data-i18n-attr="aria-label:surface.bgColorAria" aria-label="Hintergrundfarbe auswählen">
+                  </div>
+                </label>
+                <p class="hint" data-i18n="surface.bgColorHint">Leer lassen, um den Wert im Stil-JSON unverändert zu lassen. Wird beim Übernehmen als bg_color ins Stil-JSON geschrieben.</p>
                 <label><span data-i18n="surface.styleJson">Stil (JSON)</span>
                   <textarea id="surface-style-json" rows="3" spellcheck="false">{}</textarea>
                 </label>
@@ -402,7 +409,7 @@
 
             <details id="widget-actions-section" class="hidden property-group">
               <summary data-i18n="actions.section">Aktionen</summary>
-              <p class="hint" data-i18n="actions.hint">Ändert andere Widgets beim Drücken, Loslassen oder Umschalten dieses Buttons.</p>
+              <p class="hint" data-i18n="actions.hint">Ändert andere Widgets beim Klicken, Drücken, Loslassen oder bei Wertänderung dieses Widgets.</p>
               <div id="widget-action-list" class="widget-action-list"></div>
               <div class="widget-action-builder">
                 <label><span data-i18n="actions.trigger">Auslöser</span>
@@ -410,7 +417,7 @@
                     <option value="on_click" data-i18n="actions.trigger.click">Klick</option>
                     <option value="on_press" data-i18n="actions.trigger.press">Drücken</option>
                     <option value="on_release" data-i18n="actions.trigger.release">Loslassen</option>
-                    <option value="on_value" data-i18n="actions.trigger.value">Schalterzustand geändert</option>
+                    <option value="on_value" data-i18n="actions.trigger.value">Wert geändert</option>
                   </select>
                 </label>
                 <label id="widget-action-condition-field" class="hidden"><span data-i18n="actions.condition">Bedingung</span>
@@ -426,11 +433,33 @@
                     <option value="show" data-i18n="actions.type.show">Widget anzeigen</option>
                     <option value="hide" data-i18n="actions.type.hide">Widget ausblenden</option>
                     <option value="page_show" data-i18n="actions.type.pageShow">Seite öffnen</option>
+                    <option value="animimg_start" data-i18n="actions.type.animimgStart">Animation starten</option>
+                    <option value="animimg_stop" data-i18n="actions.type.animimgStop">Animation stoppen</option>
+                    <option value="flow" data-i18n="actions.type.flow">Energiefluss (Glow-Line)</option>
                   </select>
                 </label>
-                <label><span data-i18n="actions.target">Ziel</span>
+                <label id="widget-action-target-field"><span data-i18n="actions.target">Ziel</span>
                   <select id="widget-action-target"></select>
                 </label>
+                <div id="widget-action-flow-fields" class="hidden">
+                  <label><span data-i18n="actions.flow.stroke">Glow-Linie</span>
+                    <select id="widget-action-flow-stroke"></select>
+                  </label>
+                  <p id="widget-action-flow-stroke-hint" class="hint"></p>
+                  <label><span data-i18n="actions.flow.offThreshold">Schwelle: Fluss aus</span>
+                    <input id="widget-action-flow-off" type="number" min="0" value="5">
+                  </label>
+                  <label><span data-i18n="actions.flow.fastThreshold">Schwelle: schnell</span>
+                    <input id="widget-action-flow-fast" type="number" min="0" value="500">
+                  </label>
+                  <label><span data-i18n="actions.flow.normalDuration">Dauer normal (ms)</span>
+                    <input id="widget-action-flow-normal-duration" type="number" min="10" value="800">
+                  </label>
+                  <label><span data-i18n="actions.flow.fastDuration">Dauer schnell (ms)</span>
+                    <input id="widget-action-flow-fast-duration" type="number" min="10" value="200">
+                  </label>
+                  <p class="hint" data-i18n="actions.flow.hint">Der Wert (x) aus „Wert geändert“ steuert Sichtbarkeit, Richtung und Tempo. Nur mit Auslöser „Wert geändert“ nutzbar.</p>
+                </div>
                 <div id="widget-action-update-fields">
                   <label id="widget-action-text-field"><span data-i18n="actions.text">Text</span>
                     <input id="widget-action-text" maxlength="256" data-i18n-attr="placeholder:actions.placeholder.unchanged" placeholder="unverändert">
@@ -566,13 +595,13 @@
               <label><span data-i18n="glow.glowRadius">Glüh-Radius</span> <input id="flow-glow-radius" type="number" min="0" step="0.5"></label>
             </div>
             <label class="checkbox-field"><span data-i18n="glow.useLineColor">Farbe der Linie übernehmen</span> <input id="flow-use-line-color" type="checkbox"></label>
-
-            <div class="property-section" data-i18n="glow.imageSequence">Bildsequenz</div>
-            <label><span data-i18n="glow.frameCount">Anzahl Bilder</span> <input id="bake-frame-count" type="number" min="1" max="60" value="6"></label>
-            <label class="checkbox-field"><span data-i18n="glow.crop">Zuschneiden</span> <input id="bake-crop" type="checkbox" checked></label>
-            <div class="actions">
-              <button id="bake-line" type="button" class="button primary" data-i18n="glow.bake">Als Bilder + Widgets anlegen</button>
+            <label class="checkbox-field"><span data-i18n="glow.bidirectional">Bidirektional (Hin- und Rückrichtung)</span> <input id="flow-bidirectional" type="checkbox"></label>
+            <p class="hint" data-i18n="glow.bidirectionalHint">Erzeugt beim YAML-Export einen zweiten, gespiegelten Bildsatz und macht die Aktion „Energiefluss“ für diese Linie umschaltbar.</p>
+            <div class="field-row">
+              <label><span data-i18n="glow.frameCount">Anzahl Bilder</span> <input id="bake-frame-count" type="number" min="1" max="60" value="6"></label>
+              <label class="checkbox-field"><span data-i18n="glow.crop">Zuschneiden</span> <input id="bake-crop" type="checkbox" checked></label>
             </div>
+            <p class="hint" data-i18n="glow.bakeHint">Bilder werden erst beim YAML-Erzeugen/Download generiert - hier nur die Einstellungen dafür.</p>
 
             <div class="actions"><button id="delete-line" type="button" class="button danger" data-i18n="glow.delete">Linie löschen</button></div>
           </form>

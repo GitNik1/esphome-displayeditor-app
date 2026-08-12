@@ -270,6 +270,7 @@ function freshGlowStroke(id) {
     flow: {
       enabled: false, mode: "arrows", reversed: false, spacing: 40, size: 14,
       width: 0, use_line_color: false, color565: 0xffff, glow_radius: 0, glow_intensity: 0.9,
+      bidirectional: false, bake_frame_count: 6, bake_crop: true,
     },
     parent_id: "",
     hidden: false,
@@ -702,6 +703,12 @@ function clearViewerBindings() {
 }
 
 async function openLiveViewer() {
+  // Glow-line strokes only become real image/animimg widgets through
+  // bakeAllStrokes() (see there) - without this, a stroke's flow action
+  // would reference widget ids the viewer (which only simulates
+  // project.widgets, not glow_strokes) can never find, reporting them as
+  // "not found" instead of actually showing the flow.
+  await bakeAllStrokes();
   let snapshot = state.viewerRuntimeSources;
   if (state.viewerBindings.length) snapshot = await loadViewerRuntimeSources();
   viewer.open(state.project, {
@@ -900,6 +907,7 @@ function bindDesigner() {
   $("#widget-action-trigger").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-type").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-target").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
+  $("#widget-action-flow-stroke").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#add-widget-action").addEventListener("click", addWidgetAction);
   $("#apply-image-button").addEventListener("click", applyImageButtonSettings);
   $("#runtime-binding-target").addEventListener("change", () => renderRuntimeBinding(state.selectedWidget));
@@ -2114,6 +2122,8 @@ function applySurfaceSettings() {
     const layout = parseSurfaceObject($("#surface-layout-json"), t("validation.surface.fieldLayout"));
     const styleTree = parseSurfaceObject($("#surface-style-json"), t("validation.surface.fieldStyle"));
     const extra = parseSurfaceObject($("#surface-extra-json"), t("validation.surface.fieldExtra"));
+    const bgColor = $("#surface-bg-color").value.trim();
+    if (bgColor) styleTree.bg_color = normaliseActionColor(bgColor);
     let nextId = "";
     if (entry.kind === "page") {
       nextId = $("#surface-id").value.trim();
@@ -2219,8 +2229,10 @@ function renderSurfaceToolbar() {
   $("#surface-settings").classList.toggle("hidden", entry.kind === "root");
   $("#surface-id").value = entry.kind === "page" ? entry.surface.id : "";
   $("#surface-layout-json").value = JSON.stringify(entry.surface.layout || {}, null, 2);
+  $("#surface-bg-color").value = entry.surface.style_tree?.bg_color || "";
   $("#surface-style-json").value = JSON.stringify(entry.surface.style_tree || {}, null, 2);
   $("#surface-extra-json").value = JSON.stringify(entry.surface.extra || {}, null, 2);
+  syncLinkedColorPickers();
   $("#surface-error").classList.add("hidden");
   $("#line-tool-group").classList.toggle("hidden", state.canvasMode !== "lines" || entry.kind !== "root");
 }
@@ -2383,7 +2395,6 @@ function bindGlowTools() {
   $("#line-delete").addEventListener("click", deleteSelectedStroke);
   $("#delete-line").addEventListener("click", deleteSelectedStroke);
   $("#line-preview").addEventListener("click", toggleFlowPreview);
-  $("#bake-line").addEventListener("click", bakeSelectedStroke);
 
   const canvas = $("#canvas");
   canvas.addEventListener("pointerdown", onGlowPointerDown);
@@ -2787,6 +2798,9 @@ function renderLineProperties() {
   $("#flow-width").value = stroke.flow.width;
   $("#flow-glow-radius").value = stroke.flow.glow_radius;
   $("#flow-use-line-color").checked = stroke.flow.use_line_color;
+  $("#flow-bidirectional").checked = stroke.flow.bidirectional;
+  $("#bake-frame-count").value = stroke.flow.bake_frame_count;
+  $("#bake-crop").checked = stroke.flow.bake_crop;
 
   drawColorWheel();
   renderColorWheelReadout();
@@ -2842,6 +2856,9 @@ function bindLinePropertyInputs() {
   onText("#flow-width", (s, el) => { s.flow.width = Math.max(0, num(el.value)); });
   onText("#flow-glow-radius", (s, el) => { s.flow.glow_radius = Math.max(0, num(el.value)); });
   onCheck("#flow-use-line-color", (s, el) => { s.flow.use_line_color = el.checked; });
+  onCheck("#flow-bidirectional", (s, el) => { s.flow.bidirectional = el.checked; });
+  onText("#bake-frame-count", (s, el) => { s.flow.bake_frame_count = clamp(num(el.value, 6), 1, 60); });
+  onCheck("#bake-crop", (s, el) => { s.flow.bake_crop = el.checked; });
 }
 
 function colorWheelTargetObject(stroke) {
@@ -2994,7 +3011,7 @@ async function uploadBakedFrame(name, blob) {
   return result.path;
 }
 
-// Only ever called for a baked glow-line frame (see bakeSelectedStroke()):
+// Only ever called for a baked glow-line frame (see bakeStroke()):
 // renderStrokeFrame() draws onto a blank <canvas>, which starts fully
 // transparent, and only ever paints the stroke itself on top of that - so
 // the frame's background pixels are genuinely alpha=0, not opaque black.
@@ -3016,18 +3033,6 @@ function ensureImageEntry(id, filePath) {
     entry.img_type = "RGB565";
   }
   return entry;
-}
-
-function uniqueWidgetId(base) {
-  // reserved_ids are ids used by hardware entities elsewhere in an imported
-  // source config (binary_sensor:, button:, ...) - never modeled here, but
-  // sharing ESPHome's one flat id() namespace with everything this designer
-  // does create, so a freshly auto-generated widget id must avoid them too.
-  const ids = new Set([...allWidgets().map((widget) => widget.id), ...(state.project.reserved_ids || [])]);
-  let n = 1;
-  let candidate = `${base}_${n}`;
-  while (ids.has(candidate)) { n += 1; candidate = `${base}_${n}`; }
-  return candidate;
 }
 
 function strokeParentContainer(stroke) {
@@ -3056,77 +3061,136 @@ function newAnimimgWidget(id, rect, frameIds, durationMs) {
   return widget;
 }
 
-async function bakeSelectedStroke() {
-  const stroke = state.selectedStroke;
-  if (!stroke) return;
-  if ((stroke.points || []).length < 2) {
-    toast(t("toast.glow.noGeometry"), true);
-    return;
-  }
-  if (!state.capabilities["designer.asset_write"]) {
-    toast(t("toast.glow.noWritePermission"), true);
-    return;
-  }
+function strokeBaseName(stroke) {
+  return slugifyStrokeName(stroke.name, stroke.id);
+}
 
-  const frameCount = clamp(Number($("#bake-frame-count").value) || 6, 1, 60);
-  const crop = $("#bake-crop").checked;
+// Baking used to be a one-off manual click that created a fresh widget every
+// time (unique-suffixed id, so re-baking piled up copies). Now it runs
+// automatically before every export, so it has to be idempotent: the same
+// stroke always maps to the same deterministic widget id, and re-baking
+// updates that widget in place instead of creating a new one.
+function upsertBakedWidget(widgetId, freshWidget, target) {
+  if ((state.project.reserved_ids || []).includes(widgetId)) {
+    throw new Error(t("toast.glow.idReserved", { id: widgetId }));
+  }
+  const existing = projectWidgetEntries().find((item) => item.id === widgetId);
+  if (existing) {
+    // A same-id, same-type widget here can only be this stroke's own
+    // previous bake output (the id is derived from the stroke, not typed by
+    // hand) - safe to overwrite in place. A different widget_type at that id
+    // means something else (a hand-placed widget, or another stroke with a
+    // colliding slugified name) already owns it - name the line differently
+    // instead of silently clobbering unrelated content.
+    if (existing.widget_type !== freshWidget.widget_type) {
+      throw new Error(t("toast.glow.idCollision", { id: widgetId }));
+    }
+    Object.assign(existing, freshWidget, { id: widgetId, children: existing.children });
+    return existing;
+  }
+  if (target) target.children.push(freshWidget);
+  else state.project.widgets.push(freshWidget);
+  return freshWidget;
+}
+
+function removeBakedWidget(widgetId, target) {
+  const list = target ? target.children : state.project.widgets;
+  const index = (list || []).findIndex((item) => item.id === widgetId);
+  if (index >= 0) list.splice(index, 1);
+}
+
+/**
+ * Bakes one glow-line stroke into its static-line image widget plus, if the
+ * stroke's flow is enabled, one animated widget (and, if the stroke is
+ * marked bidirectional, a second one with a mirrored travel direction -
+ * `flow.reversed` flipped just for that render pass, not persisted). All ids
+ * are derived deterministically from the stroke, so calling this again for
+ * the same stroke updates the existing widgets/images rather than adding
+ * duplicates.
+ */
+async function bakeStroke(stroke) {
+  if ((stroke.points || []).length < 2) return null;
+  const frameCount = clamp(Number(stroke.flow.bake_frame_count) || 6, 1, 60);
+  const crop = stroke.flow.bake_crop;
   const doc = { strokes: [stroke] };
   const staticRect = crop ? strokeRenderBounds(stroke)
     : { left: 0, top: 0, right: state.project.canvas.width, bottom: state.project.canvas.height };
-  const baseName = slugifyStrokeName(stroke.name, stroke.id);
-  const button = $("#bake-line");
-  button.disabled = true;
+  const baseName = strokeBaseName(stroke);
+  const target = strokeParentContainer(stroke);
+  // The rect (and thus a fresh widget's x/y) is in absolute canvas
+  // coordinates; a child's x/y is relative to its parent's content box.
+  const origin = target ? contentOrigin(state.project, target) : { x: 0, y: 0 };
+  const place = (widget) => {
+    widget.x = Math.round(widget.x - origin.x);
+    widget.y = Math.round(widget.y - origin.y);
+    return widget;
+  };
 
-  try {
-    toast(t("toast.glow.generatingImages"));
-    const staticBlob = await renderStrokeFrame(doc, staticRect,
-      { withLines: true, withFlow: false, phase: 0 });
-    const staticPath = await uploadBakedFrame(`${baseName}_static.png`, staticBlob);
-    const staticImageId = `img_${baseName}_static`;
-    ensureImageEntry(staticImageId, staticPath);
+  const staticBlob = await renderStrokeFrame(doc, staticRect, { withLines: true, withFlow: false, phase: 0 });
+  const staticPath = await uploadBakedFrame(`${baseName}_static.png`, staticBlob);
+  const staticImageId = `img_${baseName}_static`;
+  ensureImageEntry(staticImageId, staticPath);
+  upsertBakedWidget(baseName, place(newImageWidget(baseName, staticRect, staticImageId)), target);
 
-    let animimgWidget = null;
-    if (stroke.flow.enabled) {
-      const animRect = crop ? (flowBoundsDocument(doc) || staticRect) : staticRect;
-      const frameIds = [];
-      for (let i = 0; i < frameCount; i += 1) {
-        const blob = await renderStrokeFrame(doc, animRect,
-          { withLines: false, withFlow: true, phase: i / frameCount });
-        const suffix = String(i).padStart(2, "0");
-        const path = await uploadBakedFrame(`${baseName}_flow_${suffix}.png`, blob);
-        const frameId = `img_${baseName}_flow_${suffix}`;
-        ensureImageEntry(frameId, path);
-        frameIds.push(frameId);
-      }
-      animimgWidget = newAnimimgWidget(
-        uniqueWidgetId(`${baseName}_anim`), animRect, frameIds, frameCount * 300);
+  const bakeDirection = async (suffix, mirror) => {
+    const directional = mirror ? { ...stroke, flow: { ...stroke.flow, reversed: !stroke.flow.reversed } } : stroke;
+    const directionalDoc = { strokes: [directional] };
+    const animRect = crop ? (flowBoundsDocument(directionalDoc) || staticRect) : staticRect;
+    const frameIds = [];
+    for (let i = 0; i < frameCount; i += 1) {
+      const blob = await renderStrokeFrame(directionalDoc, animRect,
+        { withLines: false, withFlow: true, phase: i / frameCount });
+      const frameSuffix = String(i).padStart(2, "0");
+      const path = await uploadBakedFrame(`${baseName}_flow${suffix}_${frameSuffix}.png`, blob);
+      const frameId = `img_${baseName}_flow${suffix}_${frameSuffix}`;
+      ensureImageEntry(frameId, path);
+      frameIds.push(frameId);
     }
+    const widgetId = `${baseName}_anim${suffix}`;
+    upsertBakedWidget(widgetId, place(newAnimimgWidget(widgetId, animRect, frameIds, frameCount * 300)), target);
+    return widgetId;
+  };
 
-    pushUndo();
-    const imageWidget = newImageWidget(uniqueWidgetId(baseName), staticRect, staticImageId);
-    const target = strokeParentContainer(stroke);
-    if (target) {
-      // The rect (and thus the widget's x/y from newImageWidget) is in
-      // absolute canvas coordinates; a child's x/y is relative to its
-      // parent's content box, so it needs converting before nesting it.
-      const origin = contentOrigin(state.project, target);
-      [imageWidget, animimgWidget].filter(Boolean).forEach((w) => {
-        w.x = Math.round(w.x - origin.x);
-        w.y = Math.round(w.y - origin.y);
-      });
-      target.children.push(imageWidget);
-      if (animimgWidget) target.children.push(animimgWidget);
+  let forwardId = null;
+  let reverseId = null;
+  if (stroke.flow.enabled) {
+    forwardId = await bakeDirection("", false);
+    if (stroke.flow.bidirectional) {
+      reverseId = await bakeDirection("_rev", true);
     } else {
-      state.project.widgets.push(imageWidget);
-      if (animimgWidget) state.project.widgets.push(animimgWidget);
+      removeBakedWidget(`${baseName}_anim_rev`, target);
+    }
+  } else {
+    // Flow got switched off since the last bake - drop the animated widgets
+    // that bake left behind, the static line widget stays.
+    removeBakedWidget(`${baseName}_anim`, target);
+    removeBakedWidget(`${baseName}_anim_rev`, target);
+  }
+  return { baseName, forwardId, reverseId };
+}
+
+/** Runs before every YAML export/download - bakes (or re-bakes) every glow
+ * line with enough geometry, so the exported project never references
+ * stale or missing baked images/widgets. */
+async function bakeAllStrokes() {
+  const strokes = (state.project.glow_strokes || []).filter((stroke) => (stroke.points || []).length >= 2);
+  if (!strokes.length) return true;
+  if (!state.capabilities["designer.asset_write"]) {
+    toast(t("toast.glow.noWritePermission"), true);
+    return false;
+  }
+  toast(t("toast.glow.generatingImages"));
+  pushUndo();
+  try {
+    for (const stroke of strokes) {
+      await bakeStroke(stroke);
     }
     markProjectDirty();
     renderDesigner();
-    toast(t("toast.glow.baked", { widgets: 1 + (animimgWidget ? 1 : 0), images: 1 + frameCount }));
+    return true;
   } catch (error) {
     toast(t("toast.glow.bakeFailed", { error: error.message }), true);
-  } finally {
-    button.disabled = false;
+    return false;
   }
 }
 
@@ -3589,6 +3653,41 @@ function generatedActionCondition(action) {
   return { condition: expression === "returnx;" ? "checked" : "unchecked", action: branch };
 }
 
+// Recognises the specific nested if/show/hide/animimg.start structure
+// addWidgetAction() builds for type === "flow" (see there), purely from its
+// shape - no extra metadata is stored on the action itself, since it must
+// still export as plain ESPHome-native actions.
+function describeFlowAction(action) {
+  const entry = actionObjectEntry(action);
+  if (entry?.[0] !== "if") return null;
+  const outer = entry[1];
+  if (typeof outer?.condition?.lambda !== "string" || !outer.condition.lambda.includes("abs((int)x)")) return null;
+  const ids = new Set();
+  const collect = (branch) => {
+    if (!Array.isArray(branch)) return;
+    branch.forEach((item) => {
+      const e = actionObjectEntry(item);
+      if (!e) return;
+      if (["lvgl.widget.hide", "lvgl.widget.show", "lvgl.animimg.start"].includes(e[0])) ids.add(e[1]);
+      if (e[0] === "if") {
+        collect(e[1]?.then);
+        collect(e[1]?.else);
+      }
+    });
+  };
+  collect(outer.then);
+  collect(outer.else);
+  if (!ids.size) return null;
+  // The target ids are derived from a glow-line stroke and only materialise
+  // as real widgets once bakeAllStrokes() runs (before the next export) - so
+  // unlike every other action type, "not found among the project's widgets
+  // yet" is expected here, not a broken reference.
+  return {
+    text: `${t("action.desc.flow")}: ${[...ids].join(" ⇄ ")}`, targetIds: [...ids],
+    supported: true, skipMissingCheck: true,
+  };
+}
+
 function describeWidgetAction(action) {
   const conditional = generatedActionCondition(action);
   if (conditional) {
@@ -3596,6 +3695,8 @@ function describeWidgetAction(action) {
     const inner = describeWidgetAction(conditional.action);
     return { ...inner, text: `${prefix}${inner.text}` };
   }
+  const flow = describeFlowAction(action);
+  if (flow) return flow;
   const entry = actionObjectEntry(action);
   if (!entry) return { text: t("action.desc.unsupported"), targetIds: [], supported: false };
   const [name, payload] = entry;
@@ -3607,10 +3708,17 @@ function describeWidgetAction(action) {
       supported: Boolean(targetIds.length),
     };
   }
+  if (["lvgl.animimg.start", "lvgl.animimg.stop"].includes(name)) {
+    return {
+      text: `${name.endsWith(".start") ? t("action.desc.animimgStart") : t("action.desc.animimgStop")}: ${targetIds.join(", ") || t("action.desc.noTarget")}`,
+      targetIds,
+      supported: Boolean(targetIds.length),
+    };
+  }
   if (name === "lvgl.page.show") {
     return { text: `${t("action.desc.openPage")}${targetIds.join(", ") || t("action.desc.noTarget")}`, targetIds: [], supported: Boolean(targetIds.length) };
   }
-  if (["lvgl.widget.update", "lvgl.label.update", "lvgl.button.update", "lvgl.image.update"].includes(name)
+  if (["lvgl.widget.update", "lvgl.label.update", "lvgl.button.update", "lvgl.image.update", "lvgl.animimg.update"].includes(name)
       && payload && typeof payload === "object" && !Array.isArray(payload)) {
     const fields = Object.keys(payload).filter((key) => key !== "id");
     return {
@@ -3622,9 +3730,21 @@ function describeWidgetAction(action) {
   return { text: t("action.desc.yamlOnly", { name }), targetIds, supported: false };
 }
 
+// "on_value" + a checked/unchecked condition only makes sense for a widget
+// whose value is fundamentally a boolean - a plain lambda `return x;`/
+// `return !x;` has nothing meaningful to compare against for e.g. a
+// slider's numeric value. A button only qualifies once "checkable" is on
+// (otherwise it never reports a checked state to begin with); switch and
+// checkbox are inherently boolean, no extra flag needed.
+function widgetSupportsValueCondition(widget) {
+  if (!widget) return false;
+  if (widget.widget_type === "switch" || widget.widget_type === "checkbox") return true;
+  return widget.widget_type === "button" && Boolean(widget.properties?.checkable);
+}
+
 function renderWidgetActions(widget) {
   const section = $("#widget-actions-section");
-  const visible = widget?.widget_type === "button";
+  const visible = Boolean(widget);
   section.classList.toggle("hidden", !visible);
   if (!visible) return;
 
@@ -3637,7 +3757,8 @@ function renderWidgetActions(widget) {
     actions.forEach((action, index) => {
       count += 1;
       const description = describeWidgetAction(action);
-      const missing = description.targetIds.filter((id) => !projectWidgetEntries().some((item) => item.id === id));
+      const missing = description.skipMissingCheck ? [] : description.targetIds.filter(
+        (id) => !projectWidgetEntries().some((item) => item.id === id));
       const row = document.createElement("div");
       row.className = `widget-action-item${!description.supported || missing.length ? " invalid" : ""}`;
       const label = document.createElement("span");
@@ -3661,19 +3782,33 @@ function renderWidgetActions(widget) {
   renderWidgetActionBuilder(widget);
 }
 
+// Glow lines with flow enabled that are eligible as a flow action's target.
+// The stroke itself is the source of truth for direction/speed baking, not
+// the (possibly not-yet-baked) animimg widget it produces - see bakeStroke().
+function flowEligibleStrokes() {
+  return (state.project.glow_strokes || []).filter((stroke) => stroke.flow.enabled);
+}
+
 function renderWidgetActionBuilder(widget) {
-  if (!widget || widget.widget_type !== "button") return;
+  if (!widget) return;
   const trigger = $("#widget-action-trigger").value;
   const type = $("#widget-action-type").value;
+  const flow = type === "flow";
   const conditionField = $("#widget-action-condition-field");
-  conditionField.classList.toggle("hidden", trigger !== "on_value");
-  if (trigger !== "on_value") $("#widget-action-condition").value = "always";
+  const supportsCondition = trigger === "on_value" && !flow && widgetSupportsValueCondition(widget);
+  conditionField.classList.toggle("hidden", !supportsCondition);
+  if (!supportsCondition) $("#widget-action-condition").value = "always";
 
+  $("#widget-action-target-field").classList.toggle("hidden", flow);
+  const animimgOnly = type === "animimg_start" || type === "animimg_stop";
   const target = $("#widget-action-target");
   const previous = target.value;
-  const choices = type === "page_show"
-    ? (state.project.pages || []).map((page) => ({ value: page.id, label: `${page.id} · Seite` }))
-    : projectWidgetEntries().map((item) => ({ value: item.id, label: `${item.id} · ${item.widget_type}` }));
+  const choices = flow ? []
+    : type === "page_show"
+      ? (state.project.pages || []).map((page) => ({ value: page.id, label: `${page.id} · Seite` }))
+      : projectWidgetEntries()
+        .filter((item) => !animimgOnly || item.widget_type === "animimg")
+        .map((item) => ({ value: item.id, label: `${item.id} · ${item.widget_type}` }));
   target.replaceChildren();
   choices.forEach((choice) => target.append(new Option(choice.label, choice.value)));
   if (choices.some((choice) => choice.value === previous)) target.value = previous;
@@ -3688,6 +3823,24 @@ function renderWidgetActionBuilder(widget) {
     "hidden", !update || targetWidget?.widget_type !== "image",
   );
   populateImageChoice($("#widget-action-image"), "");
+
+  $("#widget-action-flow-fields").classList.toggle("hidden", !flow);
+  if (flow) {
+    const strokeSelect = $("#widget-action-flow-stroke");
+    const previousStroke = strokeSelect.value;
+    const strokes = flowEligibleStrokes();
+    strokeSelect.replaceChildren();
+    strokes.forEach((stroke) => strokeSelect.append(
+      new Option(`${stroke.name || stroke.id} · ${stroke.id}`, stroke.id),
+    ));
+    if (strokes.some((stroke) => stroke.id === previousStroke)) strokeSelect.value = previousStroke;
+    const selected = strokes.find((stroke) => stroke.id === strokeSelect.value);
+    $("#widget-action-flow-stroke-hint").textContent = !strokes.length
+      ? t("actions.flow.noStrokes")
+      : selected?.flow.bidirectional
+        ? t("actions.flow.strokeIsBidirectional")
+        : t("actions.flow.strokeIsSingleDirection");
+  }
   $("#widget-action-error").classList.add("hidden");
 }
 
@@ -3699,7 +3852,7 @@ function normaliseActionColor(value) {
 
 function addWidgetAction() {
   const widget = state.selectedWidget;
-  if (!widget || widget.widget_type !== "button") return;
+  if (!widget) return;
   const trigger = $("#widget-action-trigger").value;
   const type = $("#widget-action-type").value;
   const targetId = $("#widget-action-target").value;
@@ -3708,11 +3861,12 @@ function addWidgetAction() {
     error.textContent = message;
     error.classList.remove("hidden");
   };
-  if (!targetId) {
+  if (type !== "flow" && !targetId) {
     fail(type === "page_show" ? t("validation.action.noPage") : t("validation.action.noTargetWidget"));
     return;
   }
-  if (trigger === "on_value" && !widget.properties?.checkable) {
+  const condition = $("#widget-action-condition").value;
+  if (trigger === "on_value" && condition !== "always" && !widgetSupportsValueCondition(widget)) {
     fail(t("validation.action.needsCheckable"));
     return;
   }
@@ -3722,6 +3876,69 @@ function addWidgetAction() {
     action = { [`lvgl.widget.${type}`]: targetId };
   } else if (type === "page_show") {
     action = { "lvgl.page.show": targetId };
+  } else if (type === "animimg_start" || type === "animimg_stop") {
+    action = { [`lvgl.animimg.${type === "animimg_start" ? "start" : "stop"}`]: targetId };
+  } else if (type === "flow") {
+    if (trigger !== "on_value") {
+      fail(t("validation.action.flowNeedsValueTrigger"));
+      return;
+    }
+    const strokeId = $("#widget-action-flow-stroke").value;
+    const stroke = flowEligibleStrokes().find((item) => item.id === strokeId);
+    if (!stroke) {
+      fail(t("validation.action.flowNeedsStroke"));
+      return;
+    }
+    // Deterministic ids bakeStroke() will (re-)create these widgets under -
+    // see strokeBaseName()/bakeDirection() there. The widgets need not exist
+    // yet: baking runs automatically before every export.
+    const baseName = strokeBaseName(stroke);
+    const flowTargetId = `${baseName}_anim`;
+    const bidir = stroke.flow.bidirectional;
+    const reverseId = bidir ? `${baseName}_anim_rev` : "";
+    const off = Math.max(0, Number($("#widget-action-flow-off").value) || 0);
+    const fastThreshold = Number($("#widget-action-flow-fast").value) || 0;
+    const normalDuration = Math.max(10, Number($("#widget-action-flow-normal-duration").value) || 0);
+    const fastDuration = Math.max(10, Number($("#widget-action-flow-fast-duration").value) || 0);
+    if (fastThreshold <= off) {
+      fail(t("validation.action.flowInvalidThresholds"));
+      return;
+    }
+    const speedBranch = (id) => [
+      { "lvgl.animimg.start": id },
+      {
+        if: {
+          condition: { lambda: "return abs((int)x) >= " + fastThreshold + ";" },
+          then: [{ "lvgl.animimg.update": { id, duration: `${fastDuration}ms` } }],
+          else: [{ "lvgl.animimg.update": { id, duration: `${normalDuration}ms` } }],
+        },
+      },
+    ];
+    if (!bidir) {
+      action = {
+        if: {
+          condition: { lambda: "return abs((int)x) <= " + off + ";" },
+          then: [{ "lvgl.widget.hide": flowTargetId }],
+          else: [{ "lvgl.widget.show": flowTargetId }, ...speedBranch(flowTargetId)],
+        },
+      };
+    } else {
+      action = {
+        if: {
+          condition: { lambda: "return abs((int)x) <= " + off + ";" },
+          then: [{ "lvgl.widget.hide": flowTargetId }, { "lvgl.widget.hide": reverseId }],
+          else: [
+            {
+              if: {
+                condition: { lambda: "return x > 0;" },
+                then: [{ "lvgl.widget.hide": reverseId }, { "lvgl.widget.show": flowTargetId }, ...speedBranch(flowTargetId)],
+                else: [{ "lvgl.widget.hide": flowTargetId }, { "lvgl.widget.show": reverseId }, ...speedBranch(reverseId)],
+              },
+            },
+          ],
+        },
+      };
+    }
   } else {
     const targetWidget = projectWidgetEntries().find((item) => item.id === targetId);
     const payload = { id: targetId };
@@ -3750,7 +3967,6 @@ function addWidgetAction() {
     action = { [actionName]: payload };
   }
 
-  const condition = $("#widget-action-condition").value;
   if (trigger === "on_value" && condition !== "always") {
     action = {
       if: {
@@ -6613,6 +6829,10 @@ function treeActionGlyph(iconHtml, title, onClick) {
 
 async function exportDesignerYaml() {
   $("#designer-status").textContent = t("designer.status.checking");
+  if (!(await bakeAllStrokes())) {
+    renderDesignerStatus();
+    return;
+  }
   try {
     const result = await api("designer/projects/export-yaml", {
       method: "POST", body: JSON.stringify({ project: state.project }),
@@ -6691,6 +6911,10 @@ async function saveMergeDraft() {
 async function downloadProjectZip() {
   const button = $("#download-zip");
   button.disabled = true;
+  if (!(await bakeAllStrokes())) {
+    button.disabled = false;
+    return;
+  }
   try {
     const appBase = window.location.pathname.endsWith("/")
       ? window.location.pathname

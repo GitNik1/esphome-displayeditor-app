@@ -553,10 +553,33 @@ function safeStringList(value) {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
+//: Beyond the plain `return x;`/`return !x;` checked/unchecked pair, the
+//: "Energiefluss" widget action (frontend/app.js's addWidgetAction(), type
+//: "flow") generates two more lambda shapes for its threshold checks:
+//: `return abs((int)x) <= N;` and `return x > 0;` (with any of
+//: <, <=, >, >=). Both are simple enough to evaluate directly instead of
+//: falling back to "not executed in the browser".
+const ABS_COMPARE_RE = /^returnabs\(\(int\)x\)([<>]=?)(-?\d+(?:\.\d+)?);$/;
+const VALUE_COMPARE_RE = /^returnx([<>]=?)(-?\d+(?:\.\d+)?);$/;
+
+function compare(op, value, threshold) {
+  if (op === "<=") return value <= threshold;
+  if (op === "<") return value < threshold;
+  if (op === ">=") return value >= threshold;
+  return value > threshold;
+}
+
 function viewerConditionValue(condition, context) {
   const expression = String(condition?.lambda || "").replace(/\s+/g, "").toLowerCase();
   if (expression === "returnx;") return { supported: true, value: Boolean(context.x) };
   if (expression === "return!x;") return { supported: true, value: !Boolean(context.x) };
+  const x = Number(context.x);
+  if (Number.isFinite(x)) {
+    const abs = expression.match(ABS_COMPARE_RE);
+    if (abs) return { supported: true, value: compare(abs[1], Math.abs(x), Number(abs[2])) };
+    const plain = expression.match(VALUE_COMPARE_RE);
+    if (plain) return { supported: true, value: compare(plain[1], x, Number(plain[2])) };
+  }
   return { supported: false, value: false };
 }
 
@@ -731,7 +754,7 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
     };
   }
 
-  if (["lvgl.animation.start", "lvgl.animation.stop"].includes(name)) {
+  if (["lvgl.animation.start", "lvgl.animation.stop", "lvgl.animimg.start", "lvgl.animimg.stop"].includes(name)) {
     const running = name.endsWith(".start");
     const ids = actionIds(payload);
     let changed = false;
@@ -774,6 +797,7 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
     "lvgl.spinner.update": new Set(["arc_color", "arc_width", "arc_length", "arc_rounded", "spin_time"]),
     "lvgl.qrcode.update": new Set(["text", "size", "dark_color", "light_color", ...RUNTIME_STYLE_KEYS]),
     "lvgl.spinbox.update": new Set(["value"]),
+    "lvgl.animimg.update": new Set(["duration", "repeat_count", ...RUNTIME_STYLE_KEYS]),
   };
   const updateWidgetTypes = {
     "lvgl.label.update": "label",
@@ -791,6 +815,7 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
     "lvgl.spinner.update": "spinner",
     "lvgl.qrcode.update": "qrcode",
     "lvgl.spinbox.update": "spinbox",
+    "lvgl.animimg.update": "animimg",
   };
   const numericUpdateKeys = new Set([
     "value", "start_value", "min_value", "max_value", "start_angle", "end_angle",
