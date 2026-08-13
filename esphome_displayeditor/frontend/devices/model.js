@@ -1,7 +1,20 @@
+// @ts-check
+
+/** @typedef {{type?: unknown, key?: unknown, object_id?: unknown,
+ * entity_id?: string, received_at?: unknown, [key: string]: any}} DeviceState */
+/** @typedef {{id: string, status?: unknown, last_seen?: unknown,
+ * states?: DeviceState[], [key: string]: any}} RuntimeDevice */
+/** @typedef {{devices?: RuntimeDevice[]}} RuntimeSnapshot */
+/** @typedef {{type?: string, device_id?: string, status?: unknown,
+ * state?: DeviceState}} RuntimeEvent */
+
+/** @param {Record<string, unknown>[]} rows @param {string[]} preferredColumns */
 export function deviceTableColumns(rows, preferredColumns) {
   return preferredColumns.filter((column) => rows.some((row) => row[column] !== undefined));
 }
 
+/** @param {{received_at?: unknown, level?: unknown, message?: unknown}[]} logs
+ * @param {string} [emptyText] */
 export function formatDeviceLogs(logs, emptyText = "") {
   if (!logs.length) return emptyText;
   return logs
@@ -9,10 +22,12 @@ export function formatDeviceLogs(logs, emptyText = "") {
     .join("\n");
 }
 
+/** @param {DeviceState} state */
 export function deviceStateKey(state) {
   return `${state.type}:${state.key ?? state.object_id ?? "unknown"}`;
 }
 
+/** @param {DeviceState[]} states @param {DeviceState} nextState */
 export function mergeDeviceState(states, nextState) {
   const index = states.findIndex((item) => deviceStateKey(item) === deviceStateKey(nextState));
   if (index >= 0) states[index] = nextState;
@@ -20,6 +35,7 @@ export function mergeDeviceState(states, nextState) {
   return states;
 }
 
+/** @param {RuntimeSnapshot} snapshot @param {RuntimeEvent} event */
 export function applyRuntimeEvent(snapshot, event) {
   const devices = snapshot.devices || (snapshot.devices = []);
   if (event.type === "device_removed") {

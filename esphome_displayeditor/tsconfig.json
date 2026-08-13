@@ -10,6 +10,5 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["frontend/**/*.js"],
-  "exclude": ["frontend/app.js", "frontend/viewer/viewer.js", "frontend/i18n.js"]
+  "include": ["frontend/**/*.js"]
 }

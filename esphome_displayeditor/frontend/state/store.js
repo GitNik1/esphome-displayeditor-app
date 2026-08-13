@@ -1,4 +1,16 @@
+// @ts-check
+
 import { freshProject } from "../project/model.js";
+
+/**
+ * @template T
+ * @typedef {{
+ *   state: T,
+ *   subscribe: <S>(listener: (value: S, previous: S, state: T) => void,
+ *     selector: (state: T) => S) => () => boolean,
+ *   update: (mutator: (state: T) => void) => T,
+ * }} Store
+ */
 
 export function createInitialState() {
   return {
@@ -56,15 +68,24 @@ export function createInitialState() {
   };
 }
 
-export function createStore(initialState = createInitialState()) {
+/**
+ * @template T
+ * @param {T} initialState
+ * @returns {Store<T>}
+ */
+export function createStore(initialState = /** @type {T} */ (createInitialState())) {
+  /** @type {Set<{listener: Function, selector: Function, value: unknown}>} */
   const listeners = new Set();
   return {
     state: initialState,
-    subscribe(listener, selector = (state) => state) {
+    /** @template S @param {(value: S, previous: S, state: T) => void} listener
+     * @param {(state: T) => S} selector */
+    subscribe(listener, selector) {
       const subscription = { listener, selector, value: selector(initialState) };
       listeners.add(subscription);
       return () => listeners.delete(subscription);
     },
+    /** @param {(state: T) => void} mutator */
     update(mutator) {
       mutator(initialState);
       listeners.forEach((subscription) => {

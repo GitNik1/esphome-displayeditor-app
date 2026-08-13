@@ -1,7 +1,21 @@
+// @ts-check
+
 import { normalizeProjectSurfaces } from "./model.js";
 
+/** @typedef {{widgets: any[], style_tree?: Record<string, any>,
+ * layout?: Record<string, any>, [key: string]: any}} Surface */
+/** @typedef {Surface & {canvas: {width: number, height: number}, pages: (Surface & {id: string, skip?: boolean})[],
+ * bottom_layer?: Surface | null, top_layer?: Surface | null,
+ * extra_lvgl?: Record<string, any>}} SurfaceProject */
+/** @typedef {{key: string, kind: string, label: string, surface: Surface,
+ * index?: number}} SurfaceEntry */
+/** @typedef {(key: string, params?: Record<string, unknown>) => string} Translate */
+
+/** @param {SurfaceProject} project @param {Translate} translate
+ * @returns {SurfaceEntry[]} */
 export function surfaceEntries(project, translate) {
   normalizeProjectSurfaces(project);
+  /** @type {SurfaceEntry[]} */
   const entries = [];
   if (!project.pages.length || project.widgets.length) {
     entries.push({ key: "root", kind: "root", label: translate("surface.root"), surface: project });
@@ -23,6 +37,8 @@ export function surfaceEntries(project, translate) {
   return entries;
 }
 
+/** @param {SurfaceProject} project @param {string} activeKey
+ * @param {Translate} translate */
 export function resolveActiveSurface(project, activeKey, translate) {
   const entries = surfaceEntries(project, translate);
   const key = entries.some((entry) => entry.key === activeKey)
@@ -35,16 +51,16 @@ export function resolveActiveSurface(project, activeKey, translate) {
   };
 }
 
+/** @param {SurfaceProject} project @param {SurfaceEntry | {kind: string, surface?: Surface}} entry */
 export function surfaceLayoutProject(project, entry) {
   if (entry.kind === "root") return project;
   return {
     ...project,
-    widgets: entry.surface.widgets,
+    widgets: entry.surface?.widgets || [],
     extra_lvgl: {
       ...(project.extra_lvgl || {}),
-      ...(entry.surface.style_tree || {}),
-      layout: entry.surface.layout || {},
+      ...(entry.surface?.style_tree || {}),
+      layout: entry.surface?.layout || {},
     },
   };
 }
-

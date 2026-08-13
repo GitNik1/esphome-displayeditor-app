@@ -1,6 +1,8 @@
+// @ts-check
+
 import { computeLayout, contentOrigin, fontFamilyId, resolvedFontFamily } from "./layout.js";
 import { createApiClient, encodedName } from "./api/client.js";
-import { uploadImageAsset } from "./api/assets.js";
+import { blobToBase64, uploadImageAsset } from "./api/assets.js";
 import {
   actionIdsForEditor,
   actionObjectEntry,
@@ -72,9 +74,11 @@ import {
 } from "./runtime/bindings.js";
 import { createStore } from "./state/store.js";
 import { createActions } from "./state/actions.js";
+import { selectCapability, selectDesignerStatus, selectSelectedDevice } from "./state/selectors.js";
 import { createProjectsController } from "./controllers/projects-controller.js";
 import { createDevicesController } from "./controllers/devices-controller.js";
 import { createBuilderController } from "./controllers/builder-controller.js";
+import { createJsonSocket } from "./services/websocket.js";
 import {
   applyRuntimeEvent,
   deviceTableColumns,
@@ -88,14 +92,24 @@ import {
   replaceBuilderJobs,
   sortedBuilderJobs,
 } from "./builder/model.js";
-import { pointFromClient, snapAngle, widgetBoxStyle } from "./canvas/geometry.js";
+import { pointFromClient, snapAngle } from "./canvas/geometry.js";
+import { applyWidgetLayout, configureCanvas, createCanvasLayers } from "./canvas/view.js";
+import { dragPosition, resizeDimensions, translatePoints } from "./canvas/interactions.js";
 import {
   LIST_KINDS,
+  parseListValue,
   propertyInputValue,
   propertyTarget as resolvePropertyTarget,
   propertyValueClears,
 } from "./properties/model.js";
-import { applyStaticTranslations, getLanguage, setLanguage, t } from "./i18n.js";
+import { createBasicPropertyControl } from "./properties/view.js";
+import {
+  cursorPosition,
+  editorIsDirty,
+  findMatch,
+  lineNumbers,
+} from "./configurations/editor-model.js";
+import { applyStaticTranslations, getLanguage, setLanguage, t } from "./i18n/runtime.js";
 import {
   ViewerController,
   describeViewerArc,
@@ -110,7 +124,9 @@ import {
   viewerTextAlign,
 } from "./viewer/viewer.js";
 
+/** Dynamic DOM boundary for the legacy HTML shell. @param {string} selector @returns {any} */
 const $ = (selector) => document.querySelector(selector);
+/** @param {string} selector @returns {any[]} */
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 // Mirrors backend/designer_core/model.py's STATES_KEY - both sides need
@@ -121,24 +137,22 @@ const STATES_KEY = "states";
 // descendant boxes (children, layout-dependent siblings) without recreating
 // any node - recreating the dragged/resized node mid-gesture would drop its
 // pointer capture.
+/** @type {Map<any, HTMLElement>} */
 const canvasNodeByWidget = new Map();
 
 function syncCanvasLayout() {
-  const boxes = computeLayout(activeSurfaceProject());
-  boxes.forEach((box, widget) => {
-    const node = canvasNodeByWidget.get(widget);
-    if (!node) return;
-    Object.assign(node.style, widgetBoxStyle(box));
-  });
+  applyWidgetLayout(computeLayout(activeSurfaceProject()), canvasNodeByWidget);
 }
 
 const store = createStore();
+/** The store accepts imported ESPHome extension fields beyond the core schema. @type {any} */
 const state = store.state;
 const actions = createActions(store);
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
 
+/** @type {any} */
 let viewer = null;
 
 function ensureProjectSurfaces() {
@@ -171,14 +185,14 @@ function allProjectWidgets() {
   return collectProjectWidgets(state.project);
 }
 
-function uniqueProjectWidgetId(base) {
+function uniqueProjectWidgetId(/** @type {any} */ base) {
   // reserved_ids are ids used by hardware entities elsewhere in an imported
   // source config (binary_sensor:, button:, ...) - never modeled here, but
   // sharing ESPHome's one flat id() namespace with everything created here.
   return nextProjectWidgetId(state.project, base);
 }
 
-function selectSurface(key) {
+function selectSurface(/** @type {any} */ key) {
   if (!surfaceEntries().some((entry) => entry.key === key)) return;
   stopFlowPreview();
   state.activeSurface = key;
@@ -193,11 +207,23 @@ const api = createApiClient();
 const projectsController = createProjectsController(api);
 const devicesController = createDevicesController(api);
 const builderController = createBuilderController(api);
+/** @type {any} */
+let deviceEventsClient = null;
+/** @type {any} */
+let builderEventsClient = null;
+/** @type {any} */
+let viewerRuntimeClient = null;
 
+/** @type {ReturnType<typeof setTimeout> | undefined} */
 let toastTimer;
+/** @param {unknown} error */
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+/** @param {unknown} message @param {boolean} [error] */
 function toast(message, error = false) {
   const node = $("#toast");
-  node.textContent = message;
+  node.textContent = String(message);
   node.className = error ? "show error" : "show";
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { node.className = ""; }, 3500);
@@ -251,7 +277,7 @@ async function initialize() {
       await loadBuilderJobs();
       connectBuilderEvents();
     }
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     $("#profile").textContent = t("app.tagline.unreachable");
     toast(error.message, true);
   }
@@ -270,7 +296,7 @@ function bindDevices() {
   $("#refresh-devices").addEventListener("click", loadDevices);
   $("#add-device").addEventListener("click", () => openDeviceDialog());
   $("#edit-device").addEventListener("click", () => {
-    const device = state.devices.find((item) => item.id === state.selectedDevice);
+    const device = state.devices.find((/** @type {any} */ item) => item.id === state.selectedDevice);
     if (device) openDeviceDialog(device);
   });
   $("#remove-device").addEventListener("click", removeSelectedDevice);
@@ -288,6 +314,7 @@ function bindDevices() {
   });
 }
 
+/** @type {Record<string, string>} */
 const DEVICE_STATUS = {
   configured: t("devices.status.configured"),
   connecting: t("devices.status.connecting"),
@@ -300,8 +327,8 @@ const DEVICE_STATUS = {
 
 async function loadDevices() {
   const list = $("#device-list");
-  const canRead = Boolean(state.capabilities["device.info"]);
-  const canManage = Boolean(state.capabilities["device.manage"]);
+  const canRead = selectCapability("device.info")(state);
+  const canManage = selectCapability("device.manage")(state);
   $("#add-device").classList.toggle("hidden", !canManage);
   if (!canRead) {
     list.className = "device-list empty";
@@ -310,12 +337,12 @@ async function loadDevices() {
   }
   try {
     state.devices = await devicesController.list();
-    if (state.selectedDevice && !state.devices.some((item) => item.id === state.selectedDevice)) {
+    if (state.selectedDevice && !state.devices.some((/** @type {any} */ item) => item.id === state.selectedDevice)) {
       state.selectedDevice = null;
     }
     renderDeviceList();
     if (state.selectedDevice) await loadDeviceDetails(state.selectedDevice);
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     list.className = "device-list empty";
     list.textContent = error.message;
   }
@@ -331,7 +358,7 @@ function renderDeviceList() {
     resetDeviceDetails();
     return;
   }
-  state.devices.forEach((device) => {
+  state.devices.forEach((/** @type {any} */ device) => {
     const button = document.createElement("button");
     button.className = "device-item";
     button.classList.toggle("active", device.id === state.selectedDevice);
@@ -365,8 +392,10 @@ function resetDeviceDetails() {
   state.deviceStates = [];
 }
 
-async function loadDeviceDetails(deviceId) {
-  const device = state.devices.find((item) => item.id === deviceId);
+async function loadDeviceDetails(/** @type {any} */ deviceId) {
+  const device = state.selectedDevice === deviceId
+    ? selectSelectedDevice(state)
+    : state.devices.find((/** @type {any} */ item) => item.id === deviceId);
   if (!device) return;
   const canManage = Boolean(state.capabilities["device.manage"]);
   $("#device-title").textContent = device.name;
@@ -384,12 +413,12 @@ async function loadDeviceDetails(deviceId) {
     state.deviceStates = states;
     renderDeviceTable($("#device-states"), state.deviceStates, ["type", "key", "available", "state"]);
     $("#device-logs pre").textContent = formatDeviceLogs(logs);
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(error.message, true);
   }
 }
 
-function renderDeviceTable(container, rows, preferredColumns) {
+function renderDeviceTable(/** @type {any} */ container, /** @type {any} */ rows, /** @type {any} */ preferredColumns) {
   container.replaceChildren();
   if (!rows.length) {
     container.append(Object.assign(document.createElement("div"), { className: "empty", textContent: t("devices.noDataYet") }));
@@ -407,7 +436,7 @@ function renderDeviceTable(container, rows, preferredColumns) {
   });
   head.append(headRow);
   const body = document.createElement("tbody");
-  rows.forEach((row) => {
+  rows.forEach((/** @type {any} */ row) => {
     const line = document.createElement("tr");
     columns.forEach((column) => {
       const cell = document.createElement("td");
@@ -421,11 +450,11 @@ function renderDeviceTable(container, rows, preferredColumns) {
   container.append(table);
 }
 
-function formatDeviceLogs(logs) {
+function formatDeviceLogs(/** @type {any} */ logs) {
   return formatLogs(logs, t("devices.noLogsYet"));
 }
 
-function openDeviceDialog(device = null) {
+function openDeviceDialog(/** @type {any} */ device = null) {
   state.editingDevice = device?.id || null;
   $("#device-dialog-title").textContent = device ? t("dialog.device.editTitle") : t("dialog.device.addTitle");
   $("#device-id").value = device?.id || "";
@@ -439,7 +468,7 @@ function openDeviceDialog(device = null) {
   $("#device-dialog").showModal();
 }
 
-async function saveDevice(event) {
+async function saveDevice(/** @type {any} */ event) {
   event.preventDefault();
   const editing = state.editingDevice;
   const body = {
@@ -456,7 +485,7 @@ async function saveDevice(event) {
     $("#device-dialog").close();
     await loadDevices();
     toast(editing ? t("toast.device.updated") : t("toast.device.added"));
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(error.message, true);
   }
 }
@@ -467,29 +496,28 @@ async function reconnectSelectedDevice() {
     await devicesController.reconnect(state.selectedDevice);
     toast(t("toast.device.reconnectStarted"));
     await loadDevices();
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
 }
 
 async function removeSelectedDevice() {
-  const device = state.devices.find((item) => item.id === state.selectedDevice);
+  const device = state.devices.find((/** @type {any} */ item) => item.id === state.selectedDevice);
   if (!device || !confirm(t("confirm.device.remove", { name: device.name }))) return;
   try {
     await devicesController.remove(device.id);
     state.selectedDevice = null;
     await loadDevices();
     toast(t("toast.device.removed"));
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
 }
 
 function connectDeviceEvents() {
-  if (!state.capabilities["device.states"] || state.deviceSocket) return;
-  const appBase = window.location.pathname.endsWith("/") ? window.location.pathname : `${window.location.pathname}/`;
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(`${protocol}//${window.location.host}${appBase}api/v1/devices/events`);
-  state.deviceSocket = socket;
-  socket.addEventListener("message", async (message) => {
-    let event;
-    try { event = JSON.parse(message.data); } catch { return; }
+  if (!state.capabilities["device.states"] || deviceEventsClient?.socket) return;
+  deviceEventsClient ||= createJsonSocket({
+    path: "devices/events",
+    onOpen: (socket) => { state.deviceSocket = socket; },
+    onClose: () => { state.deviceSocket = null; },
+    onMessage: async (rawEvent) => {
+    const event = /** @type {any} */ (rawEvent);
     if (event.type === "heartbeat") return;
     if (event.type === "log" && event.device_id === state.selectedDevice) {
       const output = $("#device-logs pre");
@@ -515,11 +543,9 @@ function connectDeviceEvents() {
       renderRuntimeBindingStatus();
       applyDesignerRuntimePreview();
     }
+    },
   });
-  socket.addEventListener("close", () => {
-    if (state.deviceSocket === socket) state.deviceSocket = null;
-    window.setTimeout(connectDeviceEvents, 3000);
-  });
+  state.deviceSocket = deviceEventsClient.connect();
 }
 
 async function loadViewerRuntimeSources() {
@@ -535,18 +561,18 @@ async function loadViewerRuntimeSources() {
   return state.viewerRuntimeSources;
 }
 
-function updateViewerRuntimeEvent(event) {
+function updateViewerRuntimeEvent(/** @type {any} */ event) {
   applyRuntimeEvent(state.viewerRuntimeSources, event);
 }
 
-async function loadViewerBindings(name) {
+async function loadViewerBindings(/** @type {any} */ name) {
   clearViewerBindings();
   if (!name) return;
   try {
     const result = await api("viewer/bindings/" + encodeURIComponent(name));
     state.viewerBindings = result.bindings || [];
     state.viewerBindingsRevision = result.revision || null;
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(t("toast.binding.loadFailed", { error: error.message }), true);
   }
 }
@@ -575,42 +601,36 @@ async function openLiveViewer() {
 }
 
 function connectViewerRuntimeEvents() {
-  if (state.viewerRuntimeSocket || !state.viewerRuntimeActive && !$("#viewer-dialog").open) return;
+  if (viewerRuntimeClient?.socket || !state.viewerRuntimeActive && !$("#viewer-dialog").open) return;
   state.viewerRuntimeActive = true;
-  const appBase = window.location.pathname.endsWith("/") ? window.location.pathname : window.location.pathname + "/";
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(protocol + "//" + window.location.host + appBase + "api/v1/viewer/runtime/events");
-  state.viewerRuntimeSocket = socket;
-  socket.addEventListener("message", async (message) => {
-    let event;
-    try { event = JSON.parse(message.data); } catch { return; }
-    if (event.type === "resync_required") {
-      const snapshot = await loadViewerRuntimeSources();
-      viewer.setRuntimeSnapshot(snapshot);
-      renderProperties();
+  viewerRuntimeClient ||= createJsonSocket({
+    path: "viewer/runtime/events",
+    reconnect: () => state.viewerRuntimeActive && $("#viewer-dialog").open,
+    onOpen: (socket) => { state.viewerRuntimeSocket = socket; },
+    onClose: () => { state.viewerRuntimeSocket = null; },
+    onMessage: async (rawEvent) => {
+      const event = /** @type {any} */ (rawEvent);
+      if (event.type === "resync_required") {
+        const snapshot = await loadViewerRuntimeSources();
+        viewer.setRuntimeSnapshot(snapshot);
+        renderProperties();
+        applyDesignerRuntimePreview();
+        return;
+      }
+      updateViewerRuntimeEvent(event);
+      viewer.applyRuntimeEvent(event);
+      renderRuntimeBindingStatus();
       applyDesignerRuntimePreview();
-      return;
-    }
-    updateViewerRuntimeEvent(event);
-    viewer.applyRuntimeEvent(event);
-    renderRuntimeBindingStatus();
-    applyDesignerRuntimePreview();
+    },
   });
-  socket.addEventListener("close", () => {
-    if (state.viewerRuntimeSocket === socket) state.viewerRuntimeSocket = null;
-    if (state.viewerRuntimeActive && $("#viewer-dialog").open) {
-      state.viewerRuntimeReconnect = window.setTimeout(connectViewerRuntimeEvents, 3000);
-    }
-  });
+  state.viewerRuntimeSocket = viewerRuntimeClient.connect();
 }
 
 function stopViewerRuntimeEvents() {
   state.viewerRuntimeActive = false;
-  if (state.viewerRuntimeReconnect !== null) window.clearTimeout(state.viewerRuntimeReconnect);
-  state.viewerRuntimeReconnect = null;
-  const socket = state.viewerRuntimeSocket;
+  viewerRuntimeClient?.stop();
+  viewerRuntimeClient = null;
   state.viewerRuntimeSocket = null;
-  if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
 }
 
 function closeViewer() {
@@ -621,7 +641,7 @@ function closeViewer() {
 // Phone layout only: which of the three designer panels is the active full-
 // width pane. Irrelevant above the 700px breakpoint, where CSS shows all
 // three as grid columns regardless of this attribute.
-function setDesignerPane(pane) {
+function setDesignerPane(/** @type {any} */ pane) {
   document.body.dataset.designerPane = pane;
   $$("#designer-pane-switch .button").forEach((button) => {
     button.classList.toggle("active", button.dataset.pane === pane);
@@ -659,7 +679,7 @@ function bindDesigner() {
   $("#open-viewer").addEventListener("click", openLiveViewer);
   $("#viewer-close").addEventListener("click", closeViewer);
   $("#viewer-reset").addEventListener("click", () => viewer.reset());
-  $("#viewer-page-select").addEventListener("change", (event) => {
+  $("#viewer-page-select").addEventListener("change", (/** @type {any} */ event) => {
     viewer.setActivePage(event.target.value);
   });
   $("#viewer-page-previous").addEventListener("click", () => viewer.changePage(-1));
@@ -668,9 +688,9 @@ function bindDesigner() {
   $("#viewer-zoom-100").addEventListener("click", () => viewer.setZoom(1));
   $("#viewer-zoom-out").addEventListener("click", () => viewer.setZoom(viewer.zoom / 1.25));
   $("#viewer-zoom-in").addEventListener("click", () => viewer.setZoom(viewer.zoom * 1.25));
-  $("#viewer-rotation").addEventListener("change", (event) => viewer.setRotation(event.target.value));
+  $("#viewer-rotation").addEventListener("change", (/** @type {any} */ event) => viewer.setRotation(event.target.value));
   $("#viewer-dialog").addEventListener("close", closeViewer);
-  $("#viewer-dialog").addEventListener("cancel", (event) => {
+  $("#viewer-dialog").addEventListener("cancel", (/** @type {any} */ event) => {
     event.preventDefault();
     closeViewer();
   });
@@ -701,18 +721,19 @@ function bindDesigner() {
   // already committed each keystroke to widget.id, so this checks for
   // *other* owners of the current id rather than reusing projectIdIsUsed()
   // (which would always find the widget's own just-committed id).
+  /** @type {any} */
   let widgetIdBeforeEdit = null;
-  $("#prop-id").addEventListener("focus", (event) => {
+  $("#prop-id").addEventListener("focus", (/** @type {any} */ event) => {
     widgetIdBeforeEdit = event.target.value;
   });
-  $("#prop-id").addEventListener("blur", (event) => {
+  $("#prop-id").addEventListener("blur", (/** @type {any} */ event) => {
     const widget = state.selectedWidget;
     if (!widget) return;
     const currentId = widget.id;
     const collides = projectWidgetEntries().some((entry) => entry !== widget && entry.id === currentId)
       || (state.project.reserved_ids || []).includes(currentId)
       || [state.project.styles, state.project.fonts, state.project.images, colorLibrary()]
-        .some((entries) => (entries || []).some((entry) => entry.id === currentId));
+        .some((entries) => (entries || []).some((/** @type {any} */ entry) => entry.id === currentId));
     if (collides) {
       const previousId = widgetIdBeforeEdit || currentId;
       toast(t("toast.id.alreadyUsed", { id: currentId }), true);
@@ -784,7 +805,7 @@ function bindDesigner() {
   $("#copy-runtime-binding").addEventListener("click", copyRuntimeBinding);
   $("#paste-runtime-binding").addEventListener("click", pasteRuntimeBinding);
   $("#cleanup-runtime-bindings").addEventListener("click", cleanupRuntimeBindings);
-  $("#runtime-live-preview").addEventListener("change", (event) => {
+  $("#runtime-live-preview").addEventListener("change", (/** @type {any} */ event) => {
     state.designerRuntimePreview = event.target.checked;
     renderCanvas();
   });
@@ -832,7 +853,9 @@ function bindDesigner() {
   actionsSection.addEventListener("toggle", () => togglePropertyGroup("actions", !actionsSection.open));
   document.addEventListener("keydown", (event) => {
     if (!$("#designer").classList.contains("active")) return;
-    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName);
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(
+      event.target instanceof HTMLElement ? event.target.tagName : "",
+    );
 
     if (state.canvasMode === "lines" && !typing && !event.ctrlKey) {
       if (event.key === "Escape") {
@@ -884,6 +907,7 @@ function bindDesigner() {
     if (!event.ctrlKey) return;
 
     const key = event.key.toLowerCase();
+    /** @type {Record<string, () => unknown>} */
     const actions = {
       z: undoDesignerChange,
       y: redoDesignerChange,
@@ -903,7 +927,7 @@ function bindDesigner() {
   });
 }
 
-function setZoom(value) {
+function setZoom(/** @type {any} */ value) {
   state.zoom = clamp(Number(value) || 1, MIN_ZOOM, MAX_ZOOM);
   applyZoom();
 }
@@ -951,7 +975,7 @@ function newDesignerProject() {
   fitCanvasToView();
 }
 
-async function openDesignerProject(event) {
+async function openDesignerProject(/** @type {any} */ event) {
   const file = event.target.files?.[0];
   event.target.value = "";
   if (!file) return;
@@ -964,7 +988,7 @@ async function openDesignerProject(event) {
     const result = await api("designer/projects/validate", {
       method: "POST", body: JSON.stringify({ project }),
     });
-    if (!result.valid) throw new Error(result.issues.map((issue) => issue.message).join("\n"));
+    if (!result.valid) throw new Error(result.issues.map((/** @type {any} */ issue) => issue.message).join("\n"));
     stopFlowPreview();
     state.project = result.project;
     state.activeSurface = result.project.pages?.[0] ? `page:${result.project.pages[0].id}` : "root";
@@ -979,7 +1003,7 @@ async function openDesignerProject(event) {
     resetHistory();
     renderDesigner();
     toast(t("toast.project.loaded"));
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(t("toast.project.loadFailed", { error: error.message }), true);
   }
 }
@@ -989,7 +1013,7 @@ async function downloadDesignerProject() {
     const result = await api("designer/projects/validate", {
       method: "POST", body: JSON.stringify({ project: state.project }),
     });
-    if (!result.valid) throw new Error(result.issues.map((issue) => issue.message).join("\n"));
+    if (!result.valid) throw new Error(result.issues.map((/** @type {any} */ issue) => issue.message).join("\n"));
     const blob = new Blob([JSON.stringify(result.project, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -998,7 +1022,7 @@ async function downloadDesignerProject() {
     link.click();
     URL.revokeObjectURL(url);
     toast(t("toast.project.downloaded"));
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(t("toast.project.downloadFailed", { error: error.message }), true);
   }
 }
@@ -1012,7 +1036,7 @@ const importState = { configuration: null, content: null, fileName: "", stats: n
 function openImportDialog() {
   const select = $("#import-config");
   select.replaceChildren(new Option(t("dialog.importYaml.pickFile"), ""));
-  state.configurations.forEach((config) => select.append(new Option(config.name, config.name)));
+  state.configurations.forEach((/** @type {any} */ config) => select.append(new Option(config.name, config.name)));
   resetImportSelection();
   $("#import-dialog").showModal();
 }
@@ -1038,7 +1062,7 @@ async function probeSelectedConfiguration() {
   await probeImport({ configuration: name });
 }
 
-async function probePickedFile(event) {
+async function probePickedFile(/** @type {any} */ event) {
   const file = event.target.files?.[0];
   event.target.value = "";
   if (!file) return;
@@ -1054,7 +1078,7 @@ async function probePickedFile(event) {
   await probeImport({ content: importState.content });
 }
 
-async function probeImport(payload) {
+async function probeImport(/** @type {any} */ payload) {
   const summary = $("#import-summary");
   summary.classList.remove("hidden");
   summary.textContent = "Wird analysiert …";
@@ -1068,7 +1092,7 @@ async function probeImport(payload) {
     $("#import-height").value = stats.canvas.height;
     $("#import-canvas").classList.remove("hidden");
     $("#do-import").disabled = false;
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     importState.stats = null;
     summary.textContent = error.message;
     summary.classList.add("import-error");
@@ -1077,7 +1101,7 @@ async function probeImport(payload) {
   }
 }
 
-function renderImportSummary(stats) {
+function renderImportSummary(/** @type {any} */ stats) {
   const summary = $("#import-summary");
   summary.classList.remove("import-error");
   summary.replaceChildren();
@@ -1092,7 +1116,7 @@ function renderImportSummary(stats) {
   warnings.forEach((warning) => summary.append(warningRow(warning.text, warning.severe)));
 }
 
-function warningRow(text, severe = false) {
+function warningRow(/** @type {any} */ text, severe = false) {
   const row = document.createElement("div");
   row.className = severe ? "issue-error" : "import-warning";
   row.textContent = text;
@@ -1135,10 +1159,10 @@ async function runImport() {
     renderDesigner();
     fitCanvasToView();
     $("#import-dialog").close();
-    const warnings = result.issues.filter((issue) => issue.severity === "B").length;
+    const warnings = result.issues.filter((/** @type {any} */ issue) => issue.severity === "B").length;
     toast(t("toast.import.summary", { count: result.stats.widget_count })
       + (warnings ? t("toast.import.warningsSuffix", { count: warnings }) : ""));
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(error.message, true);
   } finally {
     $("#do-import").disabled = false;
@@ -1151,14 +1175,14 @@ async function loadServerProjects() {
     const select = $("#server-projects");
     const selected = select.value;
     select.replaceChildren(new Option(t("project.savedProjects"), ""));
-    projects.forEach((project) => {
+    projects.forEach((/** @type {any} */ project) => {
       const option = new Option(project.name, project.name);
       option.dataset.revision = project.revision;
       select.append(option);
     });
-    select.value = projects.some((project) => project.name === selected) ? selected : "";
+    select.value = projects.some((/** @type {any} */ project) => project.name === selected) ? selected : "";
     updateServerProjectButtons();
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(error.message, true);
   }
 }
@@ -1194,7 +1218,7 @@ async function loadSelectedServerProject() {
     resetHistory();
     renderDesigner();
     toast(t("toast.project.loadedFromStorage"));
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(error.message, true);
   }
 }
@@ -1214,7 +1238,7 @@ async function saveServerProject() {
     $("#server-projects").value = name;
     updateServerProjectButtons();
     toast(t("toast.project.savedToStorage"));
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(error.code === "project_exists" ? t("toast.project.alreadyExists") : error.message, true);
   }
 }
@@ -1235,7 +1259,7 @@ async function deleteServerProject() {
     await loadServerProjects();
     renderDesignerStatus();
     toast(t("toast.project.deletedFromStorage"));
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(error.message, true);
   }
 }
@@ -1246,12 +1270,12 @@ function pushUndo() {
   updateUndoButtons();
 }
 
-function reselectAfterHistoryChange(widgetId, strokeId) {
+function reselectAfterHistoryChange(/** @type {any} */ widgetId, /** @type {any} */ strokeId) {
   state.selectedWidget = widgetId
-    ? allWidgets().find((widget) => widget.id === widgetId) || null
+    ? allWidgets().find((/** @type {any} */ widget) => widget.id === widgetId) || null
     : null;
   state.selectedStroke = strokeId
-    ? (state.project.glow_strokes || []).find((stroke) => stroke.id === strokeId) || null
+    ? (state.project.glow_strokes || []).find((/** @type {any} */ stroke) => stroke.id === strokeId) || null
     : null;
 }
 
@@ -1305,6 +1329,7 @@ function updateCanvasSize() {
 function renderPalette() {
   const palette = $("#palette");
   palette.replaceChildren();
+  /** @type {Record<string, string>} */
   const icons = {
     obj: "▣", container: "▤", label: "T", button: "▰",
     switch: "◉", slider: "━", bar: "▮", arc: "◔", image: "▧", animimg: "▩",
@@ -1312,7 +1337,7 @@ function renderPalette() {
     tileview: "▦", tabview: "▭", led: "●", spinner: "◌", qrcode: "▥", spinbox: "🔢",
   };
 
-  const appendWidgetButton = (schema) => {
+  const appendWidgetButton = (/** @type {any} */ schema) => {
     const button = document.createElement("button");
     const icon = document.createElement("span");
     icon.className = "widget-icon";
@@ -1332,7 +1357,7 @@ function renderPalette() {
     }
   };
 
-  const appendGroupHeading = (labelKey) => {
+  const appendGroupHeading = (/** @type {any} */ labelKey) => {
     const heading = document.createElement("div");
     heading.className = "palette-group-heading";
     heading.textContent = t(labelKey);
@@ -1341,9 +1366,9 @@ function renderPalette() {
 
   // is_stub schemas (e.g. "tile") are structural children of another widget,
   // not something placeable on their own - they never get a palette entry.
-  const placeable = state.schemas.filter((schema) => !schema.is_stub);
-  const inputSchemas = placeable.filter((schema) => schema.category === "input");
-  const displaySchemas = placeable.filter((schema) => schema.category !== "input");
+  const placeable = state.schemas.filter((/** @type {any} */ schema) => !schema.is_stub);
+  const inputSchemas = placeable.filter((/** @type {any} */ schema) => schema.category === "input");
+  const displaySchemas = placeable.filter((/** @type {any} */ schema) => schema.category !== "input");
   if (inputSchemas.length) {
     appendGroupHeading("palette.categoryInput");
     inputSchemas.forEach(appendWidgetButton);
@@ -1364,8 +1389,9 @@ function renderPalette() {
 }
 
 function allWidgets(nodes = activeWidgetRoots()) {
+  /** @type {any} */
   const result = [];
-  const visit = (items) => items.forEach((widget) => {
+  const visit = (/** @type {any} */ items) => items.forEach((/** @type {any} */ widget) => {
     result.push(widget);
     visit(widget.children || []);
   });
@@ -1373,7 +1399,7 @@ function allWidgets(nodes = activeWidgetRoots()) {
   return result;
 }
 
-function editorWidgetNode(id, widgetType, {
+function editorWidgetNode(/** @type {any} */ id, /** @type {any} */ widgetType, /** @type {any} */ {
   x = 0, y = 0, width = 100, height = 40, align = "TOP_LEFT", properties = {},
   styleTree = {}, children = [],
 } = {}) {
@@ -1407,7 +1433,7 @@ function editorWidgetNode(id, widgetType, {
   };
 }
 
-function migrateButtonTextToChildLabel(button) {
+function migrateButtonTextToChildLabel(/** @type {any} */ button) {
   if (button?.widget_type !== "button" || !Object.hasOwn(button.properties || {}, "text")) return null;
   const text = String(button.properties.text ?? "");
   delete button.properties.text;
@@ -1424,9 +1450,10 @@ function migrateButtonTextToChildLabel(button) {
   return label;
 }
 
+/** @returns {any} */
 function selectedChildTarget() {
   const parentSchema = state.selectedWidget
-    ? state.schemas.find((item) => item.type_key === state.selectedWidget.widget_type)
+    ? state.schemas.find((/** @type {any} */ item) => item.type_key === state.selectedWidget.widget_type)
     : null;
   const parent = parentSchema?.allows_children ? state.selectedWidget : null;
   if (parent) migrateButtonTextToChildLabel(parent);
@@ -1472,7 +1499,7 @@ function addImageButton() {
   if (!firstImage) toast(t("toast.imgbtn.created"));
 }
 
-function addWidget(schema) {
+function addWidget(/** @type {any} */ schema) {
   if (state.canvasMode !== "widgets") setCanvasMode("widgets");
   pushUndo();
   const idBase = schema.type_key === "container" ? "container" : schema.type_key;
@@ -1485,6 +1512,7 @@ function addWidget(schema) {
     ...(state.project.reserved_ids || []),
   ]);
   while (ids.has(`${idBase}_${number}`)) number += 1;
+  /** @type {Record<string, any>} */
   const properties = {};
   for (const property of schema.properties) {
     if (property.category === "content" && property.default !== null) properties[property.key] = property.default;
@@ -1544,7 +1572,7 @@ function visualWidgets() {
   // coordinates so it stays reachable rather than vanishing.
   const boxes = computeLayout(activeSurfaceProject());
   const hiddenWidgets = effectivelyHiddenWidgets();
-  return allWidgets().map((widget) => {
+  return allWidgets().map((/** @type {any} */ widget) => {
     const box = boxes.get(widget);
     const effectivelyHidden = hiddenWidgets.has(widget);
     return box
@@ -1570,11 +1598,11 @@ function blankSurface() {
 function uniquePageId() {
   const used = new Set([
     ...allProjectWidgets().map((widget) => widget.id),
-    ...(state.project.pages || []).map((page) => page.id),
-    ...(state.project.colors || []).map((item) => item.id),
-    ...(state.project.fonts || []).map((item) => item.id),
-    ...(state.project.images || []).map((item) => item.id),
-    ...(state.project.styles || []).map((item) => item.id),
+    ...(state.project.pages || []).map((/** @type {any} */ page) => page.id),
+    ...(state.project.colors || []).map((/** @type {any} */ item) => item.id),
+    ...(state.project.fonts || []).map((/** @type {any} */ item) => item.id),
+    ...(state.project.images || []).map((/** @type {any} */ item) => item.id),
+    ...(state.project.styles || []).map((/** @type {any} */ item) => item.id),
     ...(state.project.reserved_ids || []),
   ]);
   let number = 1;
@@ -1603,7 +1631,7 @@ function addPage() {
   renderDesigner();
 }
 
-function addLayer(kind) {
+function addLayer(/** @type {any} */ kind) {
   const property = kind === "top" ? "top_layer" : "bottom_layer";
   if (!state.project[property]) {
     pushUndo();
@@ -1616,12 +1644,12 @@ function addLayer(kind) {
 function uniqueMsgboxId() {
   const used = new Set([
     ...allProjectWidgets().map((widget) => widget.id),
-    ...(state.project.pages || []).map((page) => page.id),
-    ...(state.project.msgboxes || []).map((msgbox) => msgbox.id),
-    ...(state.project.colors || []).map((item) => item.id),
-    ...(state.project.fonts || []).map((item) => item.id),
-    ...(state.project.images || []).map((item) => item.id),
-    ...(state.project.styles || []).map((item) => item.id),
+    ...(state.project.pages || []).map((/** @type {any} */ page) => page.id),
+    ...(state.project.msgboxes || []).map((/** @type {any} */ msgbox) => msgbox.id),
+    ...(state.project.colors || []).map((/** @type {any} */ item) => item.id),
+    ...(state.project.fonts || []).map((/** @type {any} */ item) => item.id),
+    ...(state.project.images || []).map((/** @type {any} */ item) => item.id),
+    ...(state.project.styles || []).map((/** @type {any} */ item) => item.id),
     ...(state.project.reserved_ids || []),
   ]);
   let number = 1;
@@ -1648,7 +1676,7 @@ function addMessageBox() {
   openMsgboxDialog(msgbox);
 }
 
-function deleteMsgbox(msgbox) {
+function deleteMsgbox(/** @type {any} */ msgbox) {
   const widgetCount = allWidgets(msgbox.buttons).length + allWidgets(msgbox.header_buttons).length;
   if (!confirm(t("confirm.surface.remove", { label: msgbox.title || msgbox.id })
     + (widgetCount ? t("confirm.surface.removeWidgetsSuffix", { count: widgetCount }) : ""))) return;
@@ -1669,7 +1697,7 @@ function renderMsgboxList() {
   ensureProjectSurfaces();
   const list = $("#msgbox-list");
   list.replaceChildren();
-  state.project.msgboxes.forEach((msgbox) => {
+  state.project.msgboxes.forEach((/** @type {any} */ msgbox) => {
     const row = document.createElement("div");
     row.className = "msgbox-list-item";
     const label = document.createElement("span");
@@ -1695,7 +1723,7 @@ function renderMsgboxList() {
   });
 }
 
-function uniqueMsgboxButtonId(base) {
+function uniqueMsgboxButtonId(/** @type {any} */ base) {
   const used = new Set([
     ...allProjectWidgets().map((widget) => widget.id),
     ...(state.project.reserved_ids || []),
@@ -1705,7 +1733,7 @@ function uniqueMsgboxButtonId(base) {
   return `${base}_${number}`;
 }
 
-function blankMsgboxButton(id, extra = {}) {
+function blankMsgboxButton(/** @type {any} */ id, extra = {}) {
   return {
     id, widget_type: "button", name: "", x: 0, y: 0, width: null, height: null,
     align: "TOP_LEFT", align_to: "", hidden: false, locked: false,
@@ -1715,7 +1743,7 @@ function blankMsgboxButton(id, extra = {}) {
   };
 }
 
-function openMsgboxDialog(msgbox) {
+function openMsgboxDialog(/** @type {any} */ msgbox) {
   state.editingMsgbox = msgbox;
   $("#msgbox-dialog-title").value = msgbox.title || "";
   $("#msgbox-dialog-close-button").checked = msgbox.close_button !== false;
@@ -1737,7 +1765,7 @@ function renderMsgboxDialogButtons() {
   const container = $("#msgbox-dialog-buttons");
   container.replaceChildren();
   if (!msgbox) return;
-  msgbox.buttons.forEach((button) => {
+  msgbox.buttons.forEach((/** @type {any} */ button) => {
     const row = document.createElement("div");
     row.className = "msgbox-dialog-row";
     const text = document.createElement("input");
@@ -1755,7 +1783,7 @@ function renderMsgboxDialogButtons() {
     const closesInput = document.createElement("input");
     closesInput.type = "checkbox";
     closesInput.checked = Boolean(
-      (button.events?.on_click || []).some((action) => action?.["lvgl.widget.hide"] === msgbox.id),
+      (button.events?.on_click || []).some((/** @type {any} */ action) => action?.["lvgl.widget.hide"] === msgbox.id),
     );
     closesInput.addEventListener("change", () => {
       pushUndo();
@@ -1790,14 +1818,14 @@ function renderMsgboxDialogHeaderButtons() {
   const container = $("#msgbox-dialog-header-buttons");
   container.replaceChildren();
   if (!msgbox) return;
-  msgbox.header_buttons.forEach((button) => {
+  msgbox.header_buttons.forEach((/** @type {any} */ button) => {
     const row = document.createElement("div");
     row.className = "msgbox-dialog-row";
     const src = document.createElement("select");
     src.append(new Option("—", ""));
-    imageLibrary().forEach((entry) => src.append(new Option(entry.id, entry.id)));
+    imageLibrary().forEach((/** @type {any} */ entry) => src.append(new Option(entry.id, entry.id)));
     const currentSrc = button.extra?.src || "";
-    if (currentSrc && !imageLibrary().some((entry) => entry.id === currentSrc)) {
+    if (currentSrc && !imageLibrary().some((/** @type {any} */ entry) => entry.id === currentSrc)) {
       src.append(new Option(t("dynprops.widgetRefMissing", { id: currentSrc }), currentSrc));
     }
     src.value = currentSrc;
@@ -1813,7 +1841,7 @@ function renderMsgboxDialogHeaderButtons() {
     const closesInput = document.createElement("input");
     closesInput.type = "checkbox";
     closesInput.checked = Boolean(
-      (button.events?.on_click || []).some((action) => action?.["lvgl.widget.hide"] === msgbox.id),
+      (button.events?.on_click || []).some((/** @type {any} */ action) => action?.["lvgl.widget.hide"] === msgbox.id),
     );
     closesInput.addEventListener("change", () => {
       pushUndo();
@@ -1848,7 +1876,7 @@ function addMsgboxButton() {
   if (!msgbox) return;
   pushUndo();
   const button = blankMsgboxButton(uniqueMsgboxButtonId(`${msgbox.id}_button`));
-  button.properties.text = t("dialog.msgbox.defaultButtonText");
+  /** @type {any} */ (button.properties).text = t("dialog.msgbox.defaultButtonText");
   msgbox.buttons.push(button);
   markProjectDirty();
   renderMsgboxDialogButtons();
@@ -1863,7 +1891,7 @@ function addMsgboxHeaderButton() {
   renderMsgboxDialogHeaderButtons();
 }
 
-function moveActivePage(delta) {
+function moveActivePage(/** @type {any} */ delta) {
   const entry = activeSurfaceEntry();
   if (entry.kind !== "page") return;
   const nextIndex = entry.index + delta;
@@ -1897,11 +1925,11 @@ function deleteActiveSurface() {
   renderDesigner();
 }
 
-function parseSurfaceObject(control, label) {
+function parseSurfaceObject(/** @type {any} */ control, /** @type {any} */ label) {
   let value;
   try {
     value = JSON.parse(control.value || "{}");
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     throw new Error(`${label}: ${error.message}`);
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -1910,11 +1938,11 @@ function parseSurfaceObject(control, label) {
   return value;
 }
 
-function pageIdIsUsed(id, currentPage) {
-  return (state.project.pages || []).some((page) => page !== currentPage && page.id === id)
+function pageIdIsUsed(/** @type {any} */ id, /** @type {any} */ currentPage) {
+  return (state.project.pages || []).some((/** @type {any} */ page) => page !== currentPage && page.id === id)
     || allProjectWidgets().some((widget) => widget.id === id)
     || ["colors", "fonts", "images", "styles"].some((key) =>
-      (state.project[key] || []).some((item) => item.id === id));
+      (state.project[key] || []).some((/** @type {any} */ item) => item.id === id));
 }
 
 function applySurfaceSettings() {
@@ -1949,27 +1977,27 @@ function applySurfaceSettings() {
     markProjectDirty();
     renderDesigner();
     toast(t("toast.surface.settingsApplied"));
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     errorNode.textContent = error.message;
     errorNode.classList.remove("hidden");
   }
 }
 
 function bindSurfaceTools() {
-  $("#surface-select").addEventListener("change", (event) => selectSurface(event.target.value));
+  $("#surface-select").addEventListener("change", (/** @type {any} */ event) => selectSurface(event.target.value));
   $("#add-page").addEventListener("click", addPage);
   $("#add-bottom-layer").addEventListener("click", () => addLayer("bottom"));
   $("#add-top-layer").addEventListener("click", () => addLayer("top"));
   $("#surface-up").addEventListener("click", () => moveActivePage(-1));
   $("#surface-down").addEventListener("click", () => moveActivePage(1));
   $("#delete-surface").addEventListener("click", deleteActiveSurface);
-  $("#page-wrap").addEventListener("change", (event) => {
+  $("#page-wrap").addEventListener("change", (/** @type {any} */ event) => {
     pushUndo();
     state.project.page_wrap = event.target.checked;
     markProjectDirty();
     renderDesigner();
   });
-  $("#surface-skip").addEventListener("change", (event) => {
+  $("#surface-skip").addEventListener("change", (/** @type {any} */ event) => {
     const entry = activeSurfaceEntry();
     if (entry.kind !== "page") return;
     pushUndo();
@@ -1985,7 +2013,7 @@ function bindMsgboxDialog() {
   $("#close-msgbox-dialog").addEventListener("click", closeMsgboxDialog);
   $("#msgbox-dialog-done").addEventListener("click", closeMsgboxDialog);
   $("#msgbox-dialog").addEventListener("close", () => { state.editingMsgbox = null; renderMsgboxList(); });
-  $("#msgbox-dialog").addEventListener("cancel", (event) => {
+  $("#msgbox-dialog").addEventListener("cancel", (/** @type {any} */ event) => {
     event.preventDefault();
     closeMsgboxDialog();
   });
@@ -2057,10 +2085,7 @@ function renderDesigner() {
 
 function renderCanvas() {
   const canvas = $("#canvas");
-  canvas.style.width = `${state.project.canvas.width}px`;
-  canvas.style.height = `${state.project.canvas.height}px`;
-  canvas.classList.toggle("lines-mode", state.canvasMode === "lines");
-  canvas.classList.toggle("tool-select", state.lineTool === "select");
+  configureCanvas(canvas, state.project, state.canvasMode, state.lineTool);
   $("#canvas-width").value = state.project.canvas.width;
   $("#canvas-height").value = state.project.canvas.height;
 
@@ -2071,25 +2096,17 @@ function renderCanvas() {
   // widgets are flat DOM siblings here, not actually nested, so a container's
   // "children" only render on top of it if something puts them there), then
   // the edit handles on top of everything so they stay grabbable.
-  const glowCanvasBack = document.createElement("canvas");
-  glowCanvasBack.id = "glow-canvas-back";
-  glowCanvasBack.className = "glow-canvas";
-  const glowCanvasFront = document.createElement("canvas");
-  glowCanvasFront.id = "glow-canvas-front";
-  glowCanvasFront.className = "glow-canvas";
-  const handles = document.createElement("div");
-  handles.id = "glow-handles";
-  handles.className = "glow-handles";
+  const { back: glowCanvasBack, front: glowCanvasFront, handles } = createCanvasLayers(document);
   canvas.replaceChildren(renderCanvasBackground(), glowCanvasBack);
   canvasNodeByWidget.clear();
-  visualWidgets().forEach((item) => {
+  visualWidgets().forEach((/** @type {any} */ item) => {
     const node = renderWidget(item);
     canvasNodeByWidget.set(item.widget, node);
     canvas.append(node);
   });
   canvas.append(glowCanvasFront, handles);
 
-  fontLibrary().forEach((font) => ensureFontLoaded(font.id));
+  fontLibrary().forEach((/** @type {any} */ font) => ensureFontLoaded(font.id));
 
   const totalWidgetCount = allProjectWidgets().length;
   $("#widget-count").textContent = (state.project.pages || []).length
@@ -2147,7 +2164,7 @@ function updateBackgroundFields() {
   renderCanvas();
 }
 
-async function loadBackgroundPreview(event) {
+async function loadBackgroundPreview(/** @type {any} */ event) {
   const file = event.target.files?.[0];
   event.target.value = "";
   if (!file) return;
@@ -2205,7 +2222,7 @@ function bindGlowTools() {
   // Clicking empty canvas space (not a widget, not a resize/glow handle)
   // deselects the current widget - `beginDrag()` only ever sets a selection,
   // it never had a matching way to clear one.
-  canvas.addEventListener("click", (event) => {
+  canvas.addEventListener("click", (/** @type {any} */ event) => {
     if (state.canvasMode !== "widgets") return;
     if (event.target.closest(".canvas-widget, .resize-handle")) return;
     if (!state.selectedWidget) return;
@@ -2222,9 +2239,9 @@ function bindGlowTools() {
       renderColorWheelReadout();
     });
   });
-  $("#color-wheel").addEventListener("pointerdown", (event) => {
+  $("#color-wheel").addEventListener("pointerdown", (/** @type {any} */ event) => {
     onColorWheelPick(event);
-    const move = (moveEvent) => onColorWheelPick(moveEvent);
+    const move = (/** @type {any} */ moveEvent) => onColorWheelPick(moveEvent);
     const up = () => window.removeEventListener("pointermove", move);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up, { once: true });
@@ -2234,7 +2251,7 @@ function bindGlowTools() {
   bindLinePropertyInputs();
 }
 
-function setCanvasMode(mode) {
+function setCanvasMode(/** @type {any} */ mode) {
   if (mode !== "widgets") stopFlowPreview();
   state.canvasMode = mode;
   if (mode === "widgets") {
@@ -2250,7 +2267,7 @@ function setCanvasMode(mode) {
   renderDesigner();
 }
 
-function setLineTool(tool) {
+function setLineTool(/** @type {any} */ tool) {
   state.lineTool = tool;
   if (tool === "select") state.drawingStroke = null;
   $("#tool-select").classList.toggle("active", tool === "select");
@@ -2260,7 +2277,7 @@ function setLineTool(tool) {
 }
 
 function uniqueStrokeId() {
-  const ids = new Set((state.project.glow_strokes || []).map((s) => s.id));
+  const ids = new Set((state.project.glow_strokes || []).map((/** @type {any} */ s) => s.id));
   let n = 1;
   while (ids.has(`line_${n}`)) n += 1;
   return `line_${n}`;
@@ -2275,7 +2292,7 @@ function startNewLine() {
   // clears state.selectedWidget, the same way addWidget() reads it before
   // any mode change to decide which container a new widget nests under.
   const parentSchema = state.selectedWidget
-    ? state.schemas.find((item) => item.type_key === state.selectedWidget.widget_type)
+    ? state.schemas.find((/** @type {any} */ item) => item.type_key === state.selectedWidget.widget_type)
     : null;
   const parent = parentSchema?.allows_children ? state.selectedWidget : null;
 
@@ -2292,7 +2309,7 @@ function startNewLine() {
   // zeichnen" tool once a line is selected - it now appends to whichever
   // line is selected instead of only ever starting a fresh one.
   const offset = (state.project.glow_strokes.length * 12) % 100;
-  stroke.points = [[40 + offset, 40 + offset], [120 + offset, 40 + offset]];
+  /** @type {any} */ (stroke).points = [[40 + offset, 40 + offset], [120 + offset, 40 + offset]];
   state.project.glow_strokes.push(stroke);
   state.selectedStroke = stroke;
   markProjectDirty();
@@ -2300,7 +2317,7 @@ function startNewLine() {
   renderDesigner();
 }
 
-function removeStroke(stroke) {
+function removeStroke(/** @type {any} */ stroke) {
   const list = state.project.glow_strokes || [];
   const index = list.indexOf(stroke);
   if (index >= 0) list.splice(index, 1);
@@ -2328,12 +2345,12 @@ function finishDrawing() {
 }
 
 /** Pointer position in canvas image coordinates (undoes the zoom transform). */
-function canvasPointFromEvent(event) {
+function canvasPointFromEvent(/** @type {any} */ event) {
   const rect = $("#canvas").getBoundingClientRect();
   return pointFromClient(event.clientX, event.clientY, rect, state.zoom);
 }
 
-function onGlowPointerDown(event) {
+function onGlowPointerDown(/** @type {any} */ event) {
   if (state.canvasMode !== "lines" || event.target.closest(".glow-handle")) return;
   const point = canvasPointFromEvent(event);
 
@@ -2347,7 +2364,7 @@ function onGlowPointerDown(event) {
   renderDesigner();
 }
 
-function placeDrawPoint(rawPoint, event) {
+function placeDrawPoint(/** @type {any} */ rawPoint, /** @type {any} */ event) {
   const stroke = state.drawingStroke;
   if (!stroke) return;
   let point = rawPoint;
@@ -2371,7 +2388,7 @@ function placeDrawPoint(rawPoint, event) {
   renderGlowHandles();
 }
 
-function onGlowDoubleClick(event) {
+function onGlowDoubleClick(/** @type {any} */ event) {
   if (state.canvasMode !== "lines") return;
   event.preventDefault();
   if (state.lineTool === "draw" && state.drawingStroke) {
@@ -2391,7 +2408,7 @@ function onGlowDoubleClick(event) {
   }
 }
 
-function onGlowContextMenu(event) {
+function onGlowContextMenu(/** @type {any} */ event) {
   if (state.canvasMode !== "lines") return;
   event.preventDefault();
   if (state.lineTool === "draw" && state.drawingStroke) finishDrawing();
@@ -2403,7 +2420,7 @@ function onGlowContextMenu(event) {
  * approximation for picking - it can be slightly generous near a large
  * corner radius or a spline bulge, which only ever widens the click target.
  */
-function findStrokeAt(point) {
+function findStrokeAt(/** @type {any} */ point) {
   let best = null;
   let bestDistance = Infinity;
   for (const stroke of state.project.glow_strokes || []) {
@@ -2419,20 +2436,20 @@ function findStrokeAt(point) {
   return best;
 }
 
-function beginLineBodyDrag(event, stroke, startPoint) {
+function beginLineBodyDrag(/** @type {any} */ event, /** @type {any} */ stroke, /** @type {any} */ startPoint) {
   pushUndo();
   const target = event.target;
-  const originPoints = stroke.points.map((p) => [...p]);
+  const originPoints = stroke.points.map((/** @type {any} */ p) => [...p]);
   const handles = $("#glow-handles");
   handles.style.visibility = "hidden";
   target.setPointerCapture(event.pointerId);
   target.addEventListener("pointermove", move);
   target.addEventListener("pointerup", end, { once: true });
-  function move(moveEvent) {
+  function move(/** @type {any} */ moveEvent) {
     const [x, y] = canvasPointFromEvent(moveEvent);
     const dx = x - startPoint[0];
     const dy = y - startPoint[1];
-    stroke.points = originPoints.map(([px, py]) => [px + dx, py + dy]);
+    stroke.points = translatePoints(originPoints, dx, dy);
     markProjectDirty();
     renderGlowCanvas();
   }
@@ -2444,13 +2461,13 @@ function beginLineBodyDrag(event, stroke, startPoint) {
   }
 }
 
-function beginPointDrag(event, stroke, index) {
+function beginPointDrag(/** @type {any} */ event, /** @type {any} */ stroke, /** @type {any} */ index) {
   pushUndo();
   const handle = event.target;
   handle.setPointerCapture(event.pointerId);
   handle.addEventListener("pointermove", move);
   handle.addEventListener("pointerup", end, { once: true });
-  function move(moveEvent) {
+  function move(/** @type {any} */ moveEvent) {
     let point = canvasPointFromEvent(moveEvent);
     if (moveEvent.ctrlKey || moveEvent.shiftKey) {
       const neighbourIndex = index === 0 ? 1 : index - 1;
@@ -2485,13 +2502,13 @@ function renderGlowCanvas() {
   drawGlowFrame(0);
 }
 
-function drawGlowFrame(phase) {
+function drawGlowFrame(/** @type {any} */ phase) {
   const back = $("#glow-canvas-back");
   const front = $("#glow-canvas-front");
   if (!back || !front) return;
-  const strokes = (state.project.glow_strokes || []).filter((stroke) => !stroke.hidden);
-  const backStrokes = strokes.filter((stroke) => !stroke.parent_id);
-  const frontStrokes = strokes.filter((stroke) => stroke.parent_id);
+  const strokes = (state.project.glow_strokes || []).filter((/** @type {any} */ stroke) => !stroke.hidden);
+  const backStrokes = strokes.filter((/** @type {any} */ stroke) => !stroke.parent_id);
+  const frontStrokes = strokes.filter((/** @type {any} */ stroke) => stroke.parent_id);
   const backCtx = back.getContext("2d");
   backCtx.clearRect(0, 0, back.width, back.height);
   drawDocument(backCtx, { strokes: backStrokes }, { quality: "final", phase, withFlow: true });
@@ -2507,7 +2524,7 @@ function renderGlowHandles() {
   if (state.canvasMode !== "lines" || !state.selectedStroke) return;
   const stroke = state.selectedStroke;
   if (stroke.locked) return; // locked: selectable, but points aren't draggable or deletable
-  stroke.points.forEach((point, index) => {
+  stroke.points.forEach((/** @type {any} */ point, /** @type {any} */ index) => {
     const handle = document.createElement("div");
     handle.className = `glow-handle${index === 0 ? " first" : ""}`;
     handle.style.left = `${point[0]}px`;
@@ -2555,7 +2572,7 @@ function toggleFlowPreview() {
   $("#line-preview").classList.add("active");
   const start = performance.now();
   const loopMs = 1500; // arbitrary preview speed - export timing is independent
-  const tick = (now) => {
+  const tick = (/** @type {any} */ now) => {
     drawGlowFrame(((now - start) / loopMs) % 1);
     state.flowPreviewTimer = requestAnimationFrame(tick);
   };
@@ -2599,8 +2616,8 @@ function renderLineProperties() {
 }
 
 function bindLinePropertyInputs() {
-  const num = (raw, fallback = 0) => (raw === "" ? fallback : Number(raw));
-  const onText = (id, apply) => {
+  const num = (/** @type {any} */ raw, fallback = 0) => (raw === "" ? fallback : Number(raw));
+  const onText = (/** @type {any} */ id, /** @type {any} */ apply) => {
     const el = $(id);
     el.addEventListener("focus", pushUndo);
     el.addEventListener("input", () => {
@@ -2610,8 +2627,8 @@ function bindLinePropertyInputs() {
       renderGlowCanvas();
     });
   };
-  const onCheck = (id, apply) => {
-    $(id).addEventListener("change", (event) => {
+  const onCheck = (/** @type {any} */ id, /** @type {any} */ apply) => {
+    $(id).addEventListener("change", (/** @type {any} */ event) => {
       if (!state.selectedStroke) return;
       pushUndo();
       apply(state.selectedStroke, event.target);
@@ -2619,8 +2636,8 @@ function bindLinePropertyInputs() {
       renderGlowCanvas();
     });
   };
-  const onSelect = (id, apply) => {
-    $(id).addEventListener("change", (event) => {
+  const onSelect = (/** @type {any} */ id, /** @type {any} */ apply) => {
+    $(id).addEventListener("change", (/** @type {any} */ event) => {
       if (!state.selectedStroke) return;
       pushUndo();
       apply(state.selectedStroke, event.target.value);
@@ -2629,31 +2646,31 @@ function bindLinePropertyInputs() {
     });
   };
 
-  onText("#line-name", (s, el) => { s.name = el.value; });
-  onText("#line-width", (s, el) => { s.width = Math.max(0.5, num(el.value, 1)); });
-  onText("#line-corner-radius", (s, el) => { s.corner_radius = Math.max(0, num(el.value, 0)); });
-  onSelect("#line-mode", (s, value) => { s.mode = value; });
-  onCheck("#line-closed", (s, el) => { s.closed = el.checked; });
+  onText("#line-name", (/** @type {any} */ s, /** @type {any} */ el) => { s.name = el.value; });
+  onText("#line-width", (/** @type {any} */ s, /** @type {any} */ el) => { s.width = Math.max(0.5, num(el.value, 1)); });
+  onText("#line-corner-radius", (/** @type {any} */ s, /** @type {any} */ el) => { s.corner_radius = Math.max(0, num(el.value, 0)); });
+  onSelect("#line-mode", (/** @type {any} */ s, /** @type {any} */ value) => { s.mode = value; });
+  onCheck("#line-closed", (/** @type {any} */ s, /** @type {any} */ el) => { s.closed = el.checked; });
 
-  onCheck("#glow-enabled", (s, el) => { s.glow.enabled = el.checked; });
-  onText("#glow-radius", (s, el) => { s.glow.radius = Math.max(0, num(el.value)); });
-  onText("#glow-intensity", (s, el) => { s.glow.intensity = clamp(num(el.value), 0, 1); });
-  onCheck("#glow-use-line-color", (s, el) => { s.glow.use_line_color = el.checked; });
+  onCheck("#glow-enabled", (/** @type {any} */ s, /** @type {any} */ el) => { s.glow.enabled = el.checked; });
+  onText("#glow-radius", (/** @type {any} */ s, /** @type {any} */ el) => { s.glow.radius = Math.max(0, num(el.value)); });
+  onText("#glow-intensity", (/** @type {any} */ s, /** @type {any} */ el) => { s.glow.intensity = clamp(num(el.value), 0, 1); });
+  onCheck("#glow-use-line-color", (/** @type {any} */ s, /** @type {any} */ el) => { s.glow.use_line_color = el.checked; });
 
-  onCheck("#flow-enabled", (s, el) => { s.flow.enabled = el.checked; });
-  onSelect("#flow-mode", (s, value) => { s.flow.mode = value; });
-  onCheck("#flow-reversed", (s, el) => { s.flow.reversed = el.checked; });
-  onText("#flow-spacing", (s, el) => { s.flow.spacing = Math.max(1, num(el.value, 40)); });
-  onText("#flow-size", (s, el) => { s.flow.size = Math.max(1, num(el.value, 14)); });
-  onText("#flow-width", (s, el) => { s.flow.width = Math.max(0, num(el.value)); });
-  onText("#flow-glow-radius", (s, el) => { s.flow.glow_radius = Math.max(0, num(el.value)); });
-  onCheck("#flow-use-line-color", (s, el) => { s.flow.use_line_color = el.checked; });
-  onCheck("#flow-bidirectional", (s, el) => { s.flow.bidirectional = el.checked; });
-  onText("#bake-frame-count", (s, el) => { s.flow.bake_frame_count = clamp(num(el.value, 6), 1, 60); });
-  onCheck("#bake-crop", (s, el) => { s.flow.bake_crop = el.checked; });
+  onCheck("#flow-enabled", (/** @type {any} */ s, /** @type {any} */ el) => { s.flow.enabled = el.checked; });
+  onSelect("#flow-mode", (/** @type {any} */ s, /** @type {any} */ value) => { s.flow.mode = value; });
+  onCheck("#flow-reversed", (/** @type {any} */ s, /** @type {any} */ el) => { s.flow.reversed = el.checked; });
+  onText("#flow-spacing", (/** @type {any} */ s, /** @type {any} */ el) => { s.flow.spacing = Math.max(1, num(el.value, 40)); });
+  onText("#flow-size", (/** @type {any} */ s, /** @type {any} */ el) => { s.flow.size = Math.max(1, num(el.value, 14)); });
+  onText("#flow-width", (/** @type {any} */ s, /** @type {any} */ el) => { s.flow.width = Math.max(0, num(el.value)); });
+  onText("#flow-glow-radius", (/** @type {any} */ s, /** @type {any} */ el) => { s.flow.glow_radius = Math.max(0, num(el.value)); });
+  onCheck("#flow-use-line-color", (/** @type {any} */ s, /** @type {any} */ el) => { s.flow.use_line_color = el.checked; });
+  onCheck("#flow-bidirectional", (/** @type {any} */ s, /** @type {any} */ el) => { s.flow.bidirectional = el.checked; });
+  onText("#bake-frame-count", (/** @type {any} */ s, /** @type {any} */ el) => { s.flow.bake_frame_count = clamp(num(el.value, 6), 1, 60); });
+  onCheck("#bake-crop", (/** @type {any} */ s, /** @type {any} */ el) => { s.flow.bake_crop = el.checked; });
 }
 
-function colorWheelTargetObject(stroke) {
+function colorWheelTargetObject(/** @type {any} */ stroke) {
   if (state.colorWheelTarget === "glow") return stroke.glow;
   if (state.colorWheelTarget === "flow") return stroke.flow;
   return stroke;
@@ -2696,7 +2713,7 @@ function drawColorWheel() {
   ctx.putImageData(image, 0, 0);
 }
 
-function onColorWheelPick(event) {
+function onColorWheelPick(/** @type {any} */ event) {
   const stroke = state.selectedStroke;
   if (!stroke) return;
   const canvas = $("#color-wheel");
@@ -2736,7 +2753,8 @@ function renderColorWheelReadout() {
 // device will actually show), upload each PNG through the asset-store
 // endpoint, and wire up an image + animimg widget pair referencing them.
 
-function renderStrokeFrame(doc, rect, { withLines, withFlow, phase }) {
+/** @returns {Promise<Blob>} */
+function renderStrokeFrame(/** @type {any} */ doc, /** @type {any} */ rect, /** @type {any} */ { withLines, withFlow, phase }) {
   return new Promise((resolve, reject) => {
     const width = Math.max(1, Math.ceil(rect.right - rect.left));
     const height = Math.max(1, Math.ceil(rect.bottom - rect.top));
@@ -2744,6 +2762,10 @@ function renderStrokeFrame(doc, rect, { withLines, withFlow, phase }) {
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) {
+      reject(new Error("Canvas-Rendering-Kontext ist nicht verfügbar."));
+      return;
+    }
     ctx.translate(-rect.left, -rect.top);
     drawDocument(ctx, doc, { quality: "export", phase, withLines, withFlow });
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -2759,7 +2781,7 @@ function renderStrokeFrame(doc, rect, { withLines, withFlow, phase }) {
   });
 }
 
-async function uploadBakedFrame(name, blob) {
+async function uploadBakedFrame(/** @type {any} */ name, /** @type {any} */ blob) {
   return uploadImageAsset(api, name, blob);
 }
 
@@ -2785,7 +2807,7 @@ async function uploadBakedFrame(name, blob) {
  * the same stroke updates the existing widgets/images rather than adding
  * duplicates.
  */
-async function bakeStroke(stroke) {
+async function bakeStroke(/** @type {any} */ stroke) {
   return bakeGlowStroke({
     project: state.project,
     stroke,
@@ -2803,7 +2825,7 @@ async function bakeStroke(stroke) {
  * line with enough geometry, so the exported project never references
  * stale or missing baked images/widgets. */
 async function bakeAllStrokes() {
-  const strokes = (state.project.glow_strokes || []).filter((stroke) => (stroke.points || []).length >= 2);
+  const strokes = (state.project.glow_strokes || []).filter((/** @type {any} */ stroke) => (stroke.points || []).length >= 2);
   if (!strokes.length) return true;
   if (!state.capabilities["designer.asset_write"]) {
     toast(t("toast.glow.noWritePermission"), true);
@@ -2818,13 +2840,13 @@ async function bakeAllStrokes() {
     markProjectDirty();
     renderDesigner();
     return true;
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(t("toast.glow.bakeFailed", { error: error.message }), true);
     return false;
   }
 }
 
-function renderWidget(item) {
+function renderWidget(/** @type {any} */ item) {
   const { widget, left, top, width, height, managed, effectivelyHidden } = item;
   const node = document.createElement("div");
   node.className = `canvas-widget${state.selectedWidget === widget ? " selected" : ""}`;
@@ -2849,7 +2871,9 @@ function renderWidget(item) {
   // colours: previously those values were editable but only visible after
   // opening the separate Viewer.
   const previewState = state.selectedWidget === widget ? state.activeState : "";
-  const effectiveStyle = effectiveViewerStyle(state.project, widget, previewState);
+  const effectiveStyle = /** @type {any} */ (
+    effectiveViewerStyle(state.project, widget, previewState)
+  );
   if (previewState) node.dataset.previewState = previewState;
   const backgroundColor = resolveViewerColor(state.project, effectiveStyle.bg_color);
   if (backgroundColor) node.style.backgroundColor = backgroundColor;
@@ -2925,7 +2949,7 @@ function renderWidget(item) {
   return node;
 }
 
-function renderCanvasValueVisual(widget) {
+function renderCanvasValueVisual(/** @type {any} */ widget) {
   if (widget.widget_type === "bar") {
     const { lower, upper, vertical } = viewerBarGeometry(widget);
     const control = document.createElement("span");
@@ -2976,15 +3000,16 @@ function renderCanvasValueVisual(widget) {
   return control;
 }
 
-function effectiveStyleTree(widget) {
+function effectiveStyleTree(/** @type {any} */ widget) {
   const theme = (state.project.theme || {})[widget.widget_type] || {};
+  /** @type {any} */
   let ownTree;
   if (widget.style_mode !== "named") {
     ownTree = widget.style_tree || {};
   } else {
     ownTree = {};
-    (widget.style_refs || []).forEach((ref) => {
-      const entry = styleLibrary().find((item) => item.id === ref);
+    (widget.style_refs || []).forEach((/** @type {any} */ ref) => {
+      const entry = styleLibrary().find((/** @type {any} */ item) => item.id === ref);
       if (entry) Object.assign(ownTree, entry.style_tree || {});
     });
   }
@@ -2996,7 +3021,7 @@ function effectiveStyleTree(widget) {
   return { ...theme, ...ownTree };
 }
 
-function beginDrag(event, widget, node, box) {
+function beginDrag(/** @type {any} */ event, /** @type {any} */ widget, /** @type {any} */ node, /** @type {any} */ box) {
   if (event.target.classList.contains("resize-handle")) return;
   state.selectedWidget = widget;
   renderProperties();
@@ -3018,17 +3043,22 @@ function beginDrag(event, widget, node, box) {
   // Glow lines nested under this widget aren't part of the layout tree (their
   // points are always absolute canvas coordinates, not a child x/y offset),
   // so they need their own translation to follow the drag.
+  /** @type {any[]} */
   const childStrokes = (state.project.glow_strokes || [])
-    .filter((stroke) => stroke.parent_id === widget.id)
-    .map((stroke) => ({ stroke, points: stroke.points.map((p) => [...p]) }));
+    .filter((/** @type {any} */ stroke) => stroke.parent_id === widget.id)
+    .map((/** @type {any} */ stroke) => ({ stroke, points: stroke.points.map((/** @type {any} */ p) => [...p]) }));
   node.setPointerCapture(event.pointerId);
   node.addEventListener("pointermove", move);
   node.addEventListener("pointerup", end, { once: true });
-  function move(moveEvent) {
-    const deltaX = (moveEvent.clientX - origin.clientX) / state.zoom;
-    const deltaY = (moveEvent.clientY - origin.clientY) / state.zoom;
-    widget.x = clamp(Math.round(origin.x + deltaX), 0, state.project.canvas.width - box.width);
-    widget.y = clamp(Math.round(origin.y + deltaY), 0, state.project.canvas.height - box.height);
+  function move(/** @type {any} */ moveEvent) {
+    const position = dragPosition(origin, moveEvent, state.zoom, {
+      width: state.project.canvas.width,
+      height: state.project.canvas.height,
+      itemWidth: box.width,
+      itemHeight: box.height,
+    });
+    widget.x = position.x;
+    widget.y = position.y;
     // Re-running the layout (rather than just offsetting this node) keeps any
     // children - and siblings anchored to this widget - moving along with it.
     syncCanvasLayout();
@@ -3036,7 +3066,7 @@ function beginDrag(event, widget, node, box) {
       const totalDeltaX = widget.x - origin.x;
       const totalDeltaY = widget.y - origin.y;
       childStrokes.forEach(({ stroke, points }) => {
-        stroke.points = points.map(([px, py]) => [px + totalDeltaX, py + totalDeltaY]);
+        stroke.points = translatePoints(points, totalDeltaX, totalDeltaY);
       });
       renderGlowCanvas();
     }
@@ -3047,7 +3077,7 @@ function beginDrag(event, widget, node, box) {
   function end() { node.removeEventListener("pointermove", move); }
 }
 
-function beginResize(event, widget) {
+function beginResize(/** @type {any} */ event, /** @type {any} */ widget) {
   event.stopPropagation();
   pushUndo();
   const origin = {
@@ -3059,11 +3089,10 @@ function beginResize(event, widget) {
   event.target.setPointerCapture(event.pointerId);
   event.target.addEventListener("pointermove", resize);
   event.target.addEventListener("pointerup", end, { once: true });
-  function resize(moveEvent) {
-    const deltaX = (moveEvent.clientX - origin.clientX) / state.zoom;
-    const deltaY = (moveEvent.clientY - origin.clientY) / state.zoom;
-    widget.width = clamp(Math.round(origin.width + deltaX), 8, 4096);
-    widget.height = clamp(Math.round(origin.height + deltaY), 8, 4096);
+  function resize(/** @type {any} */ moveEvent) {
+    const dimensions = resizeDimensions(origin, moveEvent, state.zoom);
+    widget.width = dimensions.width;
+    widget.height = dimensions.height;
     // A container's children can depend on its size (grid tracks, flex
     // stretch), so re-run the layout instead of only resizing this node.
     syncCanvasLayout();
@@ -3104,6 +3133,7 @@ function renderProperties() {
   renderExtraKeys(widget);
 }
 
+/** @type {Record<string, string>} */
 const ACTION_TRIGGER_LABELS = {
   on_click: t("actions.trigger.click"),
   on_press: t("actions.trigger.press"),
@@ -3111,19 +3141,21 @@ const ACTION_TRIGGER_LABELS = {
   on_value: t("actions.trigger.valueShort"),
 };
 
-function directImageButtonParts(widget) {
+function directImageButtonParts(/** @type {any} */ widget) {
   if (widget?.widget_type !== "button") return null;
-  const image = (widget.children || []).find((child) => child.widget_type === "image");
+  const image = (widget.children || []).find((/** @type {any} */ child) => child.widget_type === "image");
   if (!image) return null;
   return {
     image,
-    label: (widget.children || []).find((child) => child.widget_type === "label") || null,
+    label: (widget.children || []).find((/** @type {any} */ child) => child.widget_type === "label") || null,
   };
 }
 
-function imageUpdateDetails(action, imageId) {
+/** @returns {any} */
+function imageUpdateDetails(/** @type {any} */ action, /** @type {any} */ imageId) {
   const conditional = generatedActionCondition(action);
   if (conditional) {
+    /** @type {any} */
     const inner = imageUpdateDetails(conditional.action, imageId);
     return inner ? { ...inner, condition: conditional.condition } : null;
   }
@@ -3135,7 +3167,7 @@ function imageUpdateDetails(action, imageId) {
   return { src: payload.src, condition: "always" };
 }
 
-function eventImageSource(widget, trigger, imageId, condition = "always") {
+function eventImageSource(/** @type {any} */ widget, /** @type {any} */ trigger, /** @type {any} */ imageId, condition = "always") {
   const raw = widget.events?.[trigger];
   const actions = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
   for (const action of actions) {
@@ -3145,14 +3177,14 @@ function eventImageSource(widget, trigger, imageId, condition = "always") {
   return "";
 }
 
-function populateImageChoice(control, value) {
+function populateImageChoice(/** @type {any} */ control, /** @type {any} */ value) {
   control.replaceChildren(new Option(t("imgbtn.notSet"), ""));
-  imageLibrary().forEach((entry) => control.append(new Option(entry.id, entry.id)));
+  imageLibrary().forEach((/** @type {any} */ entry) => control.append(new Option(entry.id, entry.id)));
   if (value && !imageEntry(value)) control.append(new Option(`${value} (fehlt)`, value));
   control.value = value || "";
 }
 
-function renderImageButtonSettings(widget) {
+function renderImageButtonSettings(/** @type {any} */ widget) {
   const section = $("#image-button-section");
   const parts = directImageButtonParts(widget);
   section.classList.toggle("hidden", !parts);
@@ -3171,14 +3203,14 @@ function renderImageButtonSettings(widget) {
   $("#image-button-error").classList.add("hidden");
 }
 
-function actionUpdatesImage(action, imageId) {
+function actionUpdatesImage(/** @type {any} */ action, /** @type {any} */ imageId) {
   const conditional = generatedActionCondition(action);
   if (conditional) return actionUpdatesImage(conditional.action, imageId);
   const entry = actionObjectEntry(action);
   return entry?.[0] === "lvgl.image.update" && actionIdsForEditor(entry[1]).includes(imageId);
 }
 
-function removeGeneratedImageButtonActions(widget, imageId) {
+function removeGeneratedImageButtonActions(/** @type {any} */ widget, /** @type {any} */ imageId) {
   ["on_press", "on_release", "on_value"].forEach((trigger) => {
     const raw = widget.events?.[trigger];
     if (raw === undefined) return;
@@ -3189,7 +3221,7 @@ function removeGeneratedImageButtonActions(widget, imageId) {
   });
 }
 
-function appendWidgetEvent(widget, trigger, action) {
+function appendWidgetEvent(/** @type {any} */ widget, /** @type {any} */ trigger, /** @type {any} */ action) {
   widget.events ||= {};
   if (!Array.isArray(widget.events[trigger])) {
     widget.events[trigger] = widget.events[trigger] === undefined ? [] : [widget.events[trigger]];
@@ -3197,11 +3229,11 @@ function appendWidgetEvent(widget, trigger, action) {
   widget.events[trigger].push(action);
 }
 
-function imageUpdateAction(imageId, src) {
+function imageUpdateAction(/** @type {any} */ imageId, /** @type {any} */ src) {
   return { "lvgl.image.update": { id: imageId, src } };
 }
 
-function conditionalImageUpdate(imageId, src, checked) {
+function conditionalImageUpdate(/** @type {any} */ imageId, /** @type {any} */ src, /** @type {any} */ checked) {
   return {
     if: {
       condition: { lambda: checked ? "return x;" : "return !x;" },
@@ -3271,7 +3303,7 @@ function applyImageButtonSettings() {
 // slider's numeric value. A button only qualifies once "checkable" is on
 // (otherwise it never reports a checked state to begin with); switch and
 // checkbox are inherently boolean, no extra flag needed.
-function renderWidgetActions(widget) {
+function renderWidgetActions(/** @type {any} */ widget) {
   const section = $("#widget-actions-section");
   const visible = Boolean(widget);
   section.classList.toggle("hidden", !visible);
@@ -3315,10 +3347,10 @@ function renderWidgetActions(widget) {
 // The stroke itself is the source of truth for direction/speed baking, not
 // the (possibly not-yet-baked) animimg widget it produces - see bakeStroke().
 function flowEligibleStrokes() {
-  return (state.project.glow_strokes || []).filter((stroke) => stroke.flow.enabled);
+  return (state.project.glow_strokes || []).filter((/** @type {any} */ stroke) => stroke.flow.enabled);
 }
 
-function renderWidgetActionBuilder(widget) {
+function renderWidgetActionBuilder(/** @type {any} */ widget) {
   if (!widget) return;
   const trigger = $("#widget-action-trigger").value;
   const type = $("#widget-action-type").value;
@@ -3334,19 +3366,19 @@ function renderWidgetActionBuilder(widget) {
   const previous = target.value;
   const choices = flow ? []
     : type === "page_show"
-      ? (state.project.pages || []).map((page) => ({ value: page.id, label: `${page.id} · Seite` }))
+      ? (state.project.pages || []).map((/** @type {any} */ page) => ({ value: page.id, label: `${page.id} · Seite` }))
       : projectWidgetEntries()
         .filter((item) => !animimgOnly || item.widget_type === "animimg")
         .map((item) => ({ value: item.id, label: `${item.id} · ${item.widget_type}` }));
   target.replaceChildren();
-  choices.forEach((choice) => target.append(new Option(choice.label, choice.value)));
-  if (choices.some((choice) => choice.value === previous)) target.value = previous;
+  choices.forEach((/** @type {any} */ choice) => target.append(new Option(choice.label, choice.value)));
+  if (choices.some((/** @type {any} */ choice) => choice.value === previous)) target.value = previous;
 
   const update = type === "update";
   $("#widget-action-update-fields").classList.toggle("hidden", !update);
   const targetWidget = projectWidgetEntries().find((item) => item.id === target.value);
   $("#widget-action-text-field").classList.toggle(
-    "hidden", !update || !["label", "button"].includes(targetWidget?.widget_type),
+    "hidden", !update || !["label", "button"].includes(targetWidget?.widget_type || ""),
   );
   $("#widget-action-image-field").classList.toggle(
     "hidden", !update || targetWidget?.widget_type !== "image",
@@ -3359,11 +3391,11 @@ function renderWidgetActionBuilder(widget) {
     const previousStroke = strokeSelect.value;
     const strokes = flowEligibleStrokes();
     strokeSelect.replaceChildren();
-    strokes.forEach((stroke) => strokeSelect.append(
+    strokes.forEach((/** @type {any} */ stroke) => strokeSelect.append(
       new Option(`${stroke.name || stroke.id} · ${stroke.id}`, stroke.id),
     ));
-    if (strokes.some((stroke) => stroke.id === previousStroke)) strokeSelect.value = previousStroke;
-    const selected = strokes.find((stroke) => stroke.id === strokeSelect.value);
+    if (strokes.some((/** @type {any} */ stroke) => stroke.id === previousStroke)) strokeSelect.value = previousStroke;
+    const selected = strokes.find((/** @type {any} */ stroke) => stroke.id === strokeSelect.value);
     $("#widget-action-flow-stroke-hint").textContent = !strokes.length
       ? t("actions.flow.noStrokes")
       : selected?.flow.bidirectional
@@ -3380,7 +3412,7 @@ function addWidgetAction() {
   const type = $("#widget-action-type").value;
   const targetId = $("#widget-action-target").value;
   const error = $("#widget-action-error");
-  const fail = (message) => {
+  const fail = (/** @type {any} */ message) => {
     error.textContent = message;
     error.classList.remove("hidden");
   };
@@ -3401,7 +3433,7 @@ function addWidgetAction() {
       return;
     }
     const strokeId = $("#widget-action-flow-stroke").value;
-    const stroke = flowEligibleStrokes().find((item) => item.id === strokeId);
+    const stroke = flowEligibleStrokes().find((/** @type {any} */ item) => item.id === strokeId);
     if (!stroke) {
       fail(t("validation.action.flowNeedsStroke"));
       return;
@@ -3443,7 +3475,7 @@ function addWidgetAction() {
           opa: $("#widget-action-opacity").value,
         },
       });
-    } catch (error) {
+    } catch (/** @type {any} */ error) {
       if (error.message === "missing_update_fields") {
         fail(t("validation.action.needsAtLeastOneField"));
         return;
@@ -3469,7 +3501,7 @@ function addWidgetAction() {
   renderWidgetActions(widget);
 }
 
-function removeWidgetAction(widget, trigger, index) {
+function removeWidgetAction(/** @type {any} */ widget, /** @type {any} */ trigger, /** @type {any} */ index) {
   pushUndo();
   const raw = widget.events?.[trigger];
   if (Array.isArray(raw)) {
@@ -3482,13 +3514,13 @@ function removeWidgetAction(widget, trigger, index) {
   renderWidgetActions(widget);
 }
 
-const runtimeTargets = (widget) => targetsForRuntime(widget, t);
+const runtimeTargets = (/** @type {any} */ widget) => targetsForRuntime(widget, t);
 
 function projectWidgetEntries() {
   return collectActionTargets(state.project);
 }
 
-function bindingIsOrphan(binding) {
+function bindingIsOrphan(/** @type {any} */ binding) {
   return isRuntimeBindingOrphan(state.project, binding);
 }
 
@@ -3498,7 +3530,7 @@ function renderRuntimeBindingOrphans() {
   section.classList.toggle("hidden", !orphans.length);
   const list = $("#runtime-binding-orphan-list");
   list.replaceChildren();
-  orphans.forEach((binding) => {
+  orphans.forEach((/** @type {any} */ binding) => {
     const item = document.createElement("li");
     item.textContent = `${binding.widget_id} → ${binding.target}`;
     list.append(item);
@@ -3525,7 +3557,7 @@ function bindingFromControls(widgetId = state.selectedWidget?.id) {
   };
 }
 
-function renderRuntimeBinding(widget) {
+function renderRuntimeBinding(/** @type {any} */ widget) {
   const section = $("#runtime-binding-section");
   const targets = runtimeTargets(widget);
   const visible = Boolean(targets.length && state.capabilities["device.states"]);
@@ -3540,17 +3572,17 @@ function renderRuntimeBinding(widget) {
     ? previousTarget : targets[0].value;
   const target = targetControl.value;
   const binding = state.viewerBindings.find(
-    (item) => item.widget_id === widget.id && item.target === target,
+    (/** @type {any} */ item) => item.widget_id === widget.id && item.target === target,
   );
 
   const deviceControl = $("#runtime-binding-device");
   deviceControl.replaceChildren(new Option(t("binding.devicePlaceholder"), ""));
-  (state.viewerRuntimeSources.devices || []).forEach((device) => {
+  (state.viewerRuntimeSources.devices || []).forEach((/** @type {any} */ device) => {
     const suffix = device.status === "ready" ? t("binding.deviceConnectedSuffix") : " · " + (DEVICE_STATUS[device.status] || device.status);
     deviceControl.append(new Option(device.name + suffix, device.id));
   });
   if (binding?.device_id && !(state.viewerRuntimeSources.devices || []).some(
-    (device) => device.id === binding.device_id,
+    (/** @type {any} */ device) => device.id === binding.device_id,
   )) {
     deviceControl.append(new Option(t("binding.deviceUnavailable", { id: binding.device_id }), binding.device_id));
   }
@@ -3581,13 +3613,15 @@ function renderRuntimeBinding(widget) {
 
 function populateRuntimeEntityChoices(selectedEntity = "") {
   const deviceId = $("#runtime-binding-device").value;
-  const device = (state.viewerRuntimeSources.devices || []).find((item) => item.id === deviceId);
+  const device = (state.viewerRuntimeSources.devices || []).find((/** @type {any} */ item) => item.id === deviceId);
   const control = $("#runtime-binding-entity");
   const target = $("#runtime-binding-target").value;
   const current = selectedEntity || control.value;
   control.replaceChildren(new Option(t("binding.entityPlaceholder"), ""));
   const matching = [...(device?.entities || [])].filter((entity) => (
-    entityMatchesRuntimeTarget(entity, target, runtimeStateFor(device, entity.entity_id))
+    (/** @type {any} */ (entityMatchesRuntimeTarget))(
+      entity, target, runtimeStateFor(device, entity.entity_id),
+    )
   ));
   matching
     .sort((left, right) => String(left.name || left.object_id || left.entity_id)
@@ -3600,7 +3634,7 @@ function populateRuntimeEntityChoices(selectedEntity = "") {
       ));
     });
   if (current && !matching.some((entity) => entity.entity_id === current)) {
-    const exists = (device?.entities || []).some((entity) => entity.entity_id === current);
+    const exists = (device?.entities || []).some((/** @type {any} */ entity) => entity.entity_id === current);
     control.append(new Option(
       current + (exists ? t("binding.entityMismatchSuffix") : t("binding.entityUnavailableSuffix")),
       current,
@@ -3609,7 +3643,7 @@ function populateRuntimeEntityChoices(selectedEntity = "") {
   control.value = current || "";
 }
 
-function renderAdditionalRuntimeWidgets(widget, target) {
+function renderAdditionalRuntimeWidgets(/** @type {any} */ widget, /** @type {any} */ target) {
   const control = $("#runtime-binding-additional-widgets");
   control.replaceChildren();
   projectWidgetEntries()
@@ -3624,6 +3658,7 @@ function renderRuntimeBindingStatus() {
   if (!output || $("#runtime-binding-section").classList.contains("hidden")) return;
   const binding = bindingFromControls();
   const health = runtimeBindingHealth(binding, state.viewerRuntimeSources);
+  /** @type {Record<string, string>} */
   const labels = {
     unconfigured: t("binding.status.unconfigured"),
     missing_device: t("binding.status.missingDevice"),
@@ -3634,7 +3669,7 @@ function renderRuntimeBindingStatus() {
   };
   output.className = "runtime-binding-status";
   if (health.status === "online") {
-    const entity = (health.device.entities || []).find((item) => item.entity_id === binding.entity_id);
+    const entity = (health.device.entities || []).find((/** @type {any} */ item) => item.entity_id === binding.entity_id);
     const unit = entity?.unit_of_measurement ? ` ${entity.unit_of_measurement}` : "";
     const received = health.state.received_at
       ? ` · ${new Date(health.state.received_at).toLocaleTimeString("de", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
@@ -3651,7 +3686,7 @@ function renderRuntimeBindingStatus() {
   }
 }
 
-async function persistRuntimeBindings(bindings) {
+async function persistRuntimeBindings(/** @type {any} */ bindings) {
   const cleaned = cleanRuntimeBindings(state.project, bindings);
   try {
     const result = await api("viewer/bindings/" + encodeURIComponent(state.projectName), {
@@ -3667,7 +3702,7 @@ async function persistRuntimeBindings(bindings) {
     renderRuntimeBinding(state.selectedWidget);
     renderCanvas();
     return true;
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     if (error.code === "revision_conflict") await loadViewerBindings(state.projectName);
     renderRuntimeBinding(state.selectedWidget);
     renderRuntimeBindingOrphans();
@@ -3754,7 +3789,7 @@ async function cleanupRuntimeBindings() {
   if (await persistRuntimeBindings(valid)) toast(t("toast.binding.cleanedOrphans", { count: removed }));
 }
 
-function setCanvasRuntimeText(node, text) {
+function setCanvasRuntimeText(/** @type {any} */ node, /** @type {any} */ text) {
   let textNode = node.querySelector(".canvas-widget-text");
   if (!textNode) {
     textNode = document.createElement("span");
@@ -3767,7 +3802,7 @@ function setCanvasRuntimeText(node, text) {
 function applyDesignerRuntimePreview() {
   if (!state.designerRuntimePreview) return;
   const widgets = new Map(projectWidgetEntries().map((widget) => [widget.id, widget]));
-  state.viewerBindings.forEach((binding) => {
+  state.viewerBindings.forEach((/** @type {any} */ binding) => {
     const widget = widgets.get(binding.widget_id);
     const node = widget ? canvasNodeByWidget.get(widget) : null;
     if (!widget || !node) return;
@@ -3782,7 +3817,7 @@ function applyDesignerRuntimePreview() {
     } else if (binding.target === "value" && health.status === "online") {
       const value = Number(health.state.state);
       if (Number.isFinite(value)) {
-        if (["bar", "arc"].includes(widget.widget_type)) {
+        if (["bar", "arc"].includes(widget.widget_type || "")) {
           const previewWidget = {
             ...widget, properties: { ...(widget.properties || {}), value },
           };
@@ -3798,7 +3833,7 @@ function applyDesignerRuntimePreview() {
   });
 }
 
-function toggleWidgetFlag(flag) {
+function toggleWidgetFlag(/** @type {any} */ flag) {
   const widget = state.selectedWidget;
   if (!widget) return;
   pushUndo();
@@ -3815,11 +3850,11 @@ function colorLibrary() {
   return state.project.colors;
 }
 
-function colorReferenceLocations(id, replacement = null) {
+function colorReferenceLocations(/** @type {any} */ id, replacement = null) {
   return findColorReferences(state.project, id, replacement);
 }
 
-function projectIdIsUsed(id, ignoredColorId = null) {
+function projectIdIsUsed(/** @type {any} */ id, ignoredColorId = null) {
   return idIsUsedInProject(state.project, id, ignoredColorId);
 }
 
@@ -3833,8 +3868,8 @@ function resetColorLibraryForm() {
   $("#cancel-color-library-edit").classList.add("hidden");
 }
 
-function editColorLibraryEntry(id) {
-  const entry = colorLibrary().find((item) => item.id === id);
+function editColorLibraryEntry(/** @type {any} */ id) {
+  const entry = colorLibrary().find((/** @type {any} */ item) => item.id === id);
   if (!entry) return;
   state.editingColorId = id;
   $("#color-library-id").value = entry.id;
@@ -3846,12 +3881,12 @@ function editColorLibraryEntry(id) {
   $("#color-library-id").focus();
 }
 
-function saveColorLibraryEntry(event) {
+function saveColorLibraryEntry(/** @type {any} */ event) {
   event.preventDefault();
   const id = $("#color-library-id").value.trim();
   const hex = normalizeLibraryHex($("#color-library-hex").value);
   const error = $("#color-library-error");
-  const fail = (message) => {
+  const fail = (/** @type {any} */ message) => {
     error.textContent = message;
     error.classList.remove("hidden");
   };
@@ -3870,7 +3905,7 @@ function saveColorLibraryEntry(event) {
 
   pushUndo();
   if (state.editingColorId) {
-    const entry = colorLibrary().find((item) => item.id === state.editingColorId);
+    const entry = colorLibrary().find((/** @type {any} */ item) => item.id === state.editingColorId);
     if (!entry) return resetColorLibraryForm();
     const previousId = entry.id;
     entry.id = id;
@@ -3885,8 +3920,8 @@ function saveColorLibraryEntry(event) {
   toast(t("toast.color.saved", { id }));
 }
 
-function deleteColorLibraryEntry(id) {
-  const entry = colorLibrary().find((item) => item.id === id);
+function deleteColorLibraryEntry(/** @type {any} */ id) {
+  const entry = colorLibrary().find((/** @type {any} */ item) => item.id === id);
   if (!entry) return;
   const references = colorReferenceLocations(id);
   if (references.length && !confirm(
@@ -3894,7 +3929,7 @@ function deleteColorLibraryEntry(id) {
   )) return;
   pushUndo();
   if (references.length) colorReferenceLocations(id, normalizeLibraryHex(entry.hex) || entry.hex);
-  state.project.colors = colorLibrary().filter((item) => item !== entry);
+  state.project.colors = colorLibrary().filter((/** @type {any} */ item) => item !== entry);
   if (state.editingColorId === id) resetColorLibraryForm();
   markProjectDirty();
   renderDesigner();
@@ -3906,7 +3941,7 @@ function deleteColorLibraryEntry(id) {
 function renderColorLibrary() {
   const list = $("#color-library-list");
   list.replaceChildren();
-  colorLibrary().forEach((entry) => {
+  colorLibrary().forEach((/** @type {any} */ entry) => {
     const hex = normalizeLibraryHex(entry.hex) || "FFFFFF";
     const row = document.createElement("div");
     row.className = "color-library-item";
@@ -3943,7 +3978,7 @@ function renderColorLibrary() {
 
   const options = $("#project-color-options");
   options.replaceChildren();
-  colorLibrary().forEach((entry) => {
+  colorLibrary().forEach((/** @type {any} */ entry) => {
     const option = document.createElement("option");
     option.value = entry.id;
     option.label = `#${normalizeLibraryHex(entry.hex) || entry.hex}`;
@@ -3952,7 +3987,7 @@ function renderColorLibrary() {
   $("#color-library-export-hint").classList.toggle(
     "hidden", (state.project.export_sections || []).includes("color"),
   );
-  if (state.editingColorId && !colorLibrary().some((entry) => entry.id === state.editingColorId)) {
+  if (state.editingColorId && !colorLibrary().some((/** @type {any} */ entry) => entry.id === state.editingColorId)) {
     resetColorLibraryForm();
   }
   syncLinkedColorPickers();
@@ -3971,10 +4006,10 @@ function syncLinkedColorPickers() {
 function bindColorLibrary() {
   $("#color-library-form").addEventListener("submit", saveColorLibraryEntry);
   $("#cancel-color-library-edit").addEventListener("click", resetColorLibraryForm);
-  $("#color-library-picker").addEventListener("input", (event) => {
+  $("#color-library-picker").addEventListener("input", (/** @type {any} */ event) => {
     $("#color-library-hex").value = event.target.value.slice(1).toUpperCase();
   });
-  $("#color-library-hex").addEventListener("input", (event) => {
+  $("#color-library-hex").addEventListener("input", (/** @type {any} */ event) => {
     const hex = normalizeLibraryHex(event.target.value);
     if (hex) $("#color-library-picker").value = `#${hex}`;
   });
@@ -4045,7 +4080,7 @@ function mdiLocalFontUrl() {
 // literal-value fallback to substitute on delete, so a deleted font's
 // references are cleared instead of replaced.
 
-function fontReferenceLocations(id, replacement = null) {
+function fontReferenceLocations(/** @type {any} */ id, /** @type {any} */ replacement = null) {
   return findFontReferences(state.project, id, replacement);
 }
 
@@ -4079,7 +4114,7 @@ function currentGfontsFamilyInput() {
 
 /** Points the select/custom-field pair at `family`, adding it as the
  * custom fallback if it isn't one of the curated options. */
-function setGfontsFamilyInput(family) {
+function setGfontsFamilyInput(/** @type {any} */ family) {
   const select = $("#font-library-gfonts-family");
   const known = GOOGLE_FONTS.includes(family);
   select.value = known ? family : GOOGLE_FONTS_CUSTOM;
@@ -4093,27 +4128,28 @@ function fontSourceMetadataMap(create = false) {
   return sourceMetadataForProject(state.project, create);
 }
 
-function fontSourceMetadata(entry) {
+function fontSourceMetadata(/** @type {any} */ entry) {
   return fontSourceMetadataMap()[entry?.id] || null;
 }
 
-function isManagedWebFont(entry) {
+function isManagedWebFont(/** @type {any} */ entry) {
   return Boolean(fontSourceMetadata(entry)?.url);
 }
 
-function webFontUrl(entry) {
+function webFontUrl(/** @type {any} */ entry) {
   return fontSourceMetadata(entry)?.url || entry?.web_url || "";
 }
 
 let glyphPreviewRequest = 0;
 let glyphPreviewState = { status: "idle", family: "inherit" };
 // The widget/control an open icon dialog inserts into - null while closed.
+/** @type {any} */
 let activeIconTarget = null;
 
 /** This dialog only ever inserts into the MDI icon webfont, so "mdi:home"
  * name resolution is always on here (unlike the old per-font-editing dialog,
  * where the same lookup had to be disabled for non-icon fonts). */
-function parseGlyphInput(value) {
+function parseGlyphInput(/** @type {any} */ value) {
   return parseGlyphs(value, t);
 }
 
@@ -4121,7 +4157,7 @@ function glyphPreviewPlaceholder() {
   return glyphPreviewState.status === "loading" ? "…" : "?";
 }
 
-function updateGlyphPreviewStatus(message, status) {
+function updateGlyphPreviewStatus(/** @type {any} */ message, /** @type {any} */ status) {
   const node = $("#glyph-preview-status");
   node.textContent = message;
   node.classList.toggle("ready", status === "loaded");
@@ -4136,7 +4172,7 @@ function updateGlyphPreviewStatus(message, status) {
 async function ensureMdiPreviewFont() {
   if (glyphPreviewState.status === "loaded") return;
   const request = ++glyphPreviewRequest;
-  const mdiFont = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
+  const mdiFont = fontLibrary().find((/** @type {any} */ entry) => isMdiWebfontUrl(webFontUrl(entry)));
   const cssUrl = mdiFont?.file_path
     ? assetUrl(mdiFont.file_path)
     : state.system?.mdi_local ? mdiLocalFontUrl() : MDI_WEBFONT_URL;
@@ -4150,7 +4186,7 @@ async function ensureMdiPreviewFont() {
     document.fonts.add(loaded);
     glyphPreviewState = { status: "loaded", family: "esphome_mdi_preview" };
     updateGlyphPreviewStatus("Vorschaufont geladen.", "loaded");
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     if (request !== glyphPreviewRequest) return;
     glyphPreviewState = { status: "failed", family: "inherit" };
     updateGlyphPreviewStatus("Vorschaufont konnte nicht geladen werden.", "failed");
@@ -4197,15 +4233,17 @@ function renderIconCatalog() {
  * text_font - an icon glyph is meaningless without the font that actually
  * contains it. The size field starts at the widget's current MDI font size
  * if it already has one, else the library preset's default (24px). */
-function openIconInsertDialog(widget, control) {
+function openIconInsertDialog(/** @type {any} */ widget, /** @type {any} */ control) {
   activeIconTarget = { widget, control };
   pushUndo();
   $("#glyph-input").value = "";
   $("#glyph-search").value = "";
   $("#glyph-input-error").classList.add("hidden");
   $("#glyph-catalog-version").textContent = `Lokaler MDI-Katalog ${MDI_CATALOG_VERSION}`;
-  const currentFontId = effectiveViewerStyle(state.project, widget, state.activeState).text_font;
-  const currentFont = fontLibrary().find((entry) => entry.id === currentFontId);
+  const currentFontId = /** @type {any} */ (
+    effectiveViewerStyle(state.project, widget, state.activeState)
+  ).text_font;
+  const currentFont = fontLibrary().find((/** @type {any} */ entry) => entry.id === currentFontId);
   const currentIsMdi = currentFont && isMdiWebfontUrl(webFontUrl(currentFont));
   $("#glyph-size").value = (currentIsMdi && Number(currentFont.size)) || 24;
   renderIconCatalog();
@@ -4213,7 +4251,7 @@ function openIconInsertDialog(widget, control) {
   ensureMdiPreviewFont();
 }
 
-async function insertMdiGlyphs(glyphs) {
+async function insertMdiGlyphs(/** @type {any} */ glyphs) {
   if (!activeIconTarget) return;
   const { widget } = activeIconTarget;
   const mdiFont = await ensureMdiFontAtSize($("#glyph-size").value);
@@ -4248,7 +4286,7 @@ function addGlyphInput() {
     insertMdiGlyphs(parsed.join(""));
     $("#glyph-input").value = "";
     error.classList.add("hidden");
-  } catch (problem) {
+  } catch (/** @type {any} */ problem) {
     error.textContent = problem.message;
     error.classList.remove("hidden");
   }
@@ -4258,7 +4296,7 @@ function bindGlyphEditor() {
   $("#close-glyph-dialog").addEventListener("click", () => $("#glyph-dialog").close());
   $("#finish-glyph-dialog").addEventListener("click", () => $("#glyph-dialog").close());
   $("#add-glyph-input").addEventListener("click", addGlyphInput);
-  $("#glyph-input").addEventListener("keydown", (event) => {
+  $("#glyph-input").addEventListener("keydown", (/** @type {any} */ event) => {
     if (event.key === "Enter") { event.preventDefault(); addGlyphInput(); }
   });
   $("#glyph-search").addEventListener("input", renderIconCatalog);
@@ -4288,8 +4326,8 @@ function resetFontLibraryForm() {
   updateFontSourceFieldsVisibility();
 }
 
-function editFontLibraryEntry(id) {
-  const entry = fontLibrary().find((item) => item.id === id);
+function editFontLibraryEntry(/** @type {any} */ id) {
+  const entry = fontLibrary().find((/** @type {any} */ item) => item.id === id);
   if (!entry) return;
   state.editingFontId = id;
   $("#font-library-id").value = entry.id;
@@ -4314,12 +4352,12 @@ function editFontLibraryEntry(id) {
   $("#font-library-id").focus();
 }
 
-function saveFontLibraryEntry(event) {
+function saveFontLibraryEntry(/** @type {any} */ event) {
   event.preventDefault();
   const id = $("#font-library-id").value.trim();
   const source = $("#font-library-source").value;
   const error = $("#font-library-error");
-  const fail = (message) => {
+  const fail = (/** @type {any} */ message) => {
     error.textContent = message;
     error.classList.remove("hidden");
   };
@@ -4372,7 +4410,7 @@ function saveFontLibraryEntry(event) {
   const previousMeta = fontSourceMetadataMap()[previousId] || null;
   const previousWebUrl = previousMeta?.url || "";
   if (state.editingFontId) {
-    entry = fontLibrary().find((item) => item.id === state.editingFontId);
+    entry = fontLibrary().find((/** @type {any} */ item) => item.id === state.editingFontId);
     if (!entry) return resetFontLibraryForm();
     if (previousId !== id) fontReferenceLocations(previousId, id);
     entry.id = id;
@@ -4416,8 +4454,8 @@ function saveFontLibraryEntry(event) {
   toast(t("toast.font.saved", { id }));
 }
 
-function deleteFontLibraryEntry(id) {
-  const entry = fontLibrary().find((item) => item.id === id);
+function deleteFontLibraryEntry(/** @type {any} */ id) {
+  const entry = fontLibrary().find((/** @type {any} */ item) => item.id === id);
   if (!entry) return;
   const references = fontReferenceLocations(id);
   if (references.length && !confirm(
@@ -4425,7 +4463,7 @@ function deleteFontLibraryEntry(id) {
   )) return;
   pushUndo();
   if (references.length) fontReferenceLocations(id, "");
-  state.project.fonts = fontLibrary().filter((item) => item !== entry);
+  state.project.fonts = fontLibrary().filter((/** @type {any} */ item) => item !== entry);
   delete fontSourceMetadataMap(true)[id];
   fontLoadState.delete(id);
   if (state.editingFontId === id) resetFontLibraryForm();
@@ -4436,6 +4474,7 @@ function deleteFontLibraryEntry(id) {
     : t("toast.font.deleted", { id }));
 }
 
+/** @type {Record<string, string>} */
 const FONT_SOURCE_LABELS = {
   builtin: t("fontlib.source.builtin"),
   gfonts: t("fontlib.source.gfonts"),
@@ -4444,7 +4483,7 @@ const FONT_SOURCE_LABELS = {
 };
 const fontSourceStatuses = new Map();
 
-function fontSourceStatus(entry) {
+function fontSourceStatus(/** @type {any} */ entry) {
   const status = fontSourceStatuses.get(entry.id);
   if (status?.url === webFontUrl(entry)) return status;
   if (status) fontSourceStatuses.delete(entry.id);
@@ -4453,7 +4492,7 @@ function fontSourceStatus(entry) {
     : { state: "unmanaged", label: t("fontlib.status.unmanaged") };
 }
 
-async function checkFontSource(entry, manual = false) {
+async function checkFontSource(/** @type {any} */ entry, manual = false) {
   if ((entry.source_kind !== "web" && !isManagedWebFont(entry)) || !state.capabilities["designer.asset_write"]) return;
   const metadata = fontSourceMetadata(entry) || {};
   const existing = fontSourceStatuses.get(entry.id);
@@ -4475,14 +4514,14 @@ async function checkFontSource(entry, manual = false) {
       ? { state: "changed", label: isManagedWebFont(entry) ? t("fontlib.status.updateAvailable") : t("fontlib.status.localMissing"), url: webFontUrl(entry) }
       : { state: "current", label: t("fontlib.status.unchanged"), url: webFontUrl(entry) });
     if (manual) toast(changed ? t("toast.font.updateAvailableFor", { id: entry.id }) : t("toast.font.upToDate", { id: entry.id }));
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     fontSourceStatuses.set(entry.id, { state: "error", label: t("fontlib.status.checkFailed"), url: webFontUrl(entry) });
     if (manual) toast(t("toast.font.checkFailed", { error: error.message }), true);
   }
   renderFontLibrary();
 }
 
-async function updateFontSource(entry) {
+async function updateFontSource(/** @type {any} */ entry) {
   if ((entry.source_kind !== "web" && !isManagedWebFont(entry)) || !state.capabilities["designer.asset_write"]) return;
   fontSourceStatuses.set(entry.id, { state: "checking", label: t("fontlib.status.downloading"), url: webFontUrl(entry) });
   renderFontLibrary();
@@ -4509,7 +4548,7 @@ async function updateFontSource(entry) {
           toast(t("toast.font.revisionUnchanged"), true);
           return;
         }
-      } catch (coverageError) {
+      } catch (/** @type {any} */ coverageError) {
         toast(t("toast.font.glyphCheckFailed", { error: coverageError.message }), true);
       }
     }
@@ -4537,7 +4576,7 @@ async function updateFontSource(entry) {
     } else {
       toast(t("toast.font.pinnedLocally", { id: entry.id, path: result.path }));
     }
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     fontSourceStatuses.set(entry.id, { state: "error", label: t("fontlib.status.updateFailed"), url: webFontUrl(entry) });
     renderFontLibrary();
     toast(t("toast.font.updateFailed", { error: error.message }), true);
@@ -4547,7 +4586,7 @@ async function updateFontSource(entry) {
 function renderFontLibrary() {
   const list = $("#font-library-list");
   list.replaceChildren();
-  fontLibrary().forEach((entry) => {
+  fontLibrary().forEach((/** @type {any} */ entry) => {
     const row = document.createElement("div");
     row.className = "font-library-item";
     const name = document.createElement("span");
@@ -4623,25 +4662,25 @@ function renderFontLibrary() {
   const defaultSelect = $("#default-font");
   const currentDefault = state.project.default_font || "";
   defaultSelect.replaceChildren(new Option(t("fontlib.defaultFontNone"), ""));
-  fontLibrary().forEach((entry) => defaultSelect.append(new Option(entry.id, entry.id)));
-  if (currentDefault && !fontLibrary().some((entry) => entry.id === currentDefault)) {
+  fontLibrary().forEach((/** @type {any} */ entry) => defaultSelect.append(new Option(entry.id, entry.id)));
+  if (currentDefault && !fontLibrary().some((/** @type {any} */ entry) => entry.id === currentDefault)) {
     defaultSelect.append(new Option(t("fontlib.unknownFontSuffix", { id: currentDefault }), currentDefault));
   }
   defaultSelect.value = currentDefault;
 
   const options = $("#project-font-options");
   options.replaceChildren();
-  fontLibrary().forEach((entry) => options.append(new Option(entry.id)));
+  fontLibrary().forEach((/** @type {any} */ entry) => options.append(new Option(entry.id)));
 
   $("#font-library-export-hint").classList.toggle(
     "hidden", (state.project.export_sections || []).includes("font"),
   );
-  if (state.editingFontId && !fontLibrary().some((entry) => entry.id === state.editingFontId)) {
+  if (state.editingFontId && !fontLibrary().some((/** @type {any} */ entry) => entry.id === state.editingFontId)) {
     resetFontLibraryForm();
   }
 }
 
-async function uploadFontFile(file) {
+async function uploadFontFile(/** @type {any} */ file) {
   const content_base64 = await blobToBase64(file);
   const result = await api("designer/assets/fonts", {
     method: "POST", body: JSON.stringify({ name: file.name, content_base64 }),
@@ -4656,7 +4695,7 @@ async function uploadFontFile(file) {
  * library from the start, not just a URL the user still has to fetch
  * themselves. Shared by the Font Library's "Add MDI icons" preset and the
  * icon-insert dialog's per-size auto-provisioning. */
-async function registerAndPinMdiFont(id, size) {
+async function registerAndPinMdiFont(/** @type {any} */ id, /** @type {any} */ size) {
   pushUndo();
   const entry = {
     id, external: false,
@@ -4681,7 +4720,7 @@ async function registerAndPinMdiFont(id, size) {
 /** One-click preset in the Font Library section: pre-provisions the
  * default-size MDI font without assigning it to any widget yet. */
 async function addMdiIconFont() {
-  const existing = fontLibrary().find((entry) => isMdiWebfontUrl(webFontUrl(entry)));
+  const existing = fontLibrary().find((/** @type {any} */ entry) => isMdiWebfontUrl(webFontUrl(entry)));
   if (existing) {
     editFontLibraryEntry(existing.id);
     toast(t("toast.font.mdiAlreadyUsed", { id: existing.id }));
@@ -4702,10 +4741,10 @@ async function addMdiIconFont() {
  * exports with is already scoped per font id (see _is_mdi_font()/
  * _collect_used_glyphs() in yamlexport.py), so this never bakes more than
  * what is actually used at that specific size. */
-async function ensureMdiFontAtSize(size) {
+async function ensureMdiFontAtSize(/** @type {any} */ size) {
   const targetSize = clamp(Math.round(Number(size)) || 24, 1, 255);
   const existing = fontLibrary().find(
-    (entry) => isMdiWebfontUrl(webFontUrl(entry)) && Number(entry.size) === targetSize,
+    (/** @type {any} */ entry) => isMdiWebfontUrl(webFontUrl(entry)) && Number(entry.size) === targetSize,
   );
   if (existing) return existing;
   let id = targetSize === 24 ? MDI_WEBFONT_DEFAULT_ID : `${MDI_WEBFONT_DEFAULT_ID}_${targetSize}`;
@@ -4730,13 +4769,13 @@ function bindFontLibrary() {
       const path = await uploadFontFile(file);
       $("#font-library-file-path").value = path;
       toast(t("toast.font.fileUploaded", { name: file.name }));
-    } catch (error) {
+    } catch (/** @type {any} */ error) {
       toast(t("toast.font.uploadFailed", { error: error.message }), true);
     } finally {
       $("#font-library-file-input").value = "";
     }
   });
-  $("#default-font").addEventListener("change", (event) => {
+  $("#default-font").addEventListener("change", (/** @type {any} */ event) => {
     pushUndo();
     state.project.default_font = event.target.value;
     markProjectDirty();
@@ -4756,15 +4795,15 @@ function styleLibrary() {
   return state.project.styles;
 }
 
-function renderStyleControls(widget) {
+function renderStyleControls(/** @type {any} */ widget) {
   const mode = widget.style_mode === "named" ? "named" : "inline";
   $("#style-mode").value = mode;
 
   const select = $("#style-ref");
   select.replaceChildren(new Option("— keiner —", ""));
-  styleLibrary().forEach((entry) => select.append(new Option(entry.id, entry.id)));
+  styleLibrary().forEach((/** @type {any} */ entry) => select.append(new Option(entry.id, entry.id)));
   const current = (widget.style_refs || [])[0] || "";
-  if (current && !styleLibrary().some((entry) => entry.id === current)) {
+  if (current && !styleLibrary().some((/** @type {any} */ entry) => entry.id === current)) {
     select.append(new Option(`${current} (fehlt)`, current));
   }
   select.value = current;
@@ -4810,7 +4849,7 @@ function saveCurrentStyleAsNamed() {
     toast(t("toast.style.invalidName"), true);
     return;
   }
-  if (styleLibrary().some((entry) => entry.id === name)) {
+  if (styleLibrary().some((/** @type {any} */ entry) => entry.id === name)) {
     toast(t("toast.style.nameExists", { name }), true);
     return;
   }
@@ -4830,6 +4869,7 @@ function saveCurrentStyleAsNamed() {
 // Collapsed by default; the open/closed choice is remembered per group (not
 // per widget) in localStorage, so it does not reset every time the
 // selection changes.
+/** @type {Record<string, string>} */
 const PROPERTY_GROUP_LABELS = {
   spacing: "dynprops.group.spacing",
   border: "dynprops.group.border",
@@ -4849,7 +4889,7 @@ function loadCollapsedGroups() {
 
 const collapsedPropertyGroups = loadCollapsedGroups();
 
-function togglePropertyGroup(key, collapsed) {
+function togglePropertyGroup(/** @type {any} */ key, /** @type {any} */ collapsed) {
   collapsedPropertyGroups[key] = collapsed;
   try {
     window.localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(collapsedPropertyGroups));
@@ -4858,7 +4898,7 @@ function togglePropertyGroup(key, collapsed) {
   }
 }
 
-function appendPropertyGroup(container, key) {
+function appendPropertyGroup(/** @type {any} */ container, /** @type {any} */ key) {
   const details = document.createElement("details");
   details.className = "property-group";
   details.open = !collapsedPropertyGroups[key];
@@ -4870,20 +4910,21 @@ function appendPropertyGroup(container, key) {
   return details;
 }
 
-function renderDynamicProperties(widget) {
+function renderDynamicProperties(/** @type {any} */ widget) {
   const container = $("#dynamic-properties");
   container.replaceChildren();
-  const schema = state.schemas.find((item) => item.type_key === widget.widget_type);
+  const schema = state.schemas.find((/** @type {any} */ item) => item.type_key === widget.widget_type);
   if (!schema) return;
   // Layout and grid placement have their own sections in the markup, so the
   // panel can read top-down: what it is, where it sits, then how it looks.
   const inline = schema.properties.filter(
-    (property) => property.category === "content" || property.category === "style");
+    (/** @type {any} */ property) => property.category === "content" || property.category === "style");
 
   let previousSection = "";
+  /** @type {any} */
   let openGroup = null;
   let openGroupKey = "";
-  inline.forEach((property, index) => {
+  inline.forEach((/** @type {any} */ property, /** @type {any} */ index) => {
     const section = property.category === "content"
       ? t("dynprops.content")
       : t("dynprops.stylePart", { part: property.part }) + (state.activeState ? ` · ${state.activeState}` : "");
@@ -4911,16 +4952,16 @@ function renderDynamicProperties(widget) {
   });
 }
 
-function renderLayoutSection(widget) {
-  const schema = state.schemas.find((item) => item.type_key === widget.widget_type);
-  const properties = (schema?.properties || []).filter((p) => p.category === "layout");
+function renderLayoutSection(/** @type {any} */ widget) {
+  const schema = state.schemas.find((/** @type {any} */ item) => item.type_key === widget.widget_type);
+  const properties = (schema?.properties || []).filter((/** @type {any} */ p) => p.category === "layout");
   $("#layout-section").classList.toggle("hidden", !properties.length);
   if (!properties.length) return;
 
   const container = $("#layout-properties");
   container.replaceChildren();
   const type = String((widget.layout || {}).type || "NONE").toUpperCase();
-  properties.forEach((property, index) => {
+  properties.forEach((/** @type {any} */ property, /** @type {any} */ index) => {
     // Flex and grid options are mutually exclusive; showing both at once
     // invites setting grid tracks on a flex container.
     if (property.key.startsWith("flex_") && type !== "FLEX") return;
@@ -4929,7 +4970,7 @@ function renderLayoutSection(widget) {
   });
 }
 
-function propertyField(widget, property, index, targetKind) {
+function propertyField(/** @type {any} */ widget, /** @type {any} */ property, /** @type {any} */ index, /** @type {any} */ targetKind = property.category) {
   const label = document.createElement("label");
   label.textContent = widget.widget_type === "button" && property.key === "checkable"
     ? "Einrastfunktion (Schalter)"
@@ -4973,7 +5014,7 @@ const IMAGE_TRANSPARENCY_OPTIONS = [
   ["alpha_channel", "alpha_channel"],
 ];
 
-function appendPropertyControl(label, control, property, widget) {
+function appendPropertyControl(/** @type {any} */ label, /** @type {any} */ control, /** @type {any} */ property, /** @type {any} */ widget = state.selectedWidget) {
   if (property.kind === "text") {
     const row = document.createElement("div");
     row.className = "text-with-icon-row";
@@ -5063,13 +5104,14 @@ function appendPropertyControl(label, control, property, widget) {
   label.append(row);
 }
 
-function propertyTarget(widget, property, create, kind = property.category) {
+function propertyTarget(/** @type {any} */ widget, /** @type {any} */ property, /** @type {any} */ create, kind = property.category) {
   return resolvePropertyTarget(widget, property, create, kind, state.activeState);
 }
 
 function renderStateChoices() {
   const select = $("#style-state");
   select.replaceChildren(new Option("Normal", ""));
+  /** @type {Record<string, string>} */
   const labels = {
     checked: t("properties.state.checked"),
     pressed: t("properties.state.pressed"),
@@ -5078,7 +5120,7 @@ function renderStateChoices() {
     edited: t("properties.state.edited"),
     scrolled: t("properties.state.scrolled"),
   };
-  state.states.forEach((name) => select.append(new Option(labels[name] || name, name)));
+  state.states.forEach((/** @type {any} */ name) => select.append(new Option(labels[name] || name, name)));
   select.value = state.activeState;
 
   const hint = $("#style-state-hint");
@@ -5138,19 +5180,19 @@ function bindThemeEditor() {
 function renderThemeEditor() {
   // A stub type like "tile" has no style properties of its own (see
   // widgetschema.py) - a theme entry for it would have nothing to edit.
-  const themeableSchemas = state.schemas.filter((schema) => !schema.is_stub);
+  const themeableSchemas = state.schemas.filter((/** @type {any} */ schema) => !schema.is_stub);
   const typeSelect = $("#theme-type");
   typeSelect.replaceChildren();
-  themeableSchemas.forEach((schema) => typeSelect.append(new Option(schema.label, schema.type_key)));
+  themeableSchemas.forEach((/** @type {any} */ schema) => typeSelect.append(new Option(schema.label, schema.type_key)));
   if (!state.themeType && themeableSchemas.length) state.themeType = themeableSchemas[0].type_key;
   typeSelect.value = state.themeType;
 
   const stateSelect = $("#theme-state");
   stateSelect.replaceChildren(new Option("Normal", ""));
-  state.states.forEach((name) => stateSelect.append(new Option(name, name)));
+  state.states.forEach((/** @type {any} */ name) => stateSelect.append(new Option(name, name)));
   stateSelect.value = state.themeState;
 
-  const schema = state.schemas.find((item) => item.type_key === state.themeType);
+  const schema = state.schemas.find((/** @type {any} */ item) => item.type_key === state.themeType);
   const entry = themeLibrary()[state.themeType];
   $("#delete-theme-entry").disabled = !entry;
   $("#theme-empty").classList.toggle("hidden", Boolean(entry));
@@ -5158,9 +5200,10 @@ function renderThemeEditor() {
   const container = $("#theme-properties");
   container.replaceChildren();
   if (!schema) return;
-  const properties = schema.properties.filter((property) => property.category === "style");
+  const properties = schema.properties.filter((/** @type {any} */ property) => property.category === "style");
+  /** @type {any} */
   let previousPart = null;
-  properties.forEach((property, index) => {
+  properties.forEach((/** @type {any} */ property, /** @type {any} */ index) => {
     if (property.part !== previousPart) {
       const heading = document.createElement("div");
       heading.className = "property-section";
@@ -5185,7 +5228,7 @@ function renderThemeEditor() {
 // Mirrors propertyTarget()'s state-routing (root.states[<state>]), but keyed
 // by widget TYPE against project.theme instead of by widget instance against
 // widget.style_tree.
-function themePropertyTarget(typeKey, property, create) {
+function themePropertyTarget(/** @type {any} */ typeKey, /** @type {any} */ property, /** @type {any} */ create) {
   if (!typeKey) return undefined;
   const lib = themeLibrary();
   if (!lib[typeKey] && create) lib[typeKey] = {};
@@ -5202,7 +5245,7 @@ function themePropertyTarget(typeKey, property, create) {
   return root[property.part];
 }
 
-async function updateThemeProperty(property, control) {
+async function updateThemeProperty(/** @type {any} */ property, /** @type {any} */ control) {
   const target = themePropertyTarget(state.themeType, property, true);
   if (property.kind === "image_ref" && control.value === ADD_IMAGE_OPTION) {
     pushUndo();
@@ -5231,7 +5274,7 @@ async function updateThemeProperty(property, control) {
   renderThemeEditor();
 }
 
-function renderGridCellSection(widget) {
+function renderGridCellSection(/** @type {any} */ widget) {
   const section = $("#grid-cell-section");
   const parent = findParent(activeWidgetRoots(), widget);
   const entry = activeSurfaceEntry();
@@ -5244,7 +5287,7 @@ function renderGridCellSection(widget) {
 
   const container = $("#grid-cell-properties");
   container.replaceChildren();
-  state.gridCellProperties.forEach((property, index) => {
+  state.gridCellProperties.forEach((/** @type {any} */ property, /** @type {any} */ index) => {
     container.append(propertyField(widget, property, `gc-${index}`, "grid_cell"));
   });
 }
@@ -5253,7 +5296,7 @@ function renderGridCellSection(widget) {
 // generic PropertyDefs (a tile has no styling of its own in real ESPHome
 // YAML - see the widgetschema.py comment on the "tile" pseudo-widget), so
 // this section is bound directly rather than through propertyField().
-function renderTileSection(widget) {
+function renderTileSection(/** @type {any} */ widget) {
   const section = $("#tile-section");
   const isTile = widget.widget_type === "tile";
   section.classList.toggle("hidden", !isTile);
@@ -5263,7 +5306,7 @@ function renderTileSection(widget) {
   $("#tile-dir").value = widget.tile_dir || "ALL";
 }
 
-function renderTileviewActionsSection(widget) {
+function renderTileviewActionsSection(/** @type {any} */ widget) {
   const isTileview = widget.widget_type === "tileview";
   $("#tileview-actions-section").classList.toggle("hidden", !isTileview);
 }
@@ -5273,8 +5316,8 @@ function addTileToSelectedTileview() {
   if (!tileview || tileview.widget_type !== "tileview") return;
   pushUndo();
   const usedCols = (tileview.children || [])
-    .filter((tile) => (tile.tile_row || 0) === 0)
-    .map((tile) => tile.tile_col || 0);
+    .filter((/** @type {any} */ tile) => (tile.tile_row || 0) === 0)
+    .map((/** @type {any} */ tile) => tile.tile_col || 0);
   let col = 0;
   while (usedCols.includes(col)) col += 1;
   const tile = {
@@ -5295,7 +5338,7 @@ function addTileToSelectedTileview() {
 // `tab_title` is a dedicated WidgetNode field, not a generic PropertyDef -
 // same reasoning as renderTileSection() above, applied to the "tab"
 // pseudo-widget.
-function renderTabSection(widget) {
+function renderTabSection(/** @type {any} */ widget) {
   const section = $("#tab-section");
   const isTab = widget.widget_type === "tab";
   section.classList.toggle("hidden", !isTab);
@@ -5303,7 +5346,7 @@ function renderTabSection(widget) {
   $("#tab-title").value = widget.tab_title || "";
 }
 
-function renderTabviewActionsSection(widget) {
+function renderTabviewActionsSection(/** @type {any} */ widget) {
   const isTabview = widget.widget_type === "tabview";
   $("#tabview-actions-section").classList.toggle("hidden", !isTabview);
 }
@@ -5328,16 +5371,18 @@ function addTabToSelectedTabview() {
   renderDesigner();
 }
 
-function findParent(nodes, target, parent = null) {
+/** @returns {any} */
+function findParent(/** @type {any} */ nodes, /** @type {any} */ target, /** @type {any} */ parent = null) {
   for (const node of nodes) {
     if (node === target) return parent;
+    /** @type {any} */
     const found = findParent(node.children || [], target, node);
     if (found !== undefined) return found;
   }
   return undefined;
 }
 
-function renderExtraKeys(widget) {
+function renderExtraKeys(/** @type {any} */ widget) {
   const section = $("#extra-keys-section");
   const keys = Object.keys(widget.extra || {});
   section.classList.toggle("hidden", keys.length === 0);
@@ -5352,8 +5397,8 @@ function imageLibrary() {
   return state.project.images;
 }
 
-function imageEntry(id) {
-  return id ? imageLibrary().find((entry) => entry.id === id) : undefined;
+function imageEntry(/** @type {any} */ id) {
+  return id ? imageLibrary().find((/** @type {any} */ entry) => entry.id === id) : undefined;
 }
 
 function fontLibrary() {
@@ -5368,8 +5413,8 @@ function fontLibrary() {
 // and the fields identifying that source. Two font: entries that would
 // bake the identical source at the identical size is pure YAML/flash
 // bloat, never something a user actually wants.
-function findEquivalentFontEntry(candidate) {
-  return fontLibrary().find((entry) => {
+function findEquivalentFontEntry(/** @type {any} */ candidate) {
+  return fontLibrary().find((/** @type {any} */ entry) => {
     if (entry.source_kind !== candidate.source_kind) return false;
     if (Number(entry.size) !== candidate.size || Number(entry.bpp) !== candidate.bpp) return false;
     if (candidate.source_kind === "builtin") return entry.builtin_name === candidate.builtin_name;
@@ -5390,9 +5435,9 @@ function findEquivalentFontEntry(candidate) {
 // Same fallback as viewer.js's viewerFont(): a name like "montserrat_16"
 // that was never actually registered in the library still yields a
 // plausible size instead of falling back to the browser default.
-function fontEntrySize(reference) {
+function fontEntrySize(/** @type {any} */ reference) {
   if (!reference) return null;
-  const entry = fontLibrary().find((font) => font.id === reference);
+  const entry = fontLibrary().find((/** @type {any} */ font) => font.id === reference);
   const inferredSize = Number.parseInt(String(reference).match(/(\d+)(?!.*\d)/)?.[1] || "", 10);
   return Number(entry?.size) || inferredSize || null;
 }
@@ -5408,9 +5453,9 @@ const fontLoadState = new Map();
 // browser's generic sans-serif. Loading is async; once it resolves this
 // re-renders so layout/measurement (layout.js's resolvedFontFamily) and the
 // visible label text both pick up the real family.
-function ensureFontLoaded(fontId) {
+function ensureFontLoaded(/** @type {any} */ fontId) {
   if (!fontId || fontLoadState.has(fontId)) return;
-  const entry = fontLibrary().find((font) => font.id === fontId);
+  const entry = fontLibrary().find((/** @type {any} */ font) => font.id === fontId);
   // A `font: file: {type: web, url: ...}` entry keeps its URL in web_url,
   // not file_path (which stays empty for that source kind) - web_url is
   // already a full http(s) URL, so it needs no assetUrl() resolution.
@@ -5427,7 +5472,7 @@ function ensureFontLoaded(fontId) {
   });
 }
 
-function isRemoteAsset(path) {
+function isRemoteAsset(/** @type {any} */ path) {
   return /^https?:\/\//i.test(String(path || ""));
 }
 
@@ -5438,7 +5483,7 @@ function isRemoteAsset(path) {
 // the first place. Deliberately not used by addImageSource(): a user typing
 // an arbitrary path into that prompt is a different trust situation than a
 // path that already existed in an imported project.
-function assetUrl(filePath) {
+function assetUrl(/** @type {any} */ filePath) {
   if (isRemoteAsset(filePath)) return filePath;
   const appBase = window.location.pathname.endsWith("/")
     ? window.location.pathname
@@ -5448,7 +5493,7 @@ function assetUrl(filePath) {
 
 // The canvas can show any source the browser can fetch: an http(s) URL
 // as-is, or a local path (from an imported config) through assetUrl().
-function displayableImageSource(id) {
+function displayableImageSource(/** @type {any} */ id) {
   const entry = imageEntry(id);
   return entry && entry.file_path ? assetUrl(entry.file_path) : null;
 }
@@ -5457,6 +5502,7 @@ function displayableImageSource(id) {
 // the app is open (uploads/pins go through this same app), so a stale list
 // only ever misses a file someone else added on the host in the meantime,
 // same trade-off the font library's "check for update" already accepts.
+/** @type {any} */
 let serverImageAssetsCache = null;
 
 async function availableServerImages() {
@@ -5472,8 +5518,8 @@ async function availableServerImages() {
       return [];
     }
   }
-  const used = new Set(imageLibrary().map((entry) => entry.file_path));
-  return serverImageAssetsCache.filter((path) => !used.has(path));
+  const used = new Set(imageLibrary().map((/** @type {any} */ entry) => entry.file_path));
+  return serverImageAssetsCache.filter((/** @type {any} */ path) => !used.has(path));
 }
 
 // Registers an image already sitting in the host's images/ folder (as
@@ -5483,8 +5529,8 @@ async function availableServerImages() {
 // entry for the same path rather than ever creating a second one - two
 // image: entries pointing at the identical file is pure YAML/flash bloat,
 // never something a user actually wants.
-function registerServerImageAsset(path) {
-  const existing = imageLibrary().find((entry) => entry.file_path === path);
+function registerServerImageAsset(/** @type {any} */ path) {
+  const existing = imageLibrary().find((/** @type {any} */ entry) => entry.file_path === path);
   if (existing) return existing.id;
   const base = (path.split("/").pop() || "bild").replace(/\.[^.]*$/, "");
   const slug = base.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "bild";
@@ -5505,7 +5551,7 @@ async function addImageSource() {
   const existing = await availableServerImages();
   let url;
   if (existing.length) {
-    const list = existing.map((path, index) => `${index + 1}: ${path}`).join("\n");
+    const list = existing.map((/** @type {any} */ path, /** @type {any} */ index) => `${index + 1}: ${path}`).join("\n");
     const answer = (prompt(t("prompt.image.urlOrExisting", { list }), "https://") || "").trim();
     const index = Number.parseInt(answer, 10);
     if (Number.isInteger(index) && index >= 1 && index <= existing.length) {
@@ -5522,7 +5568,7 @@ async function addImageSource() {
   }
   // Typing a URL that already backs another entry must not create a
   // second, functionally-identical image: block - reuse the existing one.
-  const existingEntry = imageLibrary().find((entry) => entry.file_path === url);
+  const existingEntry = imageLibrary().find((/** @type {any} */ entry) => entry.file_path === url);
   if (existingEntry) return existingEntry.id;
   const base = (url.split("/").pop() || "bild").replace(/\.[^.]*$/, "");
   const slug = base.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "bild";
@@ -5535,7 +5581,7 @@ async function addImageSource() {
 
 // Sizing a widget to the asset it was just given is what most design tools
 // do on drop; the desktop app does the same via ImageRefEditor.imagePicked.
-function resizeWidgetToImage(widget, id) {
+function resizeWidgetToImage(/** @type {any} */ widget, /** @type {any} */ id) {
   const source = displayableImageSource(id);
   if (!source) return;
   const probe = new Image();
@@ -5553,12 +5599,13 @@ function resizeWidgetToImage(widget, id) {
   probe.src = source;
 }
 
-function propertyControl(property, value, index) {
+function propertyControl(/** @type {any} */ property, /** @type {any} */ value, /** @type {any} */ index) {
+  /** @type {any} */
   let control;
   if (property.kind === "image_ref") {
     control = document.createElement("select");
     control.append(new Option("—", ""));
-    imageLibrary().forEach((entry) => control.append(new Option(entry.id, entry.id)));
+    imageLibrary().forEach((/** @type {any} */ entry) => control.append(new Option(entry.id, entry.id)));
     if (value && !imageEntry(value)) control.append(new Option(`${value} (fehlt)`, value));
     control.value = value ?? "";
     control.append(new Option("＋ Neue Bildquelle …", ADD_IMAGE_OPTION));
@@ -5572,40 +5619,15 @@ function propertyControl(property, value, index) {
       control.append(new Option(t("dynprops.widgetRefMissing", { id: value }), value));
     }
     control.value = value ?? "";
-  } else if (property.kind === "bool") {
-    control = document.createElement("input");
-    control.type = "checkbox";
-    control.checked = value ?? Boolean(property.default);
-  } else if (property.kind === "enum") {
-    control = document.createElement("select");
-    control.append(new Option("—", ""));
-    property.enum_values.forEach((option) => control.append(new Option(option, option)));
-    if (value !== undefined && !property.enum_values.includes(String(value))) {
-      control.append(new Option(String(value), String(value)));
-    }
-    control.value = value ?? "";
-  } else if (LIST_KINDS.includes(property.kind)) {
-    // The model value is a list even though the editor is one line - grid
-    // tracks and animation frames are both short, comma-separated sequences.
-    control = document.createElement("input");
-    control.type = "text";
-    control.value = Array.isArray(value) ? value.join(", ") : "";
-    control.placeholder = property.kind === "grid_track_list"
-      ? "40, FR(1), CONTENT" : property.kind === "text_list"
-        ? t("dynprops.optionsPlaceholder") : "img_a, img_b";
   } else {
-    control = document.createElement("input");
-    control.type = ["int", "float"].includes(property.kind) ? "number" : "text";
-    if (property.kind === "float") control.step = "any";
-    control.value = value ?? "";
-    if (property.default !== null) control.placeholder = String(property.default);
-    if (property.kind === "color") control.placeholder = "RRGGBB oder Farb-ID";
+    control = createBasicPropertyControl(document, property, value);
+    if (property.kind === "text_list") control.placeholder = t("dynprops.optionsPlaceholder");
   }
   control.id = `dynamic-${index}-${property.part}-${property.key}`;
   return control;
 }
 
-async function updateDynamicProperty(widget, property, control, targetKind = property.category) {
+async function updateDynamicProperty(/** @type {any} */ widget, /** @type {any} */ property, /** @type {any} */ control, targetKind = property.category) {
   const target = propertyTarget(widget, property, true, targetKind);
   if (property.kind === "image_ref" && control.value === ADD_IMAGE_OPTION) {
     pushUndo();
@@ -5644,7 +5666,7 @@ async function updateDynamicProperty(widget, property, control, targetKind = pro
   if (targetKind === "layout" || targetKind === "grid_cell") renderProperties();
 }
 
-function updateSelectedWidget(event) {
+function updateSelectedWidget(/** @type {any} */ event) {
   const widget = state.selectedWidget;
   if (!widget) return;
   const key = event.target.id.replace("prop-", "");
@@ -5662,9 +5684,9 @@ function updateSelectedWidget(event) {
     widget[key] = Number(event.target.value) || 0;
     if (delta) {
       (state.project.glow_strokes || [])
-        .filter((stroke) => stroke.parent_id === widget.id)
-        .forEach((stroke) => {
-          stroke.points = stroke.points.map(([px, py]) => (
+        .filter((/** @type {any} */ stroke) => stroke.parent_id === widget.id)
+        .forEach((/** @type {any} */ stroke) => {
+          stroke.points = stroke.points.map((/** @type {any} */ [px, py]) => (
             key === "x" ? [px + delta, py] : [px, py + delta]
           ));
         });
@@ -5682,7 +5704,7 @@ function updateSelectedWidget(event) {
   }
 }
 
-function replaceProjectWidgetReferences(previousId, nextId) {
+function replaceProjectWidgetReferences(/** @type {any} */ previousId, /** @type {any} */ nextId) {
   replaceWidgetReferences(state.project, state.viewerBindings, previousId, nextId);
 }
 
@@ -5692,8 +5714,8 @@ function deleteSelectedWidget() {
   // Glow lines aren't part of the widget tree, so removing a container would
   // otherwise leave its child lines pointing at a parent_id that no longer
   // exists anywhere - orphan them back to top-level instead.
-  const removedIds = new Set(allWidgets([state.selectedWidget]).map((widget) => widget.id));
-  (state.project.glow_strokes || []).forEach((stroke) => {
+  const removedIds = new Set(allWidgets([state.selectedWidget]).map((/** @type {any} */ widget) => widget.id));
+  (state.project.glow_strokes || []).forEach((/** @type {any} */ stroke) => {
     if (removedIds.has(stroke.parent_id)) stroke.parent_id = "";
   });
   removeWidget(activeWidgetRoots(), state.selectedWidget);
@@ -5702,16 +5724,16 @@ function deleteSelectedWidget() {
   renderDesigner();
 }
 
-function widgetAllowsChildren(widget) {
-  const schema = state.schemas.find((item) => item.type_key === widget.widget_type);
+function widgetAllowsChildren(/** @type {any} */ widget) {
+  const schema = state.schemas.find((/** @type {any} */ item) => item.type_key === widget.widget_type);
   return Boolean(schema?.allows_children);
 }
 
-function cloneWidgetSubtree(widget) {
+function cloneWidgetSubtree(/** @type {any} */ widget) {
   return cloneProjectWidgetSubtree(state.project, widget);
 }
 
-function duplicateWidget(widget) {
+function duplicateWidget(/** @type {any} */ widget) {
   pushUndo();
   const location = findWidgetLocation(activeWidgetRoots(), widget);
   if (!location) return;
@@ -5723,7 +5745,7 @@ function duplicateWidget(widget) {
   renderDesigner();
 }
 
-function duplicateStroke(stroke) {
+function duplicateStroke(/** @type {any} */ stroke) {
   pushUndo();
   const list = state.project.glow_strokes || [];
   const index = list.indexOf(stroke);
@@ -5750,6 +5772,7 @@ function duplicateStroke(stroke) {
 // sibling widgets - the tree always lists a container's child widgets before
 // its child lines, so there is no finer position to preserve there anyway.
 
+/** @type {any} */
 let treeDrag = null; // { kind: "widget", widget } | { kind: "stroke", stroke }
 
 function clearDropIndicators() {
@@ -5757,14 +5780,14 @@ function clearDropIndicators() {
     .forEach((el) => el.classList.remove("drop-before", "drop-after", "drop-into"));
 }
 
-function bindTreeItemDrag(item, payload, { allowInto }) {
+function bindTreeItemDrag(/** @type {any} */ item, /** @type {any} */ payload, /** @type {any} */ { allowInto }) {
   item.draggable = true;
-  item.addEventListener("dragstart", (event) => {
+  item.addEventListener("dragstart", (/** @type {any} */ event) => {
     event.stopPropagation();
     treeDrag = payload;
     event.dataTransfer.effectAllowed = "move";
   });
-  item.addEventListener("dragover", (event) => {
+  item.addEventListener("dragover", (/** @type {any} */ event) => {
     if (!treeDrag) return;
     event.preventDefault();
     event.stopPropagation();
@@ -5775,7 +5798,7 @@ function bindTreeItemDrag(item, payload, { allowInto }) {
     else if (ratio <= 0.5) item.classList.add("drop-before");
     else item.classList.add("drop-after");
   });
-  item.addEventListener("drop", (event) => {
+  item.addEventListener("drop", (/** @type {any} */ event) => {
     if (!treeDrag) return;
     event.preventDefault();
     event.stopPropagation();
@@ -5785,14 +5808,14 @@ function bindTreeItemDrag(item, payload, { allowInto }) {
     performTreeDrop(treeDrag, { ...payload, position });
     treeDrag = null;
   });
-  item.addEventListener("dragend", (event) => {
+  item.addEventListener("dragend", (/** @type {any} */ event) => {
     event.stopPropagation();
     clearDropIndicators();
     treeDrag = null;
   });
 }
 
-function performTreeDrop(dragged, target) {
+function performTreeDrop(/** @type {any} */ dragged, /** @type {any} */ target) {
   if (!dragged) return;
   if (dragged.kind === "widget" && target.kind === "widget" && dragged.widget === target.widget) return;
   if (dragged.kind === "stroke" && target.kind === "stroke" && dragged.stroke === target.stroke) return;
@@ -5816,7 +5839,7 @@ function performTreeDrop(dragged, target) {
       destArray.splice(destIndex, 0, draggedWidget);
     } else if (target.kind === "stroke") {
       const containerId = target.stroke.parent_id;
-      const container = containerId ? allWidgets().find((w) => w.id === containerId) : null;
+      const container = containerId ? allWidgets().find((/** @type {any} */ w) => w.id === containerId) : null;
       (container ? container.children : roots).push(draggedWidget);
     } else {
       roots.push(draggedWidget);
@@ -5872,11 +5895,11 @@ function renderTree() {
 
   if (!tree.dataset.dropBound) {
     tree.dataset.dropBound = "1";
-    tree.addEventListener("dragover", (event) => {
+    tree.addEventListener("dragover", (/** @type {any} */ event) => {
       if (!treeDrag) return;
       event.preventDefault();
     });
-    tree.addEventListener("drop", (event) => {
+    tree.addEventListener("drop", (/** @type {any} */ event) => {
       if (!treeDrag) return;
       event.preventDefault();
       clearDropIndicators();
@@ -5890,7 +5913,7 @@ function renderTree() {
     return;
   }
 
-  const appendStroke = (stroke, depth) => {
+  const appendStroke = (/** @type {any} */ stroke, /** @type {any} */ depth) => {
     const item = document.createElement("div");
     item.className = `tree-item${state.canvasMode === "lines" && state.selectedStroke === stroke ? " selected" : ""}`;
     item.style.paddingLeft = `${9 + depth * 16}px`;
@@ -5919,7 +5942,7 @@ function renderTree() {
     bindTreeItemDrag(item, { kind: "stroke", stroke }, { allowInto: false });
   };
 
-  const appendNodes = (nodes, depth = 0) => nodes.forEach((widget) => {
+  const appendNodes = (/** @type {any} */ nodes, depth = 0) => nodes.forEach((/** @type {any} */ widget) => {
     const item = document.createElement("div");
     item.className = `tree-item${state.canvasMode === "widgets" && state.selectedWidget === widget ? " selected" : ""}`;
     item.style.paddingLeft = `${9 + depth * 16}px`;
@@ -5945,9 +5968,9 @@ function renderTree() {
     tree.append(item);
     bindTreeItemDrag(item, { kind: "widget", widget }, { allowInto: widgetAllowsChildren(widget) });
     appendNodes(widget.children || [], depth + 1);
-    strokes.filter((stroke) => stroke.parent_id === widget.id).forEach((stroke) => appendStroke(stroke, depth + 1));
+    strokes.filter((/** @type {any} */ stroke) => stroke.parent_id === widget.id).forEach((/** @type {any} */ stroke) => appendStroke(stroke, depth + 1));
   });
-  const appendReadOnlyNodes = (nodes, depth = 1) => (nodes || []).forEach((widget) => {
+  const appendReadOnlyNodes = (/** @type {any} */ nodes, depth = 1) => (nodes || []).forEach((/** @type {any} */ widget) => {
     const item = document.createElement("div");
     item.className = "tree-item tree-readonly";
     item.style.paddingLeft = `${9 + depth * 16}px`;
@@ -5959,7 +5982,7 @@ function renderTree() {
     tree.append(item);
     appendReadOnlyNodes(widget.children, depth + 1);
   });
-  const appendSurface = (key, title, surface, { skipped = false } = {}) => {
+  const appendSurface = (/** @type {any} */ key, /** @type {any} */ title, /** @type {any} */ surface, { skipped = false } = {}) => {
     const header = document.createElement("div");
     const active = state.activeSurface === key;
     header.className = `tree-item tree-surface${active ? " active" : ""}`;
@@ -5978,18 +6001,18 @@ function renderTree() {
   } else {
     if (state.project.widgets.length) appendSurface("root", t("surface.root"), state.project);
     if (state.project.bottom_layer) appendSurface("bottom", "Bottom-Layer", state.project.bottom_layer);
-    (state.project.pages || []).forEach((page) => {
+    (state.project.pages || []).forEach((/** @type {any} */ page) => {
       appendSurface(`page:${page.id}`, t("surface.pageLabel", { id: page.id }), page, { skipped: page.skip });
     });
     if (state.project.top_layer) appendSurface("top", "Top-Layer", state.project.top_layer);
   }
 
   if (activeSurfaceEntry().kind === "root") {
-    strokes.filter((stroke) => !stroke.parent_id).forEach((stroke) => appendStroke(stroke, 0));
+    strokes.filter((/** @type {any} */ stroke) => !stroke.parent_id).forEach((/** @type {any} */ stroke) => appendStroke(stroke, 0));
   }
 }
 
-function treeGlyph(widget, flag, iconHtml, title) {
+function treeGlyph(/** @type {any} */ widget, /** @type {any} */ flag, /** @type {any} */ iconHtml, /** @type {any} */ title) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = `tree-glyph${widget[flag] ? " active" : ""}`;
@@ -6007,7 +6030,7 @@ function treeGlyph(widget, flag, iconHtml, title) {
   return button;
 }
 
-function treeActionGlyph(iconHtml, title, onClick) {
+function treeActionGlyph(/** @type {any} */ iconHtml, /** @type {any} */ title, /** @type {any} */ onClick) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "tree-glyph";
@@ -6035,7 +6058,7 @@ async function exportDesignerYaml() {
     $("#yaml-dialog").showModal();
     renderDesignerStatus();
     populateMergeDraftTargets();
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     $("#designer-status").textContent = t("designer.status.exportFailed");
     renderExportIssues(error.details?.issues || []);
     toast(error.message, true);
@@ -6058,7 +6081,7 @@ async function populateMergeDraftTargets() {
   button.disabled = true;
   try {
     const result = await api("configurations");
-    result.configurations.forEach((configuration) => {
+    result.configurations.forEach((/** @type {any} */ configuration) => {
       select.append(new Option(configuration.name, configuration.name));
     });
     if (state.project.import_source?.name) {
@@ -6087,9 +6110,9 @@ async function saveMergeDraft() {
     $$(".view").forEach((view) => view.classList.toggle("active", view.id === "configurations"));
     $("#configurations").classList.remove("showing-list");
     await loadConfigurations();
-    const entry = state.configurations.find((item) => item.name === target);
+    const entry = state.configurations.find((/** @type {any} */ item) => item.name === target);
     if (entry) await loadConfiguration(entry);
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(error.message, true);
   } finally {
     button.disabled = !$("#merge-draft-target").value;
@@ -6135,28 +6158,28 @@ async function downloadProjectZip() {
     } else {
       toast(t("toast.zip.downloaded"));
     }
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     toast(t("toast.zip.downloadFailed", { error: error.message }), true);
   } finally {
     button.disabled = false;
   }
 }
 
-function renderExportIssues(issues) {
+function renderExportIssues(/** @type {any} */ issues) {
   renderIssues($("#yaml-issues"), issues, t("issues.contextExport"));
 }
 
-function isBlockingIssue(issue) {
+function isBlockingIssue(/** @type {any} */ issue) {
   // Validation issues use severity "error"; the YAML exporter and importer
   // use "A" (blocking) vs "B" (warning) vs "C" (informational).
   return issue.severity === "error" || issue.severity === "A";
 }
 
-function renderIssues(container, issues, context = "") {
+function renderIssues(/** @type {any} */ container, /** @type {any} */ issues, context = "") {
   container.replaceChildren();
   // "Preserved but not editable" notes are informational and a real config
   // produces dozens of them - listing each one would bury the real warnings.
-  const notable = issues.filter((issue) => issue.severity !== "C");
+  const notable = issues.filter((/** @type {any} */ issue) => issue.severity !== "C");
   const preserved = issues.length - notable.length;
   container.classList.toggle("hidden", !notable.length && !preserved);
   if (!notable.length && !preserved) return;
@@ -6176,7 +6199,7 @@ function renderIssues(container, issues, context = "") {
   if (!notable.length) return;
 
   const list = document.createElement("ul");
-  notable.forEach((issue) => {
+  notable.forEach((/** @type {any} */ issue) => {
     const entry = document.createElement("li");
     entry.className = isBlockingIssue(issue) ? "issue-error" : "issue-warning";
     const where = issue.widget_id || issue.widget || issue.resource || issue.path || "";
@@ -6208,7 +6231,7 @@ function bindConfigurations() {
   editor.addEventListener("scroll", () => {
     $("#yaml-line-numbers").scrollTop = editor.scrollTop;
   });
-  editor.addEventListener("keydown", (event) => {
+  editor.addEventListener("keydown", (/** @type {any} */ event) => {
     if (event.key !== "Tab") return;
     event.preventDefault();
     const start = editor.selectionStart;
@@ -6218,7 +6241,7 @@ function bindConfigurations() {
   $("#yaml-search-next").addEventListener("click", () => findYamlMatch(1));
   $("#yaml-search-previous").addEventListener("click", () => findYamlMatch(-1));
   $("#yaml-search").addEventListener("input", () => findYamlMatch(0));
-  $("#yaml-search").addEventListener("keydown", (event) => {
+  $("#yaml-search").addEventListener("keydown", (/** @type {any} */ event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
     findYamlMatch(event.shiftKey ? -1 : 1);
@@ -6233,12 +6256,12 @@ function bindConfigurations() {
 
 function updateYamlEditorUi() {
   const editor = $("#yaml-editor");
-  const lineCount = editor.value.split("\n").length;
-  $("#yaml-line-numbers").textContent = Array.from(
-    { length: lineCount }, (_unused, index) => String(index + 1),
-  ).join("\n");
-  state.yamlDirty = Boolean(state.activeConfig)
-    && editor.value !== state.yamlLoadedContent;
+  $("#yaml-line-numbers").textContent = lineNumbers(editor.value);
+  state.yamlDirty = editorIsDirty(
+    state.activeConfig,
+    editor.value,
+    state.yamlLoadedContent,
+  );
   const status = $("#yaml-dirty-status");
   status.classList.toggle("dirty", state.yamlDirty);
   status.textContent = !state.activeConfig
@@ -6251,12 +6274,13 @@ function updateYamlEditorUi() {
 
 function updateYamlCursorStatus() {
   const editor = $("#yaml-editor");
-  const before = editor.value.slice(0, editor.selectionStart);
-  const lines = before.split("\n");
-  $("#yaml-cursor-status").textContent = t("configs.cursorStatus", { line: lines.length, column: lines.at(-1).length + 1 });
+  $("#yaml-cursor-status").textContent = t(
+    "configs.cursorStatus",
+    cursorPosition(editor.value, editor.selectionStart),
+  );
 }
 
-function findYamlMatch(direction) {
+function findYamlMatch(/** @type {any} */ direction) {
   const editor = $("#yaml-editor");
   const query = $("#yaml-search").value;
   const result = $("#yaml-search-result");
@@ -6264,26 +6288,14 @@ function findYamlMatch(direction) {
     result.textContent = "";
     return;
   }
-  const haystack = editor.value.toLocaleLowerCase();
-  const needle = query.toLocaleLowerCase();
-  const matches = [];
-  for (let index = haystack.indexOf(needle); index >= 0; index = haystack.indexOf(needle, index + Math.max(needle.length, 1))) {
-    matches.push(index);
-  }
-  if (!matches.length) {
+  const match = findMatch(editor.value, query, editor.selectionStart, direction);
+  if (!match.count) {
     result.textContent = "Kein Treffer";
     return;
   }
-  let selected = matches.findIndex((index) => index >= editor.selectionStart);
-  if (direction > 0) selected = matches.findIndex((index) => index > editor.selectionStart);
-  if (direction < 0) {
-    selected = matches.findLastIndex((index) => index < editor.selectionStart);
-  }
-  if (selected < 0) selected = direction < 0 ? matches.length - 1 : 0;
-  const index = matches[selected];
   editor.focus();
-  editor.setSelectionRange(index, index + query.length);
-  result.textContent = `${selected + 1} von ${matches.length}`;
+  editor.setSelectionRange(match.index, match.index + query.length);
+  result.textContent = `${match.selected + 1} von ${match.count}`;
   updateYamlCursorStatus();
 }
 
@@ -6298,7 +6310,7 @@ async function loadConfigurations() {
       list.textContent = t("configs.noFilesFound");
       return;
     }
-    result.configurations.forEach((configuration) => {
+    result.configurations.forEach((/** @type {any} */ configuration) => {
       const button = document.createElement("button");
       button.className = `config-item${state.activeConfig === configuration.name ? " active" : ""}`;
       const name = document.createElement("span");
@@ -6313,10 +6325,10 @@ async function loadConfigurations() {
       });
       list.append(button);
     });
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
 }
 
-async function loadConfiguration(configuration) {
+async function loadConfiguration(/** @type {any} */ configuration) {
   if (
     state.yamlDirty
     && state.activeConfig
@@ -6351,7 +6363,7 @@ async function loadConfiguration(configuration) {
     $("#config-output").classList.add("hidden");
     updateYamlEditorUi();
     await loadConfigurations();
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
 }
 
 async function saveDraft() {
@@ -6370,7 +6382,7 @@ async function saveDraft() {
     updateYamlEditorUi();
     toast(t("toast.draft.saved"));
     await loadConfigurations();
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
 }
 
 async function checkYaml() {
@@ -6383,7 +6395,7 @@ async function checkYaml() {
       ? t("config.output.yamlValid", { revision: result.revision })
       : t("config.output.yamlError", { line: result.line, column: result.column, error: result.error });
     output.classList.remove("hidden");
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
 }
 
 async function showDiff() {
@@ -6393,7 +6405,7 @@ async function showDiff() {
     const output = $("#config-output");
     output.textContent = result.diff || t("config.output.noDifferences");
     output.classList.remove("hidden");
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
 }
 
 async function openMergeDialog() {
@@ -6411,7 +6423,7 @@ async function openMergeDialog() {
     $("#merge-draft-source").value = draft.content;
     $("#merge-result").value = draft.content;
     $("#merge-dialog").showModal();
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
 }
 
 async function saveMergedDraft() {
@@ -6433,7 +6445,7 @@ async function saveMergedDraft() {
     updateYamlEditorUi();
     await loadConfigurations();
     toast(t("toast.draft.mergedSaved"));
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
 }
 
 async function publishDraft() {
@@ -6455,7 +6467,7 @@ async function publishDraft() {
     updateYamlEditorUi();
     toast(t("toast.config.published"));
     await loadConfigurations();
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
 }
 
 function updateBuilderButtons() {
@@ -6475,13 +6487,13 @@ async function validateEspHome() {
     const lines = Array.isArray(result.output) ? result.output.join("\n") : "";
     const validity = result.valid ? t("config.output.buildApprovalSuffix", { seconds: result.expires_in_seconds }) : "";
     output.textContent = `${result.valid ? t("config.output.espValid") : t("config.output.espInvalid")}\nRevision: ${result.revision}${validity}\n\n${lines}`.trim();
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     output.textContent = `${error.code || t("config.output.errorFallback")}: ${error.message}`;
     toast(error.message, true);
   }
 }
 
-function builderRequestKey(operation) {
+function builderRequestKey(/** @type {any} */ operation) {
   return builderRequest(state, operation, () => globalThis.crypto?.randomUUID?.()
     || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-request`);
 }
@@ -6499,7 +6511,7 @@ async function compileConfiguration() {
     toast(result.idempotent_replay
       ? t("toast.builder.jobRestored", { id: result.job.job_id })
       : t("toast.builder.jobStarted", { id: result.job.job_id }));
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
   finally {
     state.builderRequestsRunning.delete("compile");
     updateBuilderButtons();
@@ -6518,7 +6530,7 @@ async function installConfiguration() {
     state.builderJobs[result.job.job_id] = result.job;
     renderBuilderJobs();
     toast(result.idempotent_replay ? `OTA-Job ${result.job.job_id} wiederhergestellt.` : `OTA-Job ${result.job.job_id} gestartet.`);
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
   finally {
     state.builderRequestsRunning.delete("install");
     updateBuilderButtons();
@@ -6530,7 +6542,7 @@ async function loadBuilderJobs() {
   try {
     state.builderJobs = replaceBuilderJobs(await builderController.jobs());
     renderBuilderJobs();
-  } catch (error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true); }
 }
 
 function renderBuilderJobs() {
@@ -6567,7 +6579,7 @@ function renderBuilderJobs() {
         try {
           await builderController.cancel(job.job_id);
           await loadBuilderJobs();
-        } catch (error) { toast(error.message, true); }
+        } catch (/** @type {any} */ error) { toast(error.message, true); }
       });
       row.append(cancel);
     }
@@ -6576,36 +6588,33 @@ function renderBuilderJobs() {
 }
 
 function connectBuilderEvents() {
-  if (!state.capabilities["firmware.compile"] || state.builderSocket) return;
-  const appBase = window.location.pathname.endsWith("/") ? window.location.pathname : `${window.location.pathname}/`;
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(`${protocol}//${window.location.host}${appBase}api/v1/jobs/events`);
-  state.builderSocket = socket;
-  socket.addEventListener("message", (message) => {
-    let payload;
-    try { payload = JSON.parse(message.data); } catch { return; }
-    if (payload.type === "resync_required") {
-      loadBuilderJobs();
-      return;
-    }
-    if (payload.type !== "builder_job" || !payload.data) return;
-    applyBuilderEvent(state.builderJobs, payload);
-    renderBuilderJobs();
+  if (!state.capabilities["firmware.compile"] || builderEventsClient?.socket) return;
+  builderEventsClient ||= createJsonSocket({
+    path: "jobs/events",
+    onOpen: (socket) => { state.builderSocket = socket; },
+    onClose: () => { state.builderSocket = null; },
+    onMessage: (rawPayload) => {
+      const payload = /** @type {any} */ (rawPayload);
+      if (payload.type === "resync_required") {
+        loadBuilderJobs();
+        return;
+      }
+      if (payload.type !== "builder_job" || !payload.data) return;
+      applyBuilderEvent(state.builderJobs, payload);
+      renderBuilderJobs();
+    },
   });
-  socket.addEventListener("close", () => {
-    if (state.builderSocket === socket) state.builderSocket = null;
-    window.setTimeout(connectBuilderEvents, 3000);
-  });
+  state.builderSocket = builderEventsClient.connect();
 }
 
-function clamp(value, minimum, maximum) {
+function clamp(/** @type {any} */ value, /** @type {any} */ minimum, /** @type {any} */ maximum) {
   return Math.min(Math.max(Number.isFinite(value) ? value : minimum, minimum), maximum);
 }
 
 // Read-only debug handle - not part of the app's own logic, only for
 // inspecting state from the browser console or an automated check.
-window.__appState = state;
+(/** @type {any} */ (window)).__appState = state;
 
-store.subscribe(() => renderDesignerStatus(), (current) => `${current.projectDirty}:${current.projectName || ""}`);
+store.subscribe(() => renderDesignerStatus(), selectDesignerStatus);
 
 initialize();

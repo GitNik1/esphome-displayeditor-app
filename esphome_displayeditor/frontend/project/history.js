@@ -1,7 +1,16 @@
+// @ts-check
+
+/** @template T @param {T} project @returns {T} */
 export function cloneProject(project) {
-  return JSON.parse(JSON.stringify(project));
+  return /** @type {T} */ (JSON.parse(JSON.stringify(project)));
 }
 
+/**
+ * @param {string[]} undo
+ * @param {unknown} project
+ * @param {number} [limit]
+ * @returns {string[]}
+ */
 export function pushHistory(undo, project, limit = 50) {
   const next = [...undo];
   const serialized = JSON.stringify(project);
@@ -10,10 +19,17 @@ export function pushHistory(undo, project, limit = 50) {
   return next;
 }
 
+/**
+ * @template T
+ * @param {string[]} undo @param {string[]} redo @param {T} currentProject
+ * @returns {{project: T, undo: string[], redo: string[]} | null}
+ */
 export function undoHistory(undo, redo, currentProject) {
   if (!undo.length) return null;
   const nextUndo = [...undo];
-  const project = JSON.parse(nextUndo.pop());
+  const serialized = nextUndo.pop();
+  if (serialized === undefined) return null;
+  const project = /** @type {T} */ (JSON.parse(serialized));
   return {
     project,
     undo: nextUndo,
@@ -21,14 +37,20 @@ export function undoHistory(undo, redo, currentProject) {
   };
 }
 
+/**
+ * @template T
+ * @param {string[]} undo @param {string[]} redo @param {T} currentProject
+ * @returns {{project: T, undo: string[], redo: string[]} | null}
+ */
 export function redoHistory(undo, redo, currentProject) {
   if (!redo.length) return null;
   const nextRedo = [...redo];
-  const project = JSON.parse(nextRedo.pop());
+  const serialized = nextRedo.pop();
+  if (serialized === undefined) return null;
+  const project = /** @type {T} */ (JSON.parse(serialized));
   return {
     project,
     undo: [...undo, JSON.stringify(currentProject)],
     redo: nextRedo,
   };
 }
-

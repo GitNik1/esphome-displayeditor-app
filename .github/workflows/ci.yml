@@ -41,6 +41,8 @@ jobs:
         run: ruff check backend tests tools
       - name: Compile Python sources
         run: python -m compileall -q backend tests tools
+      - name: Check architecture boundaries
+        run: python tools/check_architecture.py
       - name: Validate Compose configuration
         run: docker compose -f ../compose.yaml config --quiet
 

@@ -1,3 +1,16 @@
+// @ts-check
+
+/** @typedef {{id: string, widget_type?: string, children?: Widget[], [key: string]: any}} Widget */
+/** @typedef {{widgets?: Widget[], layout?: Record<string, any>, style_tree?: Record<string, any>,
+ * extra?: Record<string, any>, [key: string]: any}} Surface */
+/** @typedef {{id: string, buttons?: Widget[], header_buttons?: Widget[],
+ * body?: Record<string, any>, title?: string, close_button?: boolean,
+ * extra?: Record<string, any>, [key: string]: any}} MessageBox */
+/** @typedef {{widgets?: Widget[], pages?: Surface[], top_layer?: Surface | null,
+ * bottom_layer?: Surface | null, page_wrap?: boolean, msgboxes?: MessageBox[],
+ * reserved_ids?: string[], [key: string]: any}} Project */
+
+/** @returns {Project} */
 export function freshProject() {
   return {
     format: "esphome-lvgl-designer-project",
@@ -30,13 +43,14 @@ export function freshProject() {
   };
 }
 
+/** @param {Project} project @returns {Project} */
 export function normalizeProjectSurfaces(project) {
   if (!Array.isArray(project.widgets)) project.widgets = [];
   if (!Array.isArray(project.pages)) project.pages = [];
   if (typeof project.page_wrap !== "boolean") project.page_wrap = true;
 
   [project.top_layer, project.bottom_layer, ...project.pages]
-    .filter(Boolean)
+    .filter((surface) => surface !== null && surface !== undefined)
     .forEach((surface) => {
       if (!Array.isArray(surface.widgets)) surface.widgets = [];
       if (!surface.layout || typeof surface.layout !== "object" || Array.isArray(surface.layout)) {
@@ -65,36 +79,42 @@ export function normalizeProjectSurfaces(project) {
   return project;
 }
 
+/** @param {Project} project @returns {Widget[]} */
 export function collectProjectWidgets(project) {
   normalizeProjectSurfaces(project);
+  /** @type {Widget[]} */
   const result = [];
+  /** @param {Widget[] | undefined} nodes */
   const visit = (nodes) => (nodes || []).forEach((widget) => {
     result.push(widget);
     visit(widget.children || []);
   });
-  visit(project.widgets);
-  project.pages.forEach((page) => visit(page.widgets));
+  visit(project.widgets || []);
+  (project.pages || []).forEach((page) => visit(page.widgets));
   visit(project.bottom_layer?.widgets);
   visit(project.top_layer?.widgets);
-  project.msgboxes.forEach((msgbox) => {
+  (project.msgboxes || []).forEach((msgbox) => {
     visit(msgbox.buttons);
     visit(msgbox.header_buttons);
   });
   return result;
 }
 
+/** @param {Project} project @returns {Widget[]} */
 export function projectWidgetEntries(project) {
   normalizeProjectSurfaces(project);
+  /** @type {Widget[]} */
   const result = [];
+  /** @param {Widget[] | undefined} nodes */
   const visit = (nodes) => (nodes || []).forEach((widget) => {
     result.push(widget);
     visit(widget.children || []);
   });
-  visit(project.widgets);
-  project.pages.forEach((page) => visit(page.widgets));
+  visit(project.widgets || []);
+  (project.pages || []).forEach((page) => visit(page.widgets));
   visit(project.top_layer?.widgets);
   visit(project.bottom_layer?.widgets);
-  project.msgboxes.forEach((msgbox) => {
+  (project.msgboxes || []).forEach((msgbox) => {
     result.push({ id: msgbox.id, widget_type: "msgbox" });
     visit(msgbox.buttons);
     visit(msgbox.header_buttons);
@@ -102,6 +122,7 @@ export function projectWidgetEntries(project) {
   return result;
 }
 
+/** @param {Project} project @param {string} base @returns {string} */
 export function uniqueProjectWidgetId(project, base) {
   const ids = new Set([
     ...collectProjectWidgets(project).map((widget) => widget.id),
@@ -113,6 +134,7 @@ export function uniqueProjectWidgetId(project, base) {
   return candidate;
 }
 
+/** @param {string} id */
 export function freshGlowStroke(id) {
   return {
     id,

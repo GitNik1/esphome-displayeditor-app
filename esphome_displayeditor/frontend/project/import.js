@@ -1,5 +1,10 @@
+// @ts-check
+
+/** @param {number} value @param {number} minimum @param {number} maximum */
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 
+/** @param {{configuration?: string | null, content?: string | null}} importState
+ * @param {unknown} width @param {unknown} height */
 export function buildImportPayload(importState, width, height) {
   return {
     ...(importState.configuration
@@ -12,7 +17,14 @@ export function buildImportPayload(importState, width, height) {
   };
 }
 
+/** @typedef {{widget_types: Record<string, number>, widget_count: number,
+ * canvas: {width: number, height: number, source: string}, images?: number,
+ * fonts?: number, styles?: number, unsupported_types: string[],
+ * preserved_keys: string[], issues: Record<string, number>}} ImportStats */
+/** @param {ImportStats} stats
+ * @param {(key: string, params?: Record<string, unknown>) => string} translate */
 export function summarizeImport(stats, translate) {
+  /** @type {Record<string, string>} */
   const sourceLabels = {
     user: translate("canvas.source.user"),
     display_dimensions: translate("canvas.source.displayDimensions"),
@@ -39,6 +51,7 @@ export function summarizeImport(stats, translate) {
       styles: stats.styles,
     }));
   }
+  /** @type {{text: string, severe: boolean}[]} */
   const warnings = [];
   if (stats.unsupported_types.length) {
     warnings.push({
@@ -60,4 +73,3 @@ export function summarizeImport(stats, translate) {
   }
   return { lines, warnings };
 }
-

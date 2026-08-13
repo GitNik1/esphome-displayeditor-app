@@ -1,9 +1,17 @@
+// @ts-check
+
 import {
   actionIdsForEditor,
   actionObjectEntry,
   generatedActionCondition,
 } from "./model.js";
 
+/** @typedef {Record<string, any>} Action */
+/** @typedef {(key: string, params?: Record<string, unknown>) => string} Translate */
+/** @typedef {{text: string, targetIds: string[], supported: boolean,
+ * skipMissingCheck?: boolean}} ActionDescription */
+
+/** @param {Action} action @param {Translate} translate @returns {ActionDescription | null} */
 export function describeFlowAction(action, translate) {
   const entry = actionObjectEntry(action);
   if (entry?.[0] !== "if") return null;
@@ -11,14 +19,16 @@ export function describeFlowAction(action, translate) {
   if (typeof outer?.condition?.lambda !== "string" || !outer.condition.lambda.includes("abs((int)x)")) {
     return null;
   }
+  /** @type {Set<string>} */
   const ids = new Set();
+  /** @param {unknown} branch */
   const collect = (branch) => {
     if (!Array.isArray(branch)) return;
     branch.forEach((item) => {
       const nested = actionObjectEntry(item);
       if (!nested) return;
       if (["lvgl.widget.hide", "lvgl.widget.show", "lvgl.animimg.start"].includes(nested[0])) {
-        ids.add(nested[1]);
+        ids.add(String(nested[1]));
       }
       if (nested[0] === "if") {
         collect(nested[1]?.then);
@@ -37,6 +47,7 @@ export function describeFlowAction(action, translate) {
   };
 }
 
+/** @param {Action} action @param {Translate} translate @returns {ActionDescription} */
 export function describeWidgetAction(action, translate) {
   const conditional = generatedActionCondition(action);
   if (conditional) {
@@ -93,4 +104,4 @@ export function describeWidgetAction(action, translate) {
     supported: false,
   };
 }
-
+// @ts-check

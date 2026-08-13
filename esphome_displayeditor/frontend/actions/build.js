@@ -1,5 +1,13 @@
+// @ts-check
+
 import { normalizeActionColor } from "./model.js";
 
+/** @typedef {Record<string, any>} Action */
+/** @typedef {{widget_type?: string}} ActionWidget */
+/** @typedef {{type: string, targetId: string, targetWidget?: ActionWidget | null,
+ * fields?: Record<string, unknown>}} BuildWidgetActionOptions */
+
+/** @param {BuildWidgetActionOptions} options @returns {Action} */
 export function buildWidgetAction({ type, targetId, targetWidget, fields = {} }) {
   if (["show", "hide"].includes(type)) return { [`lvgl.widget.${type}`]: targetId };
   if (type === "page_show") return { "lvgl.page.show": targetId };
@@ -8,9 +16,12 @@ export function buildWidgetAction({ type, targetId, targetWidget, fields = {} })
   }
   if (type !== "update") throw new Error("unsupported_action_type");
 
+  /** @type {Record<string, any>} */
   const payload = { id: targetId };
   const text = String(fields.text || "").trim();
-  if (text && ["label", "button"].includes(targetWidget?.widget_type)) payload.text = text;
+  if (text && (targetWidget?.widget_type === "label" || targetWidget?.widget_type === "button")) {
+    payload.text = text;
+  }
   const imageSource = String(fields.imageSource || "").trim();
   if (imageSource && targetWidget?.widget_type === "image") payload.src = imageSource;
   for (const key of ["bg_color", "text_color", "border_color", "opa"]) {
@@ -29,6 +40,7 @@ export function buildWidgetAction({ type, targetId, targetWidget, fields = {} })
   return { [actionName]: payload };
 }
 
+/** @param {Action} action @param {string} condition @returns {Action} */
 export function wrapValueCondition(action, condition) {
   if (!condition || condition === "always") return action;
   if (!["checked", "unchecked"].includes(condition)) throw new Error("invalid_value_condition");
@@ -39,4 +51,4 @@ export function wrapValueCondition(action, condition) {
     },
   };
 }
-
+// @ts-check

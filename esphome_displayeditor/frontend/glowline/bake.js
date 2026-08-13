@@ -1,3 +1,5 @@
+// @ts-check
+
 import { flowBoundsDocument } from "./renderer.js";
 import {
   ensureImageEntry,
@@ -10,8 +12,20 @@ import {
 } from "./baking-model.js";
 import { collectProjectWidgets } from "../project/model.js";
 
+/** @typedef {{left: number, top: number, right: number, bottom: number}} Rect */
+/** @typedef {{x: number, y: number}} Point */
+/** @typedef {{reserved?: (id: string) => string, collision?: (id: string) => string}} BakeMessages */
+/** @typedef {{project: any, stroke: any,
+ * renderFrame: (document: any, rect: Rect, options: Record<string, any>) => Promise<Blob>,
+ * uploadFrame: (name: string, blob: Blob) => Promise<string>,
+ * contentOrigin: (project: any, widget: any) => Point,
+ * messages?: BakeMessages}} BakeOptions */
+/** @typedef {{baseName: string, forwardId: string | null, reverseId: string | null}} BakeResult */
+
+/** @param {number} value @param {number} minimum @param {number} maximum */
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 
+/** @param {BakeOptions} options @returns {Promise<BakeResult | null>} */
 export async function bakeGlowStroke({
   project,
   stroke,
@@ -29,9 +43,10 @@ export async function bakeGlowStroke({
     : { left: 0, top: 0, right: project.canvas.width, bottom: project.canvas.height };
   const baseName = strokeBaseName(stroke);
   const target = stroke.parent_id
-    ? collectProjectWidgets(project).find((widget) => widget.id === stroke.parent_id) || null
+    ? collectProjectWidgets(project).find((/** @type {any} */ widget) => widget.id === stroke.parent_id) || null
     : null;
   const origin = target ? contentOrigin(project, target) : { x: 0, y: 0 };
+  /** @param {any} widget */
   const place = (widget) => {
     widget.x = Math.round(widget.x - origin.x);
     widget.y = Math.round(widget.y - origin.y);
@@ -58,6 +73,7 @@ export async function bakeGlowStroke({
     widgetMessages,
   );
 
+  /** @param {string} suffix @param {boolean} mirror @returns {Promise<string>} */
   const bakeDirection = async (suffix, mirror) => {
     const directional = mirror
       ? { ...stroke, flow: { ...stroke.flow, reversed: !stroke.flow.reversed } }
@@ -66,6 +82,7 @@ export async function bakeGlowStroke({
     const animationRect = crop
       ? flowBoundsDocument(directionalDocument) || staticRect
       : staticRect;
+    /** @type {string[]} */
     const frameIds = [];
     for (let index = 0; index < frameCount; index += 1) {
       const blob = await renderFrame(directionalDocument, animationRect, {
@@ -90,8 +107,8 @@ export async function bakeGlowStroke({
     return widgetId;
   };
 
-  let forwardId = null;
-  let reverseId = null;
+  /** @type {string | null} */ let forwardId = null;
+  /** @type {string | null} */ let reverseId = null;
   if (stroke.flow.enabled) {
     forwardId = await bakeDirection("", false);
     if (stroke.flow.bidirectional) reverseId = await bakeDirection("_rev", true);
@@ -102,4 +119,3 @@ export async function bakeGlowStroke({
   }
   return { baseName, forwardId, reverseId };
 }
-

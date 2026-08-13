@@ -12,7 +12,7 @@
 // whichever the ?language= query asks for; app.js just has to request the
 // active language instead of a hardcoded "de".
 
-const STORAGE_KEY = "esphome_de_app_lang";
+// @ts-check
 
 export const STRINGS = {
   de: {
@@ -1462,60 +1462,3 @@ export const STRINGS = {
     "viewer.event.stateOff": "off",
   },
 };
-
-function detectLanguage() {
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (stored === "de" || stored === "en") return stored;
-  } catch (error) {
-    // localStorage can throw in locked-down/private-browsing contexts -
-    // falling through to the browser-language guess is still correct.
-  }
-  return (navigator.language || "de").toLowerCase().startsWith("en") ? "en" : "de";
-}
-
-let currentLanguage = detectLanguage();
-
-export function getLanguage() {
-  return currentLanguage;
-}
-
-export function setLanguage(lang) {
-  const next = lang === "en" ? "en" : "de";
-  currentLanguage = next;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, next);
-  } catch (error) {
-    // Best-effort persistence only - a failed write still leaves the
-    // in-memory language change (and the reload the caller triggers) correct
-    // for this session.
-  }
-}
-
-/** Looks up `key` in the active language, falling back to German, then to
- * the key itself so a missing translation is visible rather than blank. */
-export function t(key, params) {
-  let value = STRINGS[currentLanguage]?.[key] ?? STRINGS.de[key] ?? key;
-  if (params) {
-    for (const [name, replacement] of Object.entries(params)) {
-      value = value.replaceAll(`{${name}}`, replacement);
-    }
-  }
-  return value;
-}
-
-/** Applies translations to every element under `root` carrying a
- * `data-i18n` (textContent) or `data-i18n-attr` (semicolon-separated
- * `attr:key` pairs, e.g. `title:toolbar.undo;aria-label:toolbar.undo`)
- * attribute. Call once on load and again after a language change. */
-export function applyStaticTranslations(root = document) {
-  root.querySelectorAll("[data-i18n]").forEach((element) => {
-    element.textContent = t(element.getAttribute("data-i18n"));
-  });
-  root.querySelectorAll("[data-i18n-attr]").forEach((element) => {
-    element.getAttribute("data-i18n-attr").split(";").filter(Boolean).forEach((pair) => {
-      const [attribute, key] = pair.split(":");
-      if (attribute && key) element.setAttribute(attribute.trim(), t(key.trim()));
-    });
-  });
-}

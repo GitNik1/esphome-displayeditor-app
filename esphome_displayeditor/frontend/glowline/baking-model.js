@@ -1,20 +1,32 @@
+// @ts-check
+
 import { boundingBox } from "./geometry.js";
 import { strokePath } from "./renderer.js";
 import { projectWidgetEntries } from "../project/model.js";
 
+/** @typedef {{left: number, top: number, right: number, bottom: number}} Rect */
+/** @typedef {{width: number, height: number}} CanvasSize */
+/** @typedef {Record<string, any> & {id: string, widget_type: string,
+ * children: any[], properties: Record<string, any>}} BakedWidget */
+/** @typedef {Record<string, any> & {widgets: any[], images?: any[], reserved_ids?: string[]}} BakeProject */
+/** @typedef {{reserved?: (id: string) => string, collision?: (id: string) => string}} BakeMessages */
+
+/** @param {unknown} text @param {string} fallback */
 export function slugifyStrokeName(text, fallback) {
   let slug = String(text || "").trim().toLowerCase()
-    .replace(/[äöüß]/g, (character) => ({ ä: "ae", ö: "oe", ü: "ue", ß: "ss" }[character]))
+    .replace(/[äöüß]/g, (character) => /** @type {Record<string, string>} */ ({ ä: "ae", ö: "oe", ü: "ue", ß: "ss" })[character])
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
   if (!slug) slug = fallback;
   return slug;
 }
 
+/** @param {{id: string, name?: string}} stroke */
 export function strokeBaseName(stroke) {
   return slugifyStrokeName(stroke.name, stroke.id);
 }
 
+/** @param {any} stroke @param {CanvasSize} canvas @returns {Rect} */
 export function strokeRenderBounds(stroke, canvas) {
   const { measure } = strokePath(stroke);
   const box = boundingBox(measure);
@@ -28,6 +40,7 @@ export function strokeRenderBounds(stroke, canvas) {
   };
 }
 
+/** @param {string} id @param {Rect} rect @param {string} src @returns {BakedWidget} */
 export function newImageWidget(id, rect, src) {
   return {
     id,
@@ -59,6 +72,8 @@ export function newImageWidget(id, rect, src) {
   };
 }
 
+/** @param {string} id @param {Rect} rect @param {string[]} frameIds
+ * @param {number} durationMs @returns {BakedWidget} */
 export function newAnimimgWidget(id, rect, frameIds, durationMs) {
   const widget = newImageWidget(id, rect, "");
   widget.widget_type = "animimg";
@@ -71,9 +86,10 @@ export function newAnimimgWidget(id, rect, frameIds, durationMs) {
   return widget;
 }
 
+/** @param {BakeProject} project @param {string} id @param {string} filePath */
 export function ensureImageEntry(project, id, filePath) {
   if (!Array.isArray(project.images)) project.images = [];
-  let entry = project.images.find((image) => image.id === id);
+  let entry = project.images.find((/** @type {any} */ image) => image.id === id);
   if (!entry) {
     entry = {
       id,
@@ -97,6 +113,8 @@ export function ensureImageEntry(project, id, filePath) {
   return entry;
 }
 
+/** @param {BakeProject} project @param {string} widgetId @param {BakedWidget} freshWidget
+ * @param {any | null} target @param {BakeMessages} [messages] */
 export function upsertBakedWidget(project, widgetId, freshWidget, target, messages = {}) {
   if ((project.reserved_ids || []).includes(widgetId)) {
     throw new Error(messages.reserved?.(widgetId) || `Reserved widget id: ${widgetId}`);
@@ -114,9 +132,10 @@ export function upsertBakedWidget(project, widgetId, freshWidget, target, messag
   return freshWidget;
 }
 
+/** @param {BakeProject} project @param {string} widgetId @param {any | null} target */
 export function removeBakedWidget(project, widgetId, target) {
   const list = target ? target.children : project.widgets;
-  const index = (list || []).findIndex((item) => item.id === widgetId);
+  const index = (list || []).findIndex((/** @type {any} */ item) => item.id === widgetId);
   if (index >= 0) list.splice(index, 1);
   return index >= 0;
 }

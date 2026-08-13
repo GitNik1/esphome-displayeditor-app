@@ -1,3 +1,10 @@
+// @ts-check
+
+/** @typedef {Record<string, any>} Action */
+/** @typedef {{forwardId: string, reverseId?: string, offThreshold: unknown,
+ * fastThreshold: unknown, normalDuration: unknown, fastDuration: unknown}} FlowActionOptions */
+
+/** @param {FlowActionOptions} options @returns {Action} */
 export function buildFlowAction({
   forwardId,
   reverseId = "",
@@ -13,6 +20,7 @@ export function buildFlowAction({
   if (!forwardId) throw new Error("missing_forward_target");
   if (fast <= off) throw new Error("invalid_thresholds");
 
+  /** @param {string} id @returns {Action[]} */
   const speedBranch = (id) => [
     { "lvgl.animimg.start": id },
     {
@@ -56,4 +64,4 @@ export function buildFlowAction({
     },
   };
 }
-
+// @ts-check
