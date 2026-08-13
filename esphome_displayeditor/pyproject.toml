@@ -1,0 +1,20 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+cache_dir = ".pytest-tmp/cache"
+filterwarnings = [
+    "error::ResourceWarning",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+extend-exclude = [
+    ".pytest-*",
+    ".test-*",
+]
+
+[tool.ruff.lint]
+# Start with correctness-focused rules. Broader style rules can be enabled as
+# the two large application modules are split into smaller units.
+select = ["E4", "E7", "E9", "F"]

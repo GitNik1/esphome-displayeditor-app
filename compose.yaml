@@ -1,0 +1,21 @@
+name: esphome-displayeditor
+
+services:
+  app:
+    build:
+      context: ./esphome_displayeditor
+      args:
+        BUILD_VERSION: local
+        BUILD_ARCH: amd64
+    environment:
+      ESPHOME_ALLOW_ANONYMOUS_WRITE: "1"
+      ESPHOME_ALLOW_DIRECT_ACCESS: "1"
+    ports:
+      - "${ESPHOME_EDITOR_PORT:-8099}:8099"
+    volumes:
+      - app-data:/data
+    restart: unless-stopped
+
+volumes:
+  app-data:
+

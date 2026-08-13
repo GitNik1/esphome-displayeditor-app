@@ -1,8 +1,100 @@
 import { computeLayout, contentOrigin, fontFamilyId, resolvedFontFamily } from "./layout.js";
-import { boundingBox, nearestSegment } from "./glowline/geometry.js";
-import { drawDocument, flowBoundsDocument, hasFlow, strokePath } from "./glowline/renderer.js";
+import { createApiClient, encodedName } from "./api/client.js";
+import { uploadImageAsset } from "./api/assets.js";
+import {
+  actionIdsForEditor,
+  actionObjectEntry,
+  generatedActionCondition,
+  normalizeActionColor,
+  widgetSupportsValueCondition,
+} from "./actions/model.js";
+import { describeWidgetAction as describeAction } from "./actions/describe.js";
+import { buildWidgetAction, wrapValueCondition } from "./actions/build.js";
+import { buildFlowAction } from "./actions/flow.js";
+import { nearestSegment } from "./glowline/geometry.js";
+import { drawDocument, hasFlow } from "./glowline/renderer.js";
+import { strokeBaseName } from "./glowline/baking-model.js";
+import { bakeGlowStroke } from "./glowline/bake.js";
 import { format565, hsvToRgb, quantizeImageData, rgb565to888, rgb888to565 } from "./glowline/rgb565.js";
 import { MDI_CATALOG_VERSION, MDI_GLYPHS } from "./mdi-glyphs.js";
+import {
+  collectProjectWidgets,
+  freshGlowStroke,
+  freshProject,
+  normalizeProjectSurfaces,
+  projectWidgetEntries as collectActionTargets,
+  uniqueProjectWidgetId as nextProjectWidgetId,
+} from "./project/model.js";
+import {
+  cloneProject,
+  pushHistory,
+  redoHistory,
+  undoHistory,
+} from "./project/history.js";
+import {
+  resolveActiveSurface,
+  surfaceEntries as entriesForProject,
+  surfaceLayoutProject,
+} from "./project/surfaces.js";
+import { normalizeProjectName } from "./project/names.js";
+import { buildImportPayload, summarizeImport } from "./project/import.js";
+import {
+  colorReferenceLocations as findColorReferences,
+  normalizeLibraryHex,
+  projectIdIsUsed as idIsUsedInProject,
+} from "./project/colors.js";
+import {
+  fontReferenceLocations as findFontReferences,
+  fontSourceMetadataMap as sourceMetadataForProject,
+  formatGlyphCodepoint,
+  glyphCodepoint,
+  ingressAssetUrl,
+  isMdiWebfontUrl,
+  parseGlyphInput as parseGlyphs,
+  uniqueGlyphs,
+} from "./project/fonts.js";
+import {
+  cloneWidgetSubtree as cloneProjectWidgetSubtree,
+  findParentContainerId,
+  findWidgetLocation,
+  removeWidget,
+  replaceProjectWidgetReferences as replaceWidgetReferences,
+} from "./project/widgets.js";
+import {
+  assignRuntimeBinding,
+  bindingIsOrphan as isRuntimeBindingOrphan,
+  canPasteRuntimeBinding,
+  cleanRuntimeBindings,
+  findRuntimeBinding,
+  removeRuntimeBinding as withoutRuntimeBinding,
+  runtimeStateFor,
+  runtimeTargets as targetsForRuntime,
+} from "./runtime/bindings.js";
+import { createStore } from "./state/store.js";
+import { createActions } from "./state/actions.js";
+import { createProjectsController } from "./controllers/projects-controller.js";
+import { createDevicesController } from "./controllers/devices-controller.js";
+import { createBuilderController } from "./controllers/builder-controller.js";
+import {
+  applyRuntimeEvent,
+  deviceTableColumns,
+  formatDeviceLogs as formatLogs,
+  mergeDeviceState,
+} from "./devices/model.js";
+import {
+  applyBuilderEvent,
+  builderAvailability,
+  builderRequest,
+  replaceBuilderJobs,
+  sortedBuilderJobs,
+} from "./builder/model.js";
+import { pointFromClient, snapAngle, widgetBoxStyle } from "./canvas/geometry.js";
+import {
+  LIST_KINDS,
+  propertyInputValue,
+  propertyTarget as resolvePropertyTarget,
+  propertyValueClears,
+} from "./properties/model.js";
 import { applyStaticTranslations, getLanguage, setLanguage, t } from "./i18n.js";
 import {
   ViewerController,
@@ -36,162 +128,31 @@ function syncCanvasLayout() {
   boxes.forEach((box, widget) => {
     const node = canvasNodeByWidget.get(widget);
     if (!node) return;
-    node.style.left = `${box.left}px`;
-    node.style.top = `${box.top}px`;
-    node.style.width = `${Math.max(1, box.width)}px`;
-    node.style.height = `${Math.max(1, box.height)}px`;
+    Object.assign(node.style, widgetBoxStyle(box));
   });
 }
 
-const state = {
-  system: null,
-  capabilities: {},
-  schemas: [],
-  selectedWidget: null,
-  activeConfig: null,
-  activeRevision: null,
-  configurations: [],
-  hasDraft: false,
-  yamlLoadedContent: "",
-  yamlDirty: false,
-  project: freshProject(),
-  activeSurface: "root",
-  projectName: null,
-  projectRevision: null,
-  projectDirty: false,
-  undo: [],
-  redo: [],
-  zoom: 1,
-  backgroundPreview: null,
-  gridCellProperties: [],
-  states: [],
-  // Which LVGL state the style controls currently edit. "" is the base style.
-  activeState: "",
-  // Theme editor: which widget type/state it's currently showing. Separate
-  // from activeState above, which belongs to the per-widget style editor -
-  // both panels can be visible at once and must not fight over one state.
-  themeType: "",
-  themeState: "",
-  editingColorId: null,
-  editingFontId: null,
-  devices: [],
-  selectedDevice: null,
-  editingDevice: null,
-  deviceSocket: null,
-  deviceStates: [],
-  viewerBindings: [],
-  viewerBindingsRevision: null,
-  viewerRuntimeSources: { devices: [] },
-  viewerRuntimeSocket: null,
-  viewerRuntimeReconnect: null,
-  viewerRuntimeActive: false,
-  designerRuntimePreview: false,
-  copiedRuntimeBinding: null,
-  runtimeStatusTimer: null,
-  builderJobs: {},
-  builderSocket: null,
-  builderRequestKeys: {},
-  builderRequestsRunning: new Set(),
-
-  // Glow lines (ported GlowLine editor). Editing widgets and editing lines are
-  // mutually exclusive modes, matching the desktop app being a separate tool -
-  // mixing hit-testing for both under one cursor model would be a lot of
-  // complexity for a case that rarely overlaps in practice.
-  canvasMode: "widgets", // "widgets" | "lines"
-  lineTool: "select", // "select" | "draw"
-  selectedStroke: null,
-  drawingPoints: null, // points of a line being placed, while lineTool === "draw"
-  colorWheelTarget: "line", // "line" | "glow" | "flow"
-  flowPreviewTimer: null,
-  flowPreviewStart: 0,
-};
+const store = createStore();
+const state = store.state;
+const actions = createActions(store);
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
 
 let viewer = null;
 
-function freshProject() {
-  return {
-    format: "esphome-lvgl-designer-project",
-    format_version: 3,
-    canvas: { width: 480, height: 480 },
-    background: { path: "", export_as_lvgl_image: false, image_id: "bg_image", opacity_in_editor: 40 },
-    display_id_placeholder: "my_display",
-    default_font: "",
-    widgets: [],
-    pages: [],
-    top_layer: null,
-    bottom_layer: null,
-    page_wrap: true,
-    msgboxes: [],
-    styles: [],
-    fonts: [],
-    images: [],
-    colors: [],
-    theme: {},
-    extra_lvgl: {},
-    canvas_source: "default",
-    export_sections: ["color", "font", "image", "lvgl"],
-    import_source: {},
-    glow_strokes: [],
-  };
-}
-
 function ensureProjectSurfaces() {
-  if (!Array.isArray(state.project.widgets)) state.project.widgets = [];
-  if (!Array.isArray(state.project.pages)) state.project.pages = [];
-  if (typeof state.project.page_wrap !== "boolean") state.project.page_wrap = true;
-  [state.project.top_layer, state.project.bottom_layer, ...state.project.pages].filter(Boolean).forEach((surface) => {
-    if (!Array.isArray(surface.widgets)) surface.widgets = [];
-    if (!surface.layout || typeof surface.layout !== "object" || Array.isArray(surface.layout)) surface.layout = {};
-    if (!surface.style_tree || typeof surface.style_tree !== "object" || Array.isArray(surface.style_tree)) surface.style_tree = {};
-    if (!surface.extra || typeof surface.extra !== "object" || Array.isArray(surface.extra)) surface.extra = {};
-  });
-  if (!Array.isArray(state.project.msgboxes)) state.project.msgboxes = [];
-  state.project.msgboxes.forEach((msgbox) => {
-    if (!Array.isArray(msgbox.buttons)) msgbox.buttons = [];
-    if (!Array.isArray(msgbox.header_buttons)) msgbox.header_buttons = [];
-    if (!msgbox.body || typeof msgbox.body !== "object" || Array.isArray(msgbox.body)) msgbox.body = {};
-    if (typeof msgbox.body.text !== "string") msgbox.body.text = "";
-    if (!msgbox.body.style_tree || typeof msgbox.body.style_tree !== "object") msgbox.body.style_tree = {};
-    if (!msgbox.body.extra || typeof msgbox.body.extra !== "object") msgbox.body.extra = {};
-    if (typeof msgbox.title !== "string") msgbox.title = "";
-    if (typeof msgbox.close_button !== "boolean") msgbox.close_button = true;
-    if (!msgbox.extra || typeof msgbox.extra !== "object" || Array.isArray(msgbox.extra)) msgbox.extra = {};
-  });
+  normalizeProjectSurfaces(state.project);
 }
 
 function surfaceEntries() {
-  ensureProjectSurfaces();
-  const entries = [];
-  const pages = state.project.pages;
-  if (!pages.length || state.project.widgets.length) {
-    entries.push({ key: "root", kind: "root", label: t("surface.root"), surface: state.project });
-  }
-  if (state.project.bottom_layer) {
-    entries.push({ key: "bottom", kind: "bottom", label: "Bottom-Layer", surface: state.project.bottom_layer });
-  }
-  pages.forEach((page, index) => entries.push({
-    key: `page:${page.id}`,
-    kind: "page",
-    label: t("surface.page", { n: index + 1, id: page.id }) + (page.skip ? t("surface.pageSkippedSuffix") : ""),
-    surface: page,
-    index,
-  }));
-  if (state.project.top_layer) {
-    entries.push({ key: "top", kind: "top", label: "Top-Layer", surface: state.project.top_layer });
-  }
-  return entries;
+  return entriesForProject(state.project, t);
 }
 
 function normaliseActiveSurface() {
-  const entries = surfaceEntries();
-  if (!entries.some((entry) => entry.key === state.activeSurface)) {
-    state.activeSurface = entries.find((entry) => entry.kind === "page")?.key || entries[0]?.key || "root";
-  }
-  return entries.find((entry) => entry.key === state.activeSurface)
-    || { key: "root", kind: "root", label: t("surface.root"), surface: state.project };
+  const resolved = resolveActiveSurface(state.project, state.activeSurface, t);
+  state.activeSurface = resolved.key;
+  return resolved.entry;
 }
 
 function activeSurfaceEntry() {
@@ -203,52 +164,18 @@ function activeWidgetRoots() {
 }
 
 function activeSurfaceProject() {
-  const entry = activeSurfaceEntry();
-  if (entry.kind === "root") return state.project;
-  return {
-    ...state.project,
-    widgets: entry.surface.widgets,
-    extra_lvgl: {
-      ...(state.project.extra_lvgl || {}),
-      ...(entry.surface.style_tree || {}),
-      layout: entry.surface.layout || {},
-    },
-  };
+  return surfaceLayoutProject(state.project, activeSurfaceEntry());
 }
 
 function allProjectWidgets() {
-  ensureProjectSurfaces();
-  const result = [];
-  const visit = (nodes) => (nodes || []).forEach((widget) => {
-    result.push(widget);
-    visit(widget.children || []);
-  });
-  visit(state.project.widgets);
-  state.project.pages.forEach((page) => visit(page.widgets));
-  visit(state.project.bottom_layer?.widgets);
-  visit(state.project.top_layer?.widgets);
-  state.project.msgboxes.forEach((msgbox) => {
-    visit(msgbox.buttons);
-    visit(msgbox.header_buttons);
-  });
-  return result;
+  return collectProjectWidgets(state.project);
 }
 
 function uniqueProjectWidgetId(base) {
   // reserved_ids are ids used by hardware entities elsewhere in an imported
   // source config (binary_sensor:, button:, ...) - never modeled here, but
   // sharing ESPHome's one flat id() namespace with everything created here.
-  const ids = new Set([
-    ...allProjectWidgets().map((widget) => widget.id),
-    ...(state.project.reserved_ids || []),
-  ]);
-  let number = 1;
-  let candidate = `${base}_${number}`;
-  while (ids.has(candidate)) {
-    number += 1;
-    candidate = `${base}_${number}`;
-  }
-  return candidate;
+  return nextProjectWidgetId(state.project, base);
 }
 
 function selectSurface(key) {
@@ -262,40 +189,10 @@ function selectSurface(key) {
   renderDesigner();
 }
 
-function freshGlowStroke(id) {
-  return {
-    id, points: [], name: "", color565: 0x07ff, width: 5, corner_radius: 12,
-    mode: "polyline", closed: false,
-    glow: { enabled: true, radius: 14, intensity: 0.85, use_line_color: true, color565: 0x07ff },
-    flow: {
-      enabled: false, mode: "arrows", reversed: false, spacing: 40, size: 14,
-      width: 0, use_line_color: false, color565: 0xffff, glow_radius: 0, glow_intensity: 0.9,
-      bidirectional: false, bake_frame_count: 6, bake_crop: true,
-    },
-    parent_id: "",
-    hidden: false,
-    locked: false,
-  };
-}
-
-async function api(path, options = {}) {
-  const appBase = window.location.pathname.endsWith("/")
-    ? window.location.pathname
-    : `${window.location.pathname}/`;
-  const response = await fetch(`${appBase}api/v1/${path}`, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-  });
-  if (response.status === 204) return null;
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(body.message || `HTTP ${response.status}`);
-    error.code = body.error;
-    error.details = body.details;
-    throw error;
-  }
-  return body;
-}
+const api = createApiClient();
+const projectsController = createProjectsController(api);
+const devicesController = createDevicesController(api);
+const builderController = createBuilderController(api);
 
 let toastTimer;
 function toast(message, error = false) {
@@ -304,14 +201,6 @@ function toast(message, error = false) {
   node.className = error ? "show error" : "show";
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { node.className = ""; }, 3500);
-}
-
-function encodedName(name) {
-  return name.split("/").map(encodeURIComponent).join("/");
-}
-
-function cloneProject(project = state.project) {
-  return JSON.parse(JSON.stringify(project));
 }
 
 function bindLanguageSwitch() {
@@ -338,11 +227,13 @@ async function initialize() {
     const [health, system, capabilityData, schemaData] = await Promise.all([
       api("health"), api("system"), api("capabilities"), api(`designer/schemas?language=${getLanguage()}`),
     ]);
-    state.system = system;
-    state.capabilities = capabilityData.capabilities;
-    state.schemas = schemaData.widgets;
-    state.gridCellProperties = schemaData.grid_cell_properties || [];
-    state.states = schemaData.states || [];
+    actions.patch({
+      system,
+      capabilities: capabilityData.capabilities,
+      schemas: schemaData.widgets,
+      gridCellProperties: schemaData.grid_cell_properties || [],
+      states: schemaData.states || [],
+    });
     renderStateChoices();
     $("#health").classList.toggle("ok", health.status === "ok");
     $("#profile").textContent = `${system.access_level} · ${system.user.role} · ${system.user.display_name || system.user.name || "Ingress"}`;
@@ -418,8 +309,7 @@ async function loadDevices() {
     return;
   }
   try {
-    const result = await api("devices");
-    state.devices = result.devices || [];
+    state.devices = await devicesController.list();
     if (state.selectedDevice && !state.devices.some((item) => item.id === state.selectedDevice)) {
       state.selectedDevice = null;
     }
@@ -485,20 +375,15 @@ async function loadDeviceDetails(deviceId) {
   $("#remove-device").disabled = !canManage;
   $("#reconnect-device").disabled = !canManage;
   try {
-    const [info, entities, states, logs] = await Promise.all([
-      api(`devices/${encodeURIComponent(deviceId)}/info`),
-      api(`devices/${encodeURIComponent(deviceId)}/entities`),
-      api(`devices/${encodeURIComponent(deviceId)}/states`),
-      api(`devices/${encodeURIComponent(deviceId)}/logs?limit=500`),
-    ]);
+    const { info, entities, states, logs } = await devicesController.details(deviceId);
     if (state.selectedDevice !== deviceId) return;
-    $("#device-info pre").textContent = Object.keys(info.info || {}).length
-      ? JSON.stringify(info.info, null, 2)
+    $("#device-info pre").textContent = Object.keys(info).length
+      ? JSON.stringify(info, null, 2)
       : t("devices.noInfoYet");
-    renderDeviceTable($("#device-entities"), entities.entities || [], ["type", "name", "object_id", "key"]);
-    state.deviceStates = states.states || [];
+    renderDeviceTable($("#device-entities"), entities, ["type", "name", "object_id", "key"]);
+    state.deviceStates = states;
     renderDeviceTable($("#device-states"), state.deviceStates, ["type", "key", "available", "state"]);
-    $("#device-logs pre").textContent = formatDeviceLogs(logs.logs || []);
+    $("#device-logs pre").textContent = formatDeviceLogs(logs);
   } catch (error) {
     toast(error.message, true);
   }
@@ -510,7 +395,7 @@ function renderDeviceTable(container, rows, preferredColumns) {
     container.append(Object.assign(document.createElement("div"), { className: "empty", textContent: t("devices.noDataYet") }));
     return;
   }
-  const columns = preferredColumns.filter((column) => rows.some((row) => row[column] !== undefined));
+  const columns = deviceTableColumns(rows, preferredColumns);
   const table = document.createElement("table");
   table.className = "device-data-table";
   const head = document.createElement("thead");
@@ -537,8 +422,7 @@ function renderDeviceTable(container, rows, preferredColumns) {
 }
 
 function formatDeviceLogs(logs) {
-  if (!logs.length) return t("devices.noLogsYet");
-  return logs.map((item) => `[${item.received_at || ""}] [${item.level || "INFO"}] ${item.message || ""}`).join("\n");
+  return formatLogs(logs, t("devices.noLogsYet"));
 }
 
 function openDeviceDialog(device = null) {
@@ -567,16 +451,7 @@ async function saveDevice(event) {
   };
   const encryptionKey = $("#device-key").value.trim();
   try {
-    await api(editing ? `admin/devices/${encodeURIComponent(editing)}` : "admin/devices", {
-      method: editing ? "PUT" : "POST",
-      body: JSON.stringify(body),
-    });
-    if (encryptionKey) {
-      await api(`admin/device-secrets/${encodeURIComponent(body.encryption_key_ref)}`, {
-        method: "PUT",
-        body: JSON.stringify({ encryption_key: encryptionKey }),
-      });
-    }
+    await devicesController.save(body, editing, encryptionKey);
     state.selectedDevice = body.id;
     $("#device-dialog").close();
     await loadDevices();
@@ -589,7 +464,7 @@ async function saveDevice(event) {
 async function reconnectSelectedDevice() {
   if (!state.selectedDevice) return;
   try {
-    await api(`admin/devices/${encodeURIComponent(state.selectedDevice)}/reconnect`, { method: "POST" });
+    await devicesController.reconnect(state.selectedDevice);
     toast(t("toast.device.reconnectStarted"));
     await loadDevices();
   } catch (error) { toast(error.message, true); }
@@ -599,7 +474,7 @@ async function removeSelectedDevice() {
   const device = state.devices.find((item) => item.id === state.selectedDevice);
   if (!device || !confirm(t("confirm.device.remove", { name: device.name }))) return;
   try {
-    await api(`admin/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
+    await devicesController.remove(device.id);
     state.selectedDevice = null;
     await loadDevices();
     toast(t("toast.device.removed"));
@@ -633,10 +508,7 @@ function connectDeviceEvents() {
       applyDesignerRuntimePreview();
     } else if (event.type === "state") {
       if (event.device_id === state.selectedDevice) {
-        const key = `${event.state.type}:${event.state.key ?? event.state.object_id ?? "unknown"}`;
-        const index = state.deviceStates.findIndex((item) => `${item.type}:${item.key ?? item.object_id ?? "unknown"}` === key);
-        if (index >= 0) state.deviceStates[index] = event.state;
-        else state.deviceStates.push(event.state);
+        mergeDeviceState(state.deviceStates, event.state);
         renderDeviceTable($("#device-states"), state.deviceStates, ["type", "key", "available", "state"]);
       }
       updateViewerRuntimeEvent(event);
@@ -656,7 +528,7 @@ async function loadViewerRuntimeSources() {
     return state.viewerRuntimeSources;
   }
   try {
-    state.viewerRuntimeSources = await api("viewer/runtime");
+    state.viewerRuntimeSources = await devicesController.runtime();
   } catch {
     state.viewerRuntimeSources = { devices: [] };
   }
@@ -664,25 +536,7 @@ async function loadViewerRuntimeSources() {
 }
 
 function updateViewerRuntimeEvent(event) {
-  const devices = state.viewerRuntimeSources.devices || (state.viewerRuntimeSources.devices = []);
-  if (event.type === "device_removed") {
-    state.viewerRuntimeSources.devices = devices.filter((device) => device.id !== event.device_id);
-    return;
-  }
-  const device = devices.find((item) => item.id === event.device_id);
-  if (!device) return;
-  if (event.type === "connection") {
-    device.status = event.status;
-    return;
-  }
-  if (event.type !== "state" || !event.state) return;
-  const runtimeState = { ...event.state };
-  runtimeState.entity_id ||= `${runtimeState.type}:${runtimeState.key ?? runtimeState.object_id ?? "unknown"}`;
-  device.states ||= [];
-  const index = device.states.findIndex((item) => item.entity_id === runtimeState.entity_id);
-  if (index >= 0) device.states[index] = runtimeState;
-  else device.states.push(runtimeState);
-  device.last_seen = runtimeState.received_at || device.last_seen;
+  applyRuntimeEvent(state.viewerRuntimeSources, event);
 }
 
 async function loadViewerBindings(name) {
@@ -1223,50 +1077,19 @@ async function probeImport(payload) {
   }
 }
 
-const CANVAS_SOURCE_LABELS = {
-  user: t("canvas.source.user"),
-  display_dimensions: t("canvas.source.displayDimensions"),
-  display_model: t("canvas.source.displayModel"),
-  root_grid: t("canvas.source.rootGrid"),
-  bounding_box: t("canvas.source.boundingBox"),
-  default: t("canvas.source.default"),
-};
-
 function renderImportSummary(stats) {
   const summary = $("#import-summary");
   summary.classList.remove("import-error");
   summary.replaceChildren();
 
-  const types = Object.entries(stats.widget_types)
-    .map(([type, count]) => `${count}× ${type}`).join(", ");
-  const lines = [
-    t("import.summary.widgetsLine", { count: stats.widget_count, types }),
-    t("import.summary.canvasLine", {
-      width: stats.canvas.width,
-      height: stats.canvas.height,
-      source: CANVAS_SOURCE_LABELS[stats.canvas.source] || stats.canvas.source,
-    }),
-  ];
-  if (stats.images || stats.fonts || stats.styles) {
-    lines.push(t("import.summary.assetsLine", { images: stats.images, fonts: stats.fonts, styles: stats.styles }));
-  }
+  const { lines, warnings } = summarizeImport(stats, t);
   lines.forEach((text) => {
     const row = document.createElement("div");
     row.textContent = text;
     summary.append(row);
   });
 
-  if (stats.unsupported_types.length) {
-    summary.append(warningRow(
-      t("import.summary.unsupportedTypes", { types: stats.unsupported_types.join(", ") })));
-  }
-  if (stats.preserved_keys.length) {
-    summary.append(warningRow(
-      t("import.summary.preservedKeys", { count: stats.preserved_keys.length })));
-  }
-  if (stats.issues.A) {
-    summary.append(warningRow(t("import.summary.blockingIssues", { count: stats.issues.A }), true));
-  }
+  warnings.forEach((warning) => summary.append(warningRow(warning.text, warning.severe)));
 }
 
 function warningRow(text, severe = false) {
@@ -1278,13 +1101,11 @@ function warningRow(text, severe = false) {
 
 async function runImport() {
   if (state.projectDirty && !confirm(t("confirm.discardUnsaved"))) return;
-  const payload = importState.configuration
-    ? { configuration: importState.configuration }
-    : { content: importState.content };
-  payload.canvas = {
-    width: clamp(Number($("#import-width").value), 1, 4096),
-    height: clamp(Number($("#import-height").value), 1, 4096),
-  };
+  const payload = buildImportPayload(
+    importState,
+    $("#import-width").value,
+    $("#import-height").value,
+  );
 
   $("#do-import").disabled = true;
   try {
@@ -1326,16 +1147,16 @@ async function runImport() {
 
 async function loadServerProjects() {
   try {
-    const result = await api("designer/projects");
+    const projects = await projectsController.list();
     const select = $("#server-projects");
     const selected = select.value;
     select.replaceChildren(new Option(t("project.savedProjects"), ""));
-    result.projects.forEach((project) => {
+    projects.forEach((project) => {
       const option = new Option(project.name, project.name);
       option.dataset.revision = project.revision;
       select.append(option);
     });
-    select.value = result.projects.some((project) => project.name === selected) ? selected : "";
+    select.value = projects.some((project) => project.name === selected) ? selected : "";
     updateServerProjectButtons();
   } catch (error) {
     toast(error.message, true);
@@ -1358,7 +1179,7 @@ async function loadSelectedServerProject() {
   if (!name) return;
   if (state.projectDirty && !confirm(t("confirm.discardUnsaved"))) return;
   try {
-    const result = await api(`designer/projects/${encodeURIComponent(name)}`);
+    const result = await projectsController.load(name);
     stopFlowPreview();
     state.project = result.project;
     state.activeSurface = result.project.pages?.[0] ? `page:${result.project.pages[0].id}` : "root";
@@ -1383,10 +1204,7 @@ async function saveServerProject() {
   $("#project-name").value = name;
   const expectedRevision = state.projectName === name ? state.projectRevision : null;
   try {
-    const result = await api(`designer/projects/${encodeURIComponent(name)}`, {
-      method: "PUT",
-      body: JSON.stringify({ project: state.project, expected_revision: expectedRevision }),
-    });
+    const result = await projectsController.save(name, state.project, expectedRevision);
     state.projectName = name;
     state.projectRevision = result.revision;
     state.projectDirty = false;
@@ -1407,9 +1225,7 @@ async function deleteServerProject() {
   const option = $("#server-projects").selectedOptions[0];
   const revision = state.projectName === name ? state.projectRevision : option.dataset.revision;
   try {
-    await api(`designer/projects/${encodeURIComponent(name)}?expected_revision=${encodeURIComponent(revision)}`, {
-      method: "DELETE",
-    });
+    await projectsController.remove(name, revision);
     if (state.projectName === name) {
       state.projectName = null;
       clearViewerBindings();
@@ -1424,21 +1240,8 @@ async function deleteServerProject() {
   }
 }
 
-function normalizeProjectName(value) {
-  let name = String(value || "display").trim().replace(/[^A-Za-z0-9._-]+/g, "-");
-  name = name.replace(/^\.+/, "") || "display";
-  // Drop a source extension too, so importing panel.yaml gives panel.lvgldesign
-  // rather than panel.yaml.lvgldesign.
-  name = name.replace(/\.(lvgldesign|ya?ml)$/i, "");
-  return `${name.slice(0, 116) || "display"}.lvgldesign`;
-}
-
 function pushUndo() {
-  const serialized = JSON.stringify(state.project);
-  if (state.undo[state.undo.length - 1] !== serialized) {
-    state.undo.push(serialized);
-    if (state.undo.length > 50) state.undo.shift();
-  }
+  state.undo = pushHistory(state.undo, state.project);
   state.redo = [];
   updateUndoButtons();
 }
@@ -1453,11 +1256,11 @@ function reselectAfterHistoryChange(widgetId, strokeId) {
 }
 
 function undoDesignerChange() {
-  if (!state.undo.length) return;
+  const history = undoHistory(state.undo, state.redo, state.project);
+  if (!history) return;
   const widgetId = state.selectedWidget?.id;
   const strokeId = state.selectedStroke?.id;
-  state.redo.push(JSON.stringify(state.project));
-  state.project = JSON.parse(state.undo.pop());
+  Object.assign(state, history);
   normaliseActiveSurface();
   reselectAfterHistoryChange(widgetId, strokeId);
   markProjectDirty();
@@ -1465,11 +1268,11 @@ function undoDesignerChange() {
 }
 
 function redoDesignerChange() {
-  if (!state.redo.length) return;
+  const history = redoHistory(state.undo, state.redo, state.project);
+  if (!history) return;
   const widgetId = state.selectedWidget?.id;
   const strokeId = state.selectedStroke?.id;
-  state.undo.push(JSON.stringify(state.project));
-  state.project = JSON.parse(state.redo.pop());
+  Object.assign(state, history);
   normaliseActiveSurface();
   reselectAfterHistoryChange(widgetId, strokeId);
   markProjectDirty();
@@ -1488,8 +1291,7 @@ function updateUndoButtons() {
 }
 
 function markProjectDirty() {
-  state.projectDirty = true;
-  renderDesignerStatus();
+  actions.set("projectDirty", true);
 }
 
 function updateCanvasSize() {
@@ -2123,7 +1925,7 @@ function applySurfaceSettings() {
     const styleTree = parseSurfaceObject($("#surface-style-json"), t("validation.surface.fieldStyle"));
     const extra = parseSurfaceObject($("#surface-extra-json"), t("validation.surface.fieldExtra"));
     const bgColor = $("#surface-bg-color").value.trim();
-    if (bgColor) styleTree.bg_color = normaliseActionColor(bgColor);
+    if (bgColor) styleTree.bg_color = normalizeActionColor(bgColor);
     let nextId = "";
     if (entry.kind === "page") {
       nextId = $("#surface-id").value.trim();
@@ -2528,17 +2330,7 @@ function finishDrawing() {
 /** Pointer position in canvas image coordinates (undoes the zoom transform). */
 function canvasPointFromEvent(event) {
   const rect = $("#canvas").getBoundingClientRect();
-  return [(event.clientX - rect.left) / state.zoom, (event.clientY - rect.top) / state.zoom];
-}
-
-/** Snap `point` to the nearest `step` angle around `origin`, same distance. */
-function snapAngle(origin, point, step) {
-  const dx = point[0] - origin[0];
-  const dy = point[1] - origin[1];
-  const distance = Math.hypot(dx, dy);
-  if (distance < 1e-6) return point;
-  const angle = Math.round(Math.atan2(dy, dx) / step) * step;
-  return [origin[0] + Math.cos(angle) * distance, origin[1] + Math.sin(angle) * distance];
+  return pointFromClient(event.clientX, event.clientY, rect, state.zoom);
 }
 
 function onGlowPointerDown(event) {
@@ -2944,29 +2736,6 @@ function renderColorWheelReadout() {
 // device will actually show), upload each PNG through the asset-store
 // endpoint, and wire up an image + animimg widget pair referencing them.
 
-function slugifyStrokeName(text, fallback) {
-  let slug = String(text || "").trim().toLowerCase()
-    .replace(/[äöüß]/g, (c) => ({ ä: "ae", ö: "oe", ü: "ue", ß: "ss" }[c]))
-    .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-  if (!slug) slug = fallback;
-  return slug;
-}
-
-/** The area a line's own stroke (core + glow, no markers) occupies. */
-function strokeRenderBounds(stroke) {
-  const { measure } = strokePath(stroke);
-  const box = boundingBox(measure);
-  const canvas = state.project.canvas;
-  if (!box) return { left: 0, top: 0, right: canvas.width, bottom: canvas.height };
-  const margin = stroke.width / 2 + (stroke.glow.enabled ? stroke.glow.radius : 0) + 2;
-  return {
-    left: Math.max(0, box.left - margin),
-    top: Math.max(0, box.top - margin),
-    right: Math.min(canvas.width, box.right + margin),
-    bottom: Math.min(canvas.height, box.bottom + margin),
-  };
-}
-
 function renderStrokeFrame(doc, rect, { withLines, withFlow, phase }) {
   return new Promise((resolve, reject) => {
     const width = Math.max(1, Math.ceil(rect.right - rect.left));
@@ -2990,25 +2759,8 @@ function renderStrokeFrame(doc, rect, { withLines, withFlow, phase }) {
   });
 }
 
-async function blobToBase64(blob) {
-  const buffer = await blob.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  // Chunked to stay well under any engine's argument-count limit for
-  // String.fromCharCode - fine for the small, cropped frames baked here.
-  const chunkSize = 8192;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
-}
-
 async function uploadBakedFrame(name, blob) {
-  const content_base64 = await blobToBase64(blob);
-  const result = await api("designer/assets/images", {
-    method: "POST", body: JSON.stringify({ name, content_base64 }),
-  });
-  return result.path;
+  return uploadImageAsset(api, name, blob);
 }
 
 // Only ever called for a baked glow-line frame (see bakeStroke()):
@@ -3019,86 +2771,11 @@ async function uploadBakedFrame(name, blob) {
 // away, baking the frame in as an opaque box instead of a see-through
 // glow line. RGB565 matches the colour depth renderStrokeFrame() already
 // quantizes every pixel to before it leaves the browser.
-function ensureImageEntry(id, filePath) {
-  if (!Array.isArray(state.project.images)) state.project.images = [];
-  let entry = state.project.images.find((img) => img.id === id);
-  if (!entry) {
-    entry = { id, file_path: filePath, resize: "", dither: "", transparency: "alpha_channel",
-             img_type: "RGB565", external: true, extra: {} };
-    state.project.images.push(entry);
-  } else {
-    entry.file_path = filePath;
-    entry.external = true;
-    entry.transparency = "alpha_channel";
-    entry.img_type = "RGB565";
-  }
-  return entry;
-}
-
-function strokeParentContainer(stroke) {
-  if (!stroke.parent_id) return null;
-  return allWidgets().find((widget) => widget.id === stroke.parent_id) || null;
-}
-
-function newImageWidget(id, rect, src) {
-  return {
-    id, widget_type: "image", name: "", x: Math.round(rect.left), y: Math.round(rect.top),
-    width: Math.round(rect.right - rect.left), height: Math.round(rect.bottom - rect.top),
-    align: "TOP_LEFT", align_to: "", hidden: false, locked: false,
-    properties: { src, angle: 0, zoom: 1 },
-    style_mode: "inline", style_refs: [], style_tree: {}, events: {}, children: [],
-    tab_title: "", tile_row: 0, tile_col: 0, tile_dir: "ALL",
-    layout: {}, grid_cell: {}, extra: {}, source: "editor", synthetic_id: false,
-  };
-}
-
-function newAnimimgWidget(id, rect, frameIds, durationMs) {
-  const widget = newImageWidget(id, rect, "");
-  widget.widget_type = "animimg";
-  widget.properties = {
-    src: frameIds, duration: durationMs, repeat_count: "forever", auto_start: true,
-  };
-  return widget;
-}
-
-function strokeBaseName(stroke) {
-  return slugifyStrokeName(stroke.name, stroke.id);
-}
-
 // Baking used to be a one-off manual click that created a fresh widget every
 // time (unique-suffixed id, so re-baking piled up copies). Now it runs
 // automatically before every export, so it has to be idempotent: the same
 // stroke always maps to the same deterministic widget id, and re-baking
 // updates that widget in place instead of creating a new one.
-function upsertBakedWidget(widgetId, freshWidget, target) {
-  if ((state.project.reserved_ids || []).includes(widgetId)) {
-    throw new Error(t("toast.glow.idReserved", { id: widgetId }));
-  }
-  const existing = projectWidgetEntries().find((item) => item.id === widgetId);
-  if (existing) {
-    // A same-id, same-type widget here can only be this stroke's own
-    // previous bake output (the id is derived from the stroke, not typed by
-    // hand) - safe to overwrite in place. A different widget_type at that id
-    // means something else (a hand-placed widget, or another stroke with a
-    // colliding slugified name) already owns it - name the line differently
-    // instead of silently clobbering unrelated content.
-    if (existing.widget_type !== freshWidget.widget_type) {
-      throw new Error(t("toast.glow.idCollision", { id: widgetId }));
-    }
-    Object.assign(existing, freshWidget, { id: widgetId, children: existing.children });
-    return existing;
-  }
-  if (target) target.children.push(freshWidget);
-  else state.project.widgets.push(freshWidget);
-  return freshWidget;
-}
-
-function removeBakedWidget(widgetId, target) {
-  const list = target ? target.children : state.project.widgets;
-  const index = (list || []).findIndex((item) => item.id === widgetId);
-  if (index >= 0) list.splice(index, 1);
-}
-
 /**
  * Bakes one glow-line stroke into its static-line image widget plus, if the
  * stroke's flow is enabled, one animated widget (and, if the stroke is
@@ -3109,64 +2786,17 @@ function removeBakedWidget(widgetId, target) {
  * duplicates.
  */
 async function bakeStroke(stroke) {
-  if ((stroke.points || []).length < 2) return null;
-  const frameCount = clamp(Number(stroke.flow.bake_frame_count) || 6, 1, 60);
-  const crop = stroke.flow.bake_crop;
-  const doc = { strokes: [stroke] };
-  const staticRect = crop ? strokeRenderBounds(stroke)
-    : { left: 0, top: 0, right: state.project.canvas.width, bottom: state.project.canvas.height };
-  const baseName = strokeBaseName(stroke);
-  const target = strokeParentContainer(stroke);
-  // The rect (and thus a fresh widget's x/y) is in absolute canvas
-  // coordinates; a child's x/y is relative to its parent's content box.
-  const origin = target ? contentOrigin(state.project, target) : { x: 0, y: 0 };
-  const place = (widget) => {
-    widget.x = Math.round(widget.x - origin.x);
-    widget.y = Math.round(widget.y - origin.y);
-    return widget;
-  };
-
-  const staticBlob = await renderStrokeFrame(doc, staticRect, { withLines: true, withFlow: false, phase: 0 });
-  const staticPath = await uploadBakedFrame(`${baseName}_static.png`, staticBlob);
-  const staticImageId = `img_${baseName}_static`;
-  ensureImageEntry(staticImageId, staticPath);
-  upsertBakedWidget(baseName, place(newImageWidget(baseName, staticRect, staticImageId)), target);
-
-  const bakeDirection = async (suffix, mirror) => {
-    const directional = mirror ? { ...stroke, flow: { ...stroke.flow, reversed: !stroke.flow.reversed } } : stroke;
-    const directionalDoc = { strokes: [directional] };
-    const animRect = crop ? (flowBoundsDocument(directionalDoc) || staticRect) : staticRect;
-    const frameIds = [];
-    for (let i = 0; i < frameCount; i += 1) {
-      const blob = await renderStrokeFrame(directionalDoc, animRect,
-        { withLines: false, withFlow: true, phase: i / frameCount });
-      const frameSuffix = String(i).padStart(2, "0");
-      const path = await uploadBakedFrame(`${baseName}_flow${suffix}_${frameSuffix}.png`, blob);
-      const frameId = `img_${baseName}_flow${suffix}_${frameSuffix}`;
-      ensureImageEntry(frameId, path);
-      frameIds.push(frameId);
-    }
-    const widgetId = `${baseName}_anim${suffix}`;
-    upsertBakedWidget(widgetId, place(newAnimimgWidget(widgetId, animRect, frameIds, frameCount * 300)), target);
-    return widgetId;
-  };
-
-  let forwardId = null;
-  let reverseId = null;
-  if (stroke.flow.enabled) {
-    forwardId = await bakeDirection("", false);
-    if (stroke.flow.bidirectional) {
-      reverseId = await bakeDirection("_rev", true);
-    } else {
-      removeBakedWidget(`${baseName}_anim_rev`, target);
-    }
-  } else {
-    // Flow got switched off since the last bake - drop the animated widgets
-    // that bake left behind, the static line widget stays.
-    removeBakedWidget(`${baseName}_anim`, target);
-    removeBakedWidget(`${baseName}_anim_rev`, target);
-  }
-  return { baseName, forwardId, reverseId };
+  return bakeGlowStroke({
+    project: state.project,
+    stroke,
+    renderFrame: renderStrokeFrame,
+    uploadFrame: uploadBakedFrame,
+    contentOrigin,
+    messages: {
+      reserved: (id) => t("toast.glow.idReserved", { id }),
+      collision: (id) => t("toast.glow.idCollision", { id }),
+    },
+  });
 }
 
 /** Runs before every YAML export/download - bakes (or re-bakes) every glow
@@ -3631,117 +3261,16 @@ function applyImageButtonSettings() {
   toast(t("toast.imgbtn.updated"));
 }
 
-function actionObjectEntry(action) {
-  if (!action || typeof action !== "object" || Array.isArray(action)) return null;
-  const entries = Object.entries(action);
-  return entries.length === 1 ? entries[0] : null;
-}
-
-function actionIdsForEditor(payload) {
-  if (typeof payload === "string") return [payload];
-  if (Array.isArray(payload)) return payload.flatMap(actionIdsForEditor);
-  if (payload && typeof payload === "object") return actionIdsForEditor(payload.id);
-  return [];
-}
-
-function generatedActionCondition(action) {
-  const entry = actionObjectEntry(action);
-  if (entry?.[0] !== "if" || !entry[1] || typeof entry[1] !== "object") return null;
-  const expression = String(entry[1].condition?.lambda || "").replace(/\s+/g, "").toLowerCase();
-  const branch = Array.isArray(entry[1].then) && entry[1].then.length === 1 ? entry[1].then[0] : null;
-  if (!branch || !["returnx;", "return!x;"].includes(expression)) return null;
-  return { condition: expression === "returnx;" ? "checked" : "unchecked", action: branch };
-}
-
 // Recognises the specific nested if/show/hide/animimg.start structure
 // addWidgetAction() builds for type === "flow" (see there), purely from its
 // shape - no extra metadata is stored on the action itself, since it must
 // still export as plain ESPHome-native actions.
-function describeFlowAction(action) {
-  const entry = actionObjectEntry(action);
-  if (entry?.[0] !== "if") return null;
-  const outer = entry[1];
-  if (typeof outer?.condition?.lambda !== "string" || !outer.condition.lambda.includes("abs((int)x)")) return null;
-  const ids = new Set();
-  const collect = (branch) => {
-    if (!Array.isArray(branch)) return;
-    branch.forEach((item) => {
-      const e = actionObjectEntry(item);
-      if (!e) return;
-      if (["lvgl.widget.hide", "lvgl.widget.show", "lvgl.animimg.start"].includes(e[0])) ids.add(e[1]);
-      if (e[0] === "if") {
-        collect(e[1]?.then);
-        collect(e[1]?.else);
-      }
-    });
-  };
-  collect(outer.then);
-  collect(outer.else);
-  if (!ids.size) return null;
-  // The target ids are derived from a glow-line stroke and only materialise
-  // as real widgets once bakeAllStrokes() runs (before the next export) - so
-  // unlike every other action type, "not found among the project's widgets
-  // yet" is expected here, not a broken reference.
-  return {
-    text: `${t("action.desc.flow")}: ${[...ids].join(" ⇄ ")}`, targetIds: [...ids],
-    supported: true, skipMissingCheck: true,
-  };
-}
-
-function describeWidgetAction(action) {
-  const conditional = generatedActionCondition(action);
-  if (conditional) {
-    const prefix = conditional.condition === "checked" ? t("action.desc.whenChecked") : t("action.desc.whenUnchecked");
-    const inner = describeWidgetAction(conditional.action);
-    return { ...inner, text: `${prefix}${inner.text}` };
-  }
-  const flow = describeFlowAction(action);
-  if (flow) return flow;
-  const entry = actionObjectEntry(action);
-  if (!entry) return { text: t("action.desc.unsupported"), targetIds: [], supported: false };
-  const [name, payload] = entry;
-  const targetIds = actionIdsForEditor(payload);
-  if (["lvgl.widget.show", "lvgl.widget.hide"].includes(name)) {
-    return {
-      text: `${name.endsWith(".show") ? t("action.desc.show") : t("action.desc.hide")}: ${targetIds.join(", ") || t("action.desc.noTarget")}`,
-      targetIds,
-      supported: Boolean(targetIds.length),
-    };
-  }
-  if (["lvgl.animimg.start", "lvgl.animimg.stop"].includes(name)) {
-    return {
-      text: `${name.endsWith(".start") ? t("action.desc.animimgStart") : t("action.desc.animimgStop")}: ${targetIds.join(", ") || t("action.desc.noTarget")}`,
-      targetIds,
-      supported: Boolean(targetIds.length),
-    };
-  }
-  if (name === "lvgl.page.show") {
-    return { text: `${t("action.desc.openPage")}${targetIds.join(", ") || t("action.desc.noTarget")}`, targetIds: [], supported: Boolean(targetIds.length) };
-  }
-  if (["lvgl.widget.update", "lvgl.label.update", "lvgl.button.update", "lvgl.image.update", "lvgl.animimg.update"].includes(name)
-      && payload && typeof payload === "object" && !Array.isArray(payload)) {
-    const fields = Object.keys(payload).filter((key) => key !== "id");
-    return {
-      text: `${t("action.desc.change")}${targetIds.join(", ") || t("action.desc.noTarget")}${fields.length ? ` · ${fields.join(", ")}` : ""}`,
-      targetIds,
-      supported: Boolean(targetIds.length && fields.length),
-    };
-  }
-  return { text: t("action.desc.yamlOnly", { name }), targetIds, supported: false };
-}
-
 // "on_value" + a checked/unchecked condition only makes sense for a widget
 // whose value is fundamentally a boolean - a plain lambda `return x;`/
 // `return !x;` has nothing meaningful to compare against for e.g. a
 // slider's numeric value. A button only qualifies once "checkable" is on
 // (otherwise it never reports a checked state to begin with); switch and
 // checkbox are inherently boolean, no extra flag needed.
-function widgetSupportsValueCondition(widget) {
-  if (!widget) return false;
-  if (widget.widget_type === "switch" || widget.widget_type === "checkbox") return true;
-  return widget.widget_type === "button" && Boolean(widget.properties?.checkable);
-}
-
 function renderWidgetActions(widget) {
   const section = $("#widget-actions-section");
   const visible = Boolean(widget);
@@ -3756,7 +3285,7 @@ function renderWidgetActions(widget) {
     const actions = Array.isArray(raw) ? raw : [raw];
     actions.forEach((action, index) => {
       count += 1;
-      const description = describeWidgetAction(action);
+      const description = describeAction(action, t);
       const missing = description.skipMissingCheck ? [] : description.targetIds.filter(
         (id) => !projectWidgetEntries().some((item) => item.id === id));
       const row = document.createElement("div");
@@ -3844,12 +3373,6 @@ function renderWidgetActionBuilder(widget) {
   $("#widget-action-error").classList.add("hidden");
 }
 
-function normaliseActionColor(value) {
-  const raw = String(value || "").trim();
-  const hex = raw.replace(/^#/, "").replace(/^0x/i, "");
-  return /^[0-9a-f]{6}$/i.test(hex) ? `0x${hex.toUpperCase()}` : raw;
-}
-
 function addWidgetAction() {
   const widget = state.selectedWidget;
   if (!widget) return;
@@ -3872,13 +3395,7 @@ function addWidgetAction() {
   }
 
   let action;
-  if (type === "show" || type === "hide") {
-    action = { [`lvgl.widget.${type}`]: targetId };
-  } else if (type === "page_show") {
-    action = { "lvgl.page.show": targetId };
-  } else if (type === "animimg_start" || type === "animimg_stop") {
-    action = { [`lvgl.animimg.${type === "animimg_start" ? "start" : "stop"}`]: targetId };
-  } else if (type === "flow") {
+  if (type === "flow") {
     if (trigger !== "on_value") {
       fail(t("validation.action.flowNeedsValueTrigger"));
       return;
@@ -3896,85 +3413,46 @@ function addWidgetAction() {
     const flowTargetId = `${baseName}_anim`;
     const bidir = stroke.flow.bidirectional;
     const reverseId = bidir ? `${baseName}_anim_rev` : "";
-    const off = Math.max(0, Number($("#widget-action-flow-off").value) || 0);
-    const fastThreshold = Number($("#widget-action-flow-fast").value) || 0;
-    const normalDuration = Math.max(10, Number($("#widget-action-flow-normal-duration").value) || 0);
-    const fastDuration = Math.max(10, Number($("#widget-action-flow-fast-duration").value) || 0);
-    if (fastThreshold <= off) {
+    const offThreshold = $("#widget-action-flow-off").value;
+    const fastThreshold = $("#widget-action-flow-fast").value;
+    if ((Number(fastThreshold) || 0) <= Math.max(0, Number(offThreshold) || 0)) {
       fail(t("validation.action.flowInvalidThresholds"));
       return;
     }
-    const speedBranch = (id) => [
-      { "lvgl.animimg.start": id },
-      {
-        if: {
-          condition: { lambda: "return abs((int)x) >= " + fastThreshold + ";" },
-          then: [{ "lvgl.animimg.update": { id, duration: `${fastDuration}ms` } }],
-          else: [{ "lvgl.animimg.update": { id, duration: `${normalDuration}ms` } }],
-        },
-      },
-    ];
-    if (!bidir) {
-      action = {
-        if: {
-          condition: { lambda: "return abs((int)x) <= " + off + ";" },
-          then: [{ "lvgl.widget.hide": flowTargetId }],
-          else: [{ "lvgl.widget.show": flowTargetId }, ...speedBranch(flowTargetId)],
-        },
-      };
-    } else {
-      action = {
-        if: {
-          condition: { lambda: "return abs((int)x) <= " + off + ";" },
-          then: [{ "lvgl.widget.hide": flowTargetId }, { "lvgl.widget.hide": reverseId }],
-          else: [
-            {
-              if: {
-                condition: { lambda: "return x > 0;" },
-                then: [{ "lvgl.widget.hide": reverseId }, { "lvgl.widget.show": flowTargetId }, ...speedBranch(flowTargetId)],
-                else: [{ "lvgl.widget.hide": flowTargetId }, { "lvgl.widget.show": reverseId }, ...speedBranch(reverseId)],
-              },
-            },
-          ],
-        },
-      };
-    }
+    action = buildFlowAction({
+      forwardId: flowTargetId,
+      reverseId,
+      offThreshold,
+      fastThreshold,
+      normalDuration: $("#widget-action-flow-normal-duration").value,
+      fastDuration: $("#widget-action-flow-fast-duration").value,
+    });
   } else {
     const targetWidget = projectWidgetEntries().find((item) => item.id === targetId);
-    const payload = { id: targetId };
-    const text = $("#widget-action-text").value.trim();
-    if (text && ["label", "button"].includes(targetWidget?.widget_type)) payload.text = text;
-    const imageSource = $("#widget-action-image").value;
-    if (imageSource && targetWidget?.widget_type === "image") payload.src = imageSource;
-    const styleControls = {
-      bg_color: "#widget-action-bg-color",
-      text_color: "#widget-action-text-color",
-      border_color: "#widget-action-border-color",
-      opa: "#widget-action-opacity",
-    };
-    Object.entries(styleControls).forEach(([key, selector]) => {
-      const value = $(selector).value.trim();
-      if (value) payload[key] = key.endsWith("_color") ? normaliseActionColor(value) : value;
-    });
-    if (Object.keys(payload).length === 1) {
-      fail(t("validation.action.needsAtLeastOneField"));
-      return;
+    try {
+      action = buildWidgetAction({
+        type,
+        targetId,
+        targetWidget,
+        fields: {
+          text: $("#widget-action-text").value,
+          imageSource: $("#widget-action-image").value,
+          bg_color: $("#widget-action-bg-color").value,
+          text_color: $("#widget-action-text-color").value,
+          border_color: $("#widget-action-border-color").value,
+          opa: $("#widget-action-opacity").value,
+        },
+      });
+    } catch (error) {
+      if (error.message === "missing_update_fields") {
+        fail(t("validation.action.needsAtLeastOneField"));
+        return;
+      }
+      throw error;
     }
-    const actionName = targetWidget?.widget_type === "label"
-      ? "lvgl.label.update"
-      : targetWidget?.widget_type === "button" ? "lvgl.button.update"
-        : targetWidget?.widget_type === "image" ? "lvgl.image.update" : "lvgl.widget.update";
-    action = { [actionName]: payload };
   }
 
-  if (trigger === "on_value" && condition !== "always") {
-    action = {
-      if: {
-        condition: { lambda: condition === "checked" ? "return x;" : "return !x;" },
-        then: [action],
-      },
-    };
-  }
+  if (trigger === "on_value") action = wrapValueCondition(action, condition);
 
   pushUndo();
   widget.events ||= {};
@@ -4004,51 +3482,14 @@ function removeWidgetAction(widget, trigger, index) {
   renderWidgetActions(widget);
 }
 
-function runtimeTargets(widget) {
-  if (!widget) return [];
-  if (["label", "textarea"].includes(widget.widget_type)) {
-    return [{ value: "text", label: t("binding.target.text") }];
-  }
-  if (["slider", "bar", "arc"].includes(widget.widget_type)) {
-    const typeName = widget.widget_type === "slider" ? "Slider" : widget.widget_type === "bar" ? "Bar" : "Arc";
-    return [{ value: "value", label: t("binding.target.value", { type: typeName }) }];
-  }
-  if (["switch", "checkbox"].includes(widget.widget_type)) {
-    const typeName = widget.widget_type === "switch" ? "Switch" : "Checkbox";
-    return [{ value: "state_checked", label: t("binding.target.state", { type: typeName }) }];
-  }
-  if (["dropdown", "roller"].includes(widget.widget_type)) {
-    const typeName = widget.widget_type === "dropdown" ? "Dropdown" : "Roller";
-    return [{ value: "selected_index", label: t("binding.target.value", { type: typeName }) }];
-  }
-  return [];
-}
+const runtimeTargets = (widget) => targetsForRuntime(widget, t);
 
 function projectWidgetEntries() {
-  const result = [];
-  const visit = (nodes) => (nodes || []).forEach((widget) => {
-    result.push(widget);
-    visit(widget.children);
-  });
-  visit(state.project.widgets);
-  (state.project.pages || []).forEach((page) => visit(page.widgets));
-  visit(state.project.top_layer?.widgets);
-  visit(state.project.bottom_layer?.widgets);
-  (state.project.msgboxes || []).forEach((msgbox) => {
-    // A message box is a valid lvgl.widget.show/.hide target by its own id,
-    // even though it is not a WidgetNode (see msgbox_support.py) - a
-    // pseudo-entry keeps action-target validation and id-collision checks
-    // aware of it.
-    result.push({ id: msgbox.id, widget_type: "msgbox" });
-    visit(msgbox.buttons);
-    visit(msgbox.header_buttons);
-  });
-  return result;
+  return collectActionTargets(state.project);
 }
 
 function bindingIsOrphan(binding) {
-  const widget = projectWidgetEntries().find((item) => item.id === binding.widget_id);
-  return !widget || !runtimeTargets(widget).some((target) => target.value === binding.target);
+  return isRuntimeBindingOrphan(state.project, binding);
 }
 
 function renderRuntimeBindingOrphans() {
@@ -4070,10 +3511,6 @@ function runtimeCanWrite() {
   return Boolean(
     state.projectName && !state.projectDirty && state.capabilities["designer.project_write"],
   );
-}
-
-function runtimeStateFor(device, entityId) {
-  return (device?.states || []).find((item) => item.entity_id === entityId) || null;
 }
 
 function bindingFromControls(widgetId = state.selectedWidget?.id) {
@@ -4215,7 +3652,7 @@ function renderRuntimeBindingStatus() {
 }
 
 async function persistRuntimeBindings(bindings) {
-  const cleaned = bindings.filter((binding) => !bindingIsOrphan(binding));
+  const cleaned = cleanRuntimeBindings(state.project, bindings);
   try {
     const result = await api("viewer/bindings/" + encodeURIComponent(state.projectName), {
       method: "PUT",
@@ -4255,10 +3692,7 @@ async function saveRuntimeBinding() {
   const additional = [...$("#runtime-binding-additional-widgets").selectedOptions]
     .map((option) => option.value);
   const widgetIds = [widget.id, ...additional];
-  const next = state.viewerBindings.filter(
-    (binding) => !(widgetIds.includes(binding.widget_id) && binding.target === target),
-  );
-  widgetIds.forEach((widgetId) => next.push(bindingFromControls(widgetId)));
+  const next = assignRuntimeBinding(state.viewerBindings, widgetIds, bindingFromControls());
   if (await persistRuntimeBindings(next)) {
     toast(widgetIds.length > 1
       ? t("toast.binding.appliedMultiple", { count: widgetIds.length })
@@ -4270,18 +3704,16 @@ async function removeRuntimeBinding() {
   const widget = state.selectedWidget;
   const target = $("#runtime-binding-target").value;
   if (!widget || !state.projectName || state.projectDirty) return;
-  const next = state.viewerBindings.filter(
-    (binding) => !(binding.widget_id === widget.id && binding.target === target),
-  );
+  const next = withoutRuntimeBinding(state.viewerBindings, widget.id, target);
   if (await persistRuntimeBindings(next)) toast(t("toast.binding.removed"));
 }
 
 function copyRuntimeBinding() {
   const widget = state.selectedWidget;
   if (!widget) return;
-  const binding = state.viewerBindings.find((item) => (
-    item.widget_id === widget.id && item.target === $("#runtime-binding-target").value
-  ));
+  const binding = findRuntimeBinding(
+    state.viewerBindings, widget.id, $("#runtime-binding-target").value,
+  );
   if (!binding) return;
   state.copiedRuntimeBinding = { ...binding };
   $("#paste-runtime-binding").disabled = false;
@@ -4291,7 +3723,7 @@ function copyRuntimeBinding() {
 function pasteRuntimeBinding() {
   const widget = state.selectedWidget;
   const copied = state.copiedRuntimeBinding;
-  if (!widget || !copied || !runtimeTargets(widget).some((target) => target.value === copied.target)) {
+  if (!canPasteRuntimeBinding(widget, copied)) {
     toast(t("toast.binding.pasteMismatch"), true);
     return;
   }
@@ -4316,7 +3748,7 @@ async function cleanupRuntimeBindings() {
     toast(t("toast.binding.saveChangesFirst"), true);
     return;
   }
-  const valid = state.viewerBindings.filter((binding) => !bindingIsOrphan(binding));
+  const valid = cleanRuntimeBindings(state.project, state.viewerBindings);
   const removed = state.viewerBindings.length - valid.length;
   if (!removed) return;
   if (await persistRuntimeBindings(valid)) toast(t("toast.binding.cleanedOrphans", { count: removed }));
@@ -4383,46 +3815,12 @@ function colorLibrary() {
   return state.project.colors;
 }
 
-function normaliseLibraryHex(value) {
-  const raw = String(value || "").trim().replace(/^#/, "").replace(/^0x/i, "");
-  if (/^[0-9a-f]{3}$/i.test(raw)) {
-    return raw.split("").map((character) => character + character).join("").toUpperCase();
-  }
-  return /^[0-9a-f]{6}$/i.test(raw) ? raw.toUpperCase() : null;
-}
-
 function colorReferenceLocations(id, replacement = null) {
-  const matches = [];
-  const visit = (value, path, key = "", parent = null) => {
-    if (typeof value === "string") {
-      if (/color$/i.test(key) && value === id) {
-        matches.push(path);
-        if (replacement !== null) parent[key] = replacement;
-      }
-      return;
-    }
-    if (!value || typeof value !== "object") return;
-    Object.entries(value).forEach(([childKey, child]) => {
-      visit(child, path ? `${path}.${childKey}` : childKey, childKey, value);
-    });
-  };
-  Object.entries(state.project).forEach(([key, value]) => {
-    if (key !== "colors") visit(value, key);
-  });
-  return matches;
+  return findColorReferences(state.project, id, replacement);
 }
 
 function projectIdIsUsed(id, ignoredColorId = null) {
-  if (projectWidgetEntries().some((entry) => entry.id === id)) return true;
-  if ((state.project.pages || []).some((page) => page.id === id)) return true;
-  const libraries = [state.project.styles, state.project.fonts, state.project.images];
-  if (libraries.some((entries) => (entries || []).some((entry) => entry.id === id))) return true;
-  // Ids used by hardware entities elsewhere in an imported source config
-  // (binary_sensor:, button:, ...) share ESPHome's one flat id() namespace
-  // with everything editable here, even though this designer never models
-  // those entities itself.
-  if ((state.project.reserved_ids || []).includes(id)) return true;
-  return colorLibrary().some((entry) => entry.id === id && entry.id !== ignoredColorId);
+  return idIsUsedInProject(state.project, id, ignoredColorId);
 }
 
 function resetColorLibraryForm() {
@@ -4440,8 +3838,8 @@ function editColorLibraryEntry(id) {
   if (!entry) return;
   state.editingColorId = id;
   $("#color-library-id").value = entry.id;
-  $("#color-library-hex").value = normaliseLibraryHex(entry.hex) || "FFFFFF";
-  $("#color-library-picker").value = `#${normaliseLibraryHex(entry.hex) || "FFFFFF"}`;
+  $("#color-library-hex").value = normalizeLibraryHex(entry.hex) || "FFFFFF";
+  $("#color-library-picker").value = `#${normalizeLibraryHex(entry.hex) || "FFFFFF"}`;
   $("#color-library-error").classList.add("hidden");
   $("#save-color-library-entry").textContent = t("colorlib.form.save");
   $("#cancel-color-library-edit").classList.remove("hidden");
@@ -4451,7 +3849,7 @@ function editColorLibraryEntry(id) {
 function saveColorLibraryEntry(event) {
   event.preventDefault();
   const id = $("#color-library-id").value.trim();
-  const hex = normaliseLibraryHex($("#color-library-hex").value);
+  const hex = normalizeLibraryHex($("#color-library-hex").value);
   const error = $("#color-library-error");
   const fail = (message) => {
     error.textContent = message;
@@ -4495,7 +3893,7 @@ function deleteColorLibraryEntry(id) {
     t("confirm.color.deleteWithRefs", { id, count: references.length, hex: entry.hex }),
   )) return;
   pushUndo();
-  if (references.length) colorReferenceLocations(id, normaliseLibraryHex(entry.hex) || entry.hex);
+  if (references.length) colorReferenceLocations(id, normalizeLibraryHex(entry.hex) || entry.hex);
   state.project.colors = colorLibrary().filter((item) => item !== entry);
   if (state.editingColorId === id) resetColorLibraryForm();
   markProjectDirty();
@@ -4509,7 +3907,7 @@ function renderColorLibrary() {
   const list = $("#color-library-list");
   list.replaceChildren();
   colorLibrary().forEach((entry) => {
-    const hex = normaliseLibraryHex(entry.hex) || "FFFFFF";
+    const hex = normalizeLibraryHex(entry.hex) || "FFFFFF";
     const row = document.createElement("div");
     row.className = "color-library-item";
     const swatch = document.createElement("span");
@@ -4548,7 +3946,7 @@ function renderColorLibrary() {
   colorLibrary().forEach((entry) => {
     const option = document.createElement("option");
     option.value = entry.id;
-    option.label = `#${normaliseLibraryHex(entry.hex) || entry.hex}`;
+    option.label = `#${normalizeLibraryHex(entry.hex) || entry.hex}`;
     options.append(option);
   });
   $("#color-library-export-hint").classList.toggle(
@@ -4577,7 +3975,7 @@ function bindColorLibrary() {
     $("#color-library-hex").value = event.target.value.slice(1).toUpperCase();
   });
   $("#color-library-hex").addEventListener("input", (event) => {
-    const hex = normaliseLibraryHex(event.target.value);
+    const hex = normalizeLibraryHex(event.target.value);
     if (hex) $("#color-library-picker").value = `#${hex}`;
   });
   $$(".linked-color-picker").forEach((picker) => {
@@ -4635,14 +4033,7 @@ const MDI_WEBFONT_DEFAULT_ID = "icons_mdi";
 // (see state.system.mdi_local); off keeps the previous GitHub-backed
 // behaviour, e.g. to pick up icon updates ahead of an add-on release.
 function mdiLocalFontUrl() {
-  const appBase = window.location.pathname.endsWith("/")
-    ? window.location.pathname
-    : `${window.location.pathname}/`;
-  return `${appBase}vendor/materialdesignicons-webfont.ttf`;
-}
-
-function isMdiWebfontUrl(url) {
-  return /materialdesignicons-webfont\.ttf(\?.*)?$/i.test(String(url || "").trim());
+  return ingressAssetUrl(window.location.pathname, "vendor/materialdesignicons-webfont.ttf");
 }
 
 // --- Font library -------------------------------------------------------
@@ -4655,28 +4046,7 @@ function isMdiWebfontUrl(url) {
 // references are cleared instead of replaced.
 
 function fontReferenceLocations(id, replacement = null) {
-  const matches = [];
-  if (state.project.default_font === id) {
-    matches.push("default_font");
-    if (replacement !== null) state.project.default_font = replacement;
-  }
-  const visit = (value, path, key = "", parent = null) => {
-    if (typeof value === "string") {
-      if (/font$/i.test(key) && value === id) {
-        matches.push(path);
-        if (replacement !== null) parent[key] = replacement;
-      }
-      return;
-    }
-    if (!value || typeof value !== "object") return;
-    Object.entries(value).forEach(([childKey, child]) => {
-      visit(child, path ? `${path}.${childKey}` : childKey, childKey, value);
-    });
-  };
-  Object.entries(state.project).forEach(([key, value]) => {
-    if (key !== "fonts" && key !== "default_font") visit(value, key);
-  });
-  return matches;
+  return findFontReferences(state.project, id, replacement);
 }
 
 function populateGoogleFontsSelect() {
@@ -4720,15 +4090,7 @@ function setGfontsFamilyInput(family) {
 // schema. `import_source` is persisted with a project but never exported, so
 // the shared/read-only designer core needs no private model fields.
 function fontSourceMetadataMap(create = false) {
-  if (!state.project.import_source || typeof state.project.import_source !== "object") {
-    if (!create) return {};
-    state.project.import_source = {};
-  }
-  if (!state.project.import_source.font_sources || typeof state.project.import_source.font_sources !== "object") {
-    if (!create) return {};
-    state.project.import_source.font_sources = {};
-  }
-  return state.project.import_source.font_sources;
+  return sourceMetadataForProject(state.project, create);
 }
 
 function fontSourceMetadata(entry) {
@@ -4743,61 +4105,16 @@ function webFontUrl(entry) {
   return fontSourceMetadata(entry)?.url || entry?.web_url || "";
 }
 
-const mdiByName = new Map(MDI_GLYPHS.map((entry) => [entry.name.toLowerCase(), entry]));
 let glyphPreviewRequest = 0;
 let glyphPreviewState = { status: "idle", family: "inherit" };
 // The widget/control an open icon dialog inserts into - null while closed.
 let activeIconTarget = null;
 
-function glyphCodepoint(glyph) {
-  return String(glyph || "").codePointAt(0);
-}
-
-function formatGlyphCodepoint(glyphOrCodepoint) {
-  const value = typeof glyphOrCodepoint === "number" ? glyphOrCodepoint : glyphCodepoint(glyphOrCodepoint);
-  return Number.isInteger(value) ? `U+${value.toString(16).toUpperCase().padStart(4, "0")}` : "—";
-}
-
-function uniqueGlyphs(values) {
-  const result = [];
-  const seen = new Set();
-  values.flatMap((value) => Array.from(String(value || ""))).forEach((glyph) => {
-    const codepoint = glyphCodepoint(glyph);
-    if (codepoint === undefined || seen.has(codepoint)) return;
-    seen.add(codepoint);
-    result.push(glyph);
-  });
-  return result;
-}
-
 /** This dialog only ever inserts into the MDI icon webfont, so "mdi:home"
  * name resolution is always on here (unlike the old per-font-editing dialog,
  * where the same lookup had to be disabled for non-icon fonts). */
 function parseGlyphInput(value) {
-  const input = String(value || "").trim();
-  if (!input) return [];
-  const tokens = input.split(/[\s,;]+/).filter(Boolean);
-  const glyphs = [];
-  tokens.forEach((rawToken) => {
-    const token = rawToken.replace(/^["']|["']$/g, "");
-    const mdi = mdiByName.get(token.toLowerCase());
-    if (mdi) {
-      glyphs.push(mdi.glyph);
-      return;
-    }
-    const codeMatch = token.match(/^(?:U\+|0x|\\U|\\u\{?)([0-9A-Fa-f]{4,8})\}?$/i);
-    if (codeMatch) {
-      const codepoint = Number.parseInt(codeMatch[1], 16);
-      if (codepoint > 0x10FFFF || (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
-        throw new Error(t("validation.glyph.invalidCodepoint", { token }));
-      }
-      glyphs.push(String.fromCodePoint(codepoint));
-      return;
-    }
-    if (/^mdi:/i.test(token)) throw new Error(t("validation.glyph.notInCatalog", { token }));
-    glyphs.push(...Array.from(token));
-  });
-  return uniqueGlyphs(glyphs);
+  return parseGlyphs(value, t);
 }
 
 function glyphPreviewPlaceholder() {
@@ -5747,27 +5064,7 @@ function appendPropertyControl(label, control, property, widget) {
 }
 
 function propertyTarget(widget, property, create, kind = property.category) {
-  if (kind === "content") return widget.properties;
-  if (kind === "layout") {
-    if (!widget.layout && create) widget.layout = {};
-    return widget.layout;
-  }
-  if (kind === "grid_cell") {
-    if (!widget.grid_cell && create) widget.grid_cell = {};
-    return widget.grid_cell;
-  }
-  // Style: a selected state routes into style_tree.states[<state>], which is
-  // where the exporter expects per-state overrides to live.
-  let root = widget.style_tree;
-  if (state.activeState) {
-    if (!root.states && create) root.states = {};
-    if (!root.states?.[state.activeState] && create) root.states[state.activeState] = {};
-    root = root.states?.[state.activeState];
-  }
-  if (!root) return undefined;
-  if (property.part === "main") return root;
-  if (!root[property.part] && create) root[property.part] = {};
-  return root[property.part];
+  return resolvePropertyTarget(widget, property, create, kind, state.activeState);
 }
 
 function renderStateChoices() {
@@ -6308,15 +5605,6 @@ function propertyControl(property, value, index) {
   return control;
 }
 
-const LIST_KINDS = ["grid_track_list", "image_ref_list", "text_list"];
-
-function parseListValue(property, text) {
-  const items = String(text).split(",").map((part) => part.trim()).filter(Boolean);
-  if (property.kind !== "grid_track_list") return items;
-  // Pixel tracks are numbers; FR(n) and CONTENT stay strings.
-  return items.map((part) => (/^-?\d+$/.test(part) ? Number(part) : part));
-}
-
 async function updateDynamicProperty(widget, property, control, targetKind = property.category) {
   const target = propertyTarget(widget, property, true, targetKind);
   if (property.kind === "image_ref" && control.value === ADD_IMAGE_OPTION) {
@@ -6332,16 +5620,11 @@ async function updateDynamicProperty(widget, property, control, targetKind = pro
     return;
   }
 
-  let value;
-  if (property.kind === "bool") value = control.checked;
-  else if (LIST_KINDS.includes(property.kind)) value = parseListValue(property, control.value);
-  else if (["int", "float"].includes(property.kind)) value = control.value === "" ? null : Number(control.value);
-  else value = control.value;
+  const value = propertyInputValue(property, control);
 
   // An empty field means "unset", not "set to empty" - carrying blanks into
   // layout or grid placement would emit keys the source never had.
-  const clears = value === "" || value === null
-    || (Array.isArray(value) && value.length === 0);
+  const clears = propertyValueClears(value);
   if (clears && (targetKind !== "content" || property.kind === "enum")) {
     delete target[property.key];
   } else {
@@ -6399,51 +5682,8 @@ function updateSelectedWidget(event) {
   }
 }
 
-function replaceActionTargetReference(action, previousId, nextId) {
-  const entry = actionObjectEntry(action);
-  if (!entry) return;
-  const [name, payload] = entry;
-  if (name === "if" && payload && typeof payload === "object") {
-    [payload.then, payload.else].forEach((branch) => {
-      const actions = Array.isArray(branch) ? branch : branch ? [branch] : [];
-      actions.forEach((nested) => replaceActionTargetReference(nested, previousId, nextId));
-    });
-    return;
-  }
-  if (["lvgl.widget.show", "lvgl.widget.hide", "lvgl.page.show"].includes(name)) {
-    if (payload === previousId) action[name] = nextId;
-    else if (Array.isArray(payload)) {
-      action[name] = payload.map((item) => item === previousId ? nextId : item);
-    } else if (payload && typeof payload === "object") {
-      if (payload.id === previousId) payload.id = nextId;
-      else if (Array.isArray(payload.id)) {
-        payload.id = payload.id.map((item) => item === previousId ? nextId : item);
-      }
-    }
-    return;
-  }
-  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-    if (payload.id === previousId) payload.id = nextId;
-    else if (Array.isArray(payload.id)) {
-      payload.id = payload.id.map((item) => item === previousId ? nextId : item);
-    }
-  }
-}
-
 function replaceProjectWidgetReferences(previousId, nextId) {
-  projectWidgetEntries().forEach((item) => {
-    if (item.align_to === previousId) item.align_to = nextId;
-    Object.values(item.events || {}).forEach((raw) => {
-      const actions = Array.isArray(raw) ? raw : [raw];
-      actions.forEach((action) => replaceActionTargetReference(action, previousId, nextId));
-    });
-  });
-  (state.project.glow_strokes || []).forEach((stroke) => {
-    if (stroke.parent_id === previousId) stroke.parent_id = nextId;
-  });
-  state.viewerBindings.forEach((binding) => {
-    if (binding.widget_id === previousId) binding.widget_id = nextId;
-  });
+  replaceWidgetReferences(state.project, state.viewerBindings, previousId, nextId);
 }
 
 function deleteSelectedWidget() {
@@ -6462,60 +5702,13 @@ function deleteSelectedWidget() {
   renderDesigner();
 }
 
-function removeWidget(nodes, target) {
-  const index = nodes.indexOf(target);
-  if (index >= 0) {
-    nodes.splice(index, 1);
-    return true;
-  }
-  return nodes.some((widget) => removeWidget(widget.children || [], target));
-}
-
-/** The array actually holding `target` (top-level list or some widget's
- * `children`) plus its index there - the array reference is live, so
- * splicing it moves/removes the real widget, not a copy. */
-function findWidgetLocation(nodes, target) {
-  const index = nodes.indexOf(target);
-  if (index >= 0) return { array: nodes, index };
-  for (const node of nodes) {
-    const found = findWidgetLocation(node.children || [], target);
-    if (found) return found;
-  }
-  return null;
-}
-
-/** id of the widget whose `children` directly contains `target`, "" if
- * `target` is top-level, or null if `target` isn't in the tree at all. */
-function findParentContainerId(nodes, target, parentId = "") {
-  if (nodes.includes(target)) return parentId;
-  for (const node of nodes) {
-    const found = findParentContainerId(node.children || [], target, node.id);
-    if (found !== null) return found;
-  }
-  return null;
-}
-
 function widgetAllowsChildren(widget) {
   const schema = state.schemas.find((item) => item.type_key === widget.widget_type);
   return Boolean(schema?.allows_children);
 }
 
 function cloneWidgetSubtree(widget) {
-  const usedIds = new Set([
-    ...allProjectWidgets().map((w) => w.id),
-    ...(state.project.reserved_ids || []),
-  ]);
-  const assignIds = (node) => {
-    let n = 1;
-    let candidate = `${node.widget_type}_${n}`;
-    while (usedIds.has(candidate)) { n += 1; candidate = `${node.widget_type}_${n}`; }
-    node.id = candidate;
-    usedIds.add(candidate);
-    (node.children || []).forEach(assignIds);
-  };
-  const clone = JSON.parse(JSON.stringify(widget));
-  assignIds(clone);
-  return clone;
+  return cloneProjectWidgetSubtree(state.project, widget);
 }
 
 function duplicateWidget(widget) {
@@ -7266,10 +6459,10 @@ async function publishDraft() {
 }
 
 function updateBuilderButtons() {
-  const activePublishedConfiguration = Boolean(state.activeConfig) && !state.hasDraft;
-  $("#validate-esphome").disabled = !activePublishedConfiguration || !state.capabilities["configuration.validate_esphome"];
-  $("#compile-config").disabled = !activePublishedConfiguration || !state.capabilities["firmware.compile"] || state.builderRequestsRunning.has("compile");
-  $("#install-config").disabled = !activePublishedConfiguration || !state.capabilities["firmware.upload"] || state.builderRequestsRunning.has("install");
+  const available = builderAvailability(state);
+  $("#validate-esphome").disabled = !available.validate;
+  $("#compile-config").disabled = !available.compile;
+  $("#install-config").disabled = !available.install;
 }
 
 async function validateEspHome() {
@@ -7278,7 +6471,7 @@ async function validateEspHome() {
   output.textContent = t("config.output.validating");
   output.classList.remove("hidden");
   try {
-    const result = await api(`configurations/${encodedName(state.activeConfig)}/validate`, { method: "POST" });
+    const result = await builderController.validate(encodedName(state.activeConfig));
     const lines = Array.isArray(result.output) ? result.output.join("\n") : "";
     const validity = result.valid ? t("config.output.buildApprovalSuffix", { seconds: result.expires_in_seconds }) : "";
     output.textContent = `${result.valid ? t("config.output.espValid") : t("config.output.espInvalid")}\nRevision: ${result.revision}${validity}\n\n${lines}`.trim();
@@ -7289,12 +6482,8 @@ async function validateEspHome() {
 }
 
 function builderRequestKey(operation) {
-  const slot = `${operation}:${state.activeConfig}`;
-  if (!state.builderRequestKeys[slot]) {
-    state.builderRequestKeys[slot] = globalThis.crypto?.randomUUID?.()
-      || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-request`;
-  }
-  return { slot, key: state.builderRequestKeys[slot] };
+  return builderRequest(state, operation, () => globalThis.crypto?.randomUUID?.()
+    || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-request`);
 }
 
 async function compileConfiguration() {
@@ -7303,9 +6492,7 @@ async function compileConfiguration() {
   state.builderRequestsRunning.add("compile");
   updateBuilderButtons();
   try {
-    const result = await api(`configurations/${encodedName(state.activeConfig)}/compile`, {
-      method: "POST", headers: { "Idempotency-Key": request.key },
-    });
+    const result = await builderController.compile(encodedName(state.activeConfig), request.key);
     delete state.builderRequestKeys[request.slot];
     state.builderJobs[result.job.job_id] = result.job;
     renderBuilderJobs();
@@ -7326,11 +6513,7 @@ async function installConfiguration() {
   state.builderRequestsRunning.add("install");
   updateBuilderButtons();
   try {
-    const result = await api(`configurations/${encodedName(state.activeConfig)}/install`, {
-      method: "POST",
-      headers: { "Idempotency-Key": request.key },
-      body: JSON.stringify({ port: "OTA", confirmed: true }),
-    });
+    const result = await builderController.install(encodedName(state.activeConfig), request.key);
     delete state.builderRequestKeys[request.slot];
     state.builderJobs[result.job.job_id] = result.job;
     renderBuilderJobs();
@@ -7345,8 +6528,7 @@ async function installConfiguration() {
 async function loadBuilderJobs() {
   if (!state.capabilities["firmware.compile"]) return;
   try {
-    const result = await api("jobs");
-    state.builderJobs = Object.fromEntries((result.jobs || []).map((job) => [job.job_id, job]));
+    state.builderJobs = replaceBuilderJobs(await builderController.jobs());
     renderBuilderJobs();
   } catch (error) { toast(error.message, true); }
 }
@@ -7354,7 +6536,7 @@ async function loadBuilderJobs() {
 function renderBuilderJobs() {
   const panel = $("#builder-jobs");
   const list = $("#builder-job-list");
-  const jobs = Object.values(state.builderJobs).sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  const jobs = sortedBuilderJobs(state.builderJobs);
   panel.classList.toggle("hidden", !state.capabilities["firmware.compile"]);
   list.replaceChildren();
   if (!jobs.length) {
@@ -7383,7 +6565,7 @@ function renderBuilderJobs() {
       cancel.textContent = t("configs.cancelJob");
       cancel.addEventListener("click", async () => {
         try {
-          await api(`jobs/${encodeURIComponent(job.job_id)}/cancel`, { method: "POST" });
+          await builderController.cancel(job.job_id);
           await loadBuilderJobs();
         } catch (error) { toast(error.message, true); }
       });
@@ -7407,13 +6589,7 @@ function connectBuilderEvents() {
       return;
     }
     if (payload.type !== "builder_job" || !payload.data) return;
-    const data = payload.data;
-    if (payload.event === "job_output" && data.job_id) {
-      const job = state.builderJobs[data.job_id];
-      if (job) job.last_output = String(data.line || "").slice(-4096);
-    } else if (data.job_id) {
-      state.builderJobs[data.job_id] = { ...(state.builderJobs[data.job_id] || {}), ...data };
-    }
+    applyBuilderEvent(state.builderJobs, payload);
     renderBuilderJobs();
   });
   socket.addEventListener("close", () => {
@@ -7429,5 +6605,7 @@ function clamp(value, minimum, maximum) {
 // Read-only debug handle - not part of the app's own logic, only for
 // inspecting state from the browser console or an automated check.
 window.__appState = state;
+
+store.subscribe(() => renderDesignerStatus(), (current) => `${current.projectDirty}:${current.projectName || ""}`);
 
 initialize();

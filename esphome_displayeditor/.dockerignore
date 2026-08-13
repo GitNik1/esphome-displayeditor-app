@@ -1,0 +1,11 @@
+.pytest_cache
+.pytest-*
+.test-*
+__pycache__
+*.pyc
+tests
+tools
+*.md
+.coverage
+htmlcov
+

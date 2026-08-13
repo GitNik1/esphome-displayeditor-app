@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import json
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,7 +24,7 @@ class AuditStore:
         return connection
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS audit_events (
@@ -61,7 +62,7 @@ class AuditStore:
         esphome_version: str | None = None,
         metadata: dict | None = None,
     ) -> None:
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection, connection:
             connection.execute(
                 """
                 INSERT INTO audit_events
@@ -88,7 +89,7 @@ class AuditStore:
 
     def recent(self, limit: int = 100) -> list[dict]:
         safe_limit = min(max(limit, 1), 500)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT id, created_at, user_id, action, configuration,

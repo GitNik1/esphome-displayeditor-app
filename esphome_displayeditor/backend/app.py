@@ -16,8 +16,25 @@ from fastapi import FastAPI, Header, Query, Request, Response, WebSocket, WebSoc
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, SecretStr
 
+from .api.schemas import (
+    AssetFontRequest,
+    AssetImageRequest,
+    DesignerProjectRequest,
+    DeviceRequest,
+    DeviceSecretRequest,
+    DraftRequest,
+    FontGlyphCoverageRequest,
+    FontSourceCheckRequest,
+    FontSourceUpdateRequest,
+    ImportRequest,
+    InstallRequest,
+    MergeDraftRequest,
+    PublishRequest,
+    SaveDesignerProjectRequest,
+    ViewerBindingsRequest,
+)
+from .api.viewer_projection import project_widget_types, viewer_entity, viewer_state
 from .audit import AuditStore
 from .builder import BuilderManager
 from .builder.adapter import BuilderAdapterError, sanitize_output
@@ -34,114 +51,6 @@ from .settings import CAPABILITY_MINIMUM_ROLE, Settings, capabilities
 from .version import APP_VERSION
 from .viewer_bindings import ViewerBindingStore, validate_bindings
 from .workflow import WorkflowStore
-
-
-class DraftRequest(BaseModel):
-    content: str = Field(max_length=4 * 1024 * 1024)
-
-
-class PublishRequest(BaseModel):
-    expected_revision: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
-
-
-class DesignerProjectRequest(BaseModel):
-    project: dict[str, Any]
-
-
-class MergeDraftRequest(BaseModel):
-    """Merge a Designer project's color/font/image/lvgl blocks into an
-    existing configuration's draft (or its active content, if there is no
-    draft yet), replacing only those top-level keys - see lvgl_merge.py."""
-
-    project: dict[str, Any]
-    target: str
-
-
-class CanvasSize(BaseModel):
-    width: int = Field(ge=1, le=4096)
-    height: int = Field(ge=1, le=4096)
-
-
-class ImportRequest(BaseModel):
-    """Either an existing configuration by name, or pasted/uploaded content."""
-
-    configuration: str | None = None
-    content: str | None = Field(default=None, max_length=4 * 1024 * 1024)
-    canvas: CanvasSize | None = None
-
-
-class AssetImageRequest(BaseModel):
-    """A baked animation frame (or any other PNG) to place in images/.
-
-    Base64 rather than a multipart upload: every other write endpoint here is
-    plain JSON, and a baked frame is small enough (a cropped animation frame,
-    not a full-resolution photo) that the ~33% encoding overhead is a
-    non-issue.
-    """
-
-    name: str = Field(min_length=1, max_length=128)
-    # A hard ceiling independent of the configured max_file_size_kib, so an
-    # oversized request is rejected before it is even fully base64-decoded.
-    content_base64: str = Field(min_length=1, max_length=8 * 1024 * 1024)
-
-
-class AssetFontRequest(BaseModel):
-    """A TrueType/OpenType font file to place in fonts/, uploaded from the
-    Font Library's "Datei" source. Same base64-over-JSON shape as
-    AssetImageRequest; a bigger ceiling since a full glyph-set TTF can run
-    well past a typical animation frame's size."""
-
-    name: str = Field(min_length=1, max_length=128)
-    content_base64: str = Field(min_length=1, max_length=24 * 1024 * 1024)
-
-
-class FontSourceCheckRequest(BaseModel):
-    url: str = Field(min_length=8, max_length=2048)
-    etag: str = Field(default="", max_length=512)
-    last_modified: str = Field(default="", max_length=256)
-    sha256: str = Field(default="", pattern=r"^$|^[0-9a-f]{64}$")
-
-
-class FontSourceUpdateRequest(BaseModel):
-    id: str = Field(min_length=1, max_length=63, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
-    url: str = Field(min_length=8, max_length=2048)
-
-
-class FontGlyphCoverageRequest(BaseModel):
-    path: str = Field(min_length=5, max_length=512)
-    codepoints: list[int] = Field(min_length=1, max_length=512)
-
-
-class SaveDesignerProjectRequest(DesignerProjectRequest):
-    expected_revision: str | None = Field(
-        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
-    )
-
-
-class DeviceRequest(BaseModel):
-    id: str = Field(min_length=1, max_length=63)
-    name: str = Field(min_length=1, max_length=80)
-    host: str = Field(min_length=1, max_length=253)
-    port: int = Field(default=6053, ge=1, le=65535)
-    encryption_key_ref: str = Field(min_length=1, max_length=63)
-
-
-class DeviceSecretRequest(BaseModel):
-    encryption_key: SecretStr
-
-
-class ViewerBindingsRequest(BaseModel):
-    bindings: list[dict[str, Any]] = Field(default_factory=list, max_length=256)
-    expected_revision: str | None = Field(
-        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
-    )
-
-
-class InstallRequest(BaseModel):
-    # The active YAML resolves the target. Arbitrary hosts, serial devices and
-    # generic command arguments are deliberately not exposed by this API.
-    port: str = Field(default="OTA", pattern="^OTA$")
-    confirmed: bool = False
 
 
 def create_app(
@@ -382,30 +291,6 @@ def create_app(
         ).get(capability, False):
             raise capability_unavailable(capability, settings.access_level)
 
-    def viewer_entity_id(item: dict[str, Any]) -> str | None:
-        entity_type = str(item.get("type", "")).strip()
-        key = item.get("key", item.get("object_id"))
-        if not entity_type or key is None:
-            return None
-        return f"{entity_type}:{key}"
-
-    def viewer_entity(item: dict[str, Any]) -> dict[str, Any] | None:
-        entity_id = viewer_entity_id(item)
-        if entity_id is None:
-            return None
-        allowed = (
-            "type", "key", "object_id", "name", "icon", "unit_of_measurement",
-            "device_class", "entity_category", "disabled_by_default",
-        )
-        return {"entity_id": entity_id, **{key: item[key] for key in allowed if key in item}}
-
-    def viewer_state(item: dict[str, Any]) -> dict[str, Any] | None:
-        entity_id = viewer_entity_id(item)
-        if entity_id is None:
-            return None
-        allowed = ("type", "key", "object_id", "state", "available", "received_at")
-        return {"entity_id": entity_id, **{key: item[key] for key in allowed if key in item}}
-
     def viewer_device(device_id: str) -> dict[str, Any]:
         public = runtime_manager.get_device(device_id)
         entities = [
@@ -456,34 +341,6 @@ def create_app(
         if event_type in {"device_removed", "resync_required"}:
             return {"type": event_type, "device_id": event.get("device_id")}
         return None
-
-    def project_widget_types(project: dict[str, Any]) -> dict[str, str]:
-        result: dict[str, str] = {}
-
-        def visit(nodes: Any) -> None:
-            if not isinstance(nodes, list):
-                return
-            for widget in nodes:
-                if not isinstance(widget, dict):
-                    continue
-                widget_id = widget.get("id")
-                if isinstance(widget_id, str):
-                    result[widget_id] = str(widget.get("widget_type", ""))
-                visit(widget.get("children"))
-
-        visit(project.get("widgets"))
-        for page in project.get("pages", []) if isinstance(project.get("pages"), list) else []:
-            if isinstance(page, dict):
-                visit(page.get("widgets"))
-        for layer_name in ("top_layer", "bottom_layer"):
-            layer = project.get(layer_name)
-            if isinstance(layer, dict):
-                visit(layer.get("widgets"))
-        for msgbox in project.get("msgboxes", []) if isinstance(project.get("msgboxes"), list) else []:
-            if isinstance(msgbox, dict):
-                visit(msgbox.get("buttons"))
-                visit(msgbox.get("header_buttons"))
-        return result
 
     @application.get("/api/v1/health")
     async def health() -> dict:
