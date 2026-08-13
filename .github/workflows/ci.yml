@@ -4,12 +4,17 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: esphome_displayeditor
@@ -19,25 +24,90 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: esphome_displayeditor/requirements.txt
-      - name: Install test dependencies
-        run: pip install -r requirements.txt pytest httpx
+          cache-dependency-path: |
+            esphome_displayeditor/requirements.txt
+            esphome_displayeditor/requirements-dev.txt
+            esphome_displayeditor/constraints.txt
+      - name: Install development dependencies
+        run: pip install -c constraints.txt -r requirements-dev.txt
+      - name: Check dependency lock
+        run: |
+          uv pip compile --python-version 3.13 --universal \
+            --no-emit-index-url --output-file constraints.txt requirements-dev.txt
+          git diff --exit-code -- constraints.txt
+      - name: Check installed dependencies
+        run: pip check
+      - name: Lint Python sources
+        run: ruff check backend tests tools
       - name: Compile Python sources
-        run: python -m compileall -q backend tests
+        run: python -m compileall -q backend tests tools
+      - name: Check architecture boundaries
+        run: python tools/check_architecture.py
+      - name: Validate Compose configuration
+        run: docker compose -f ../compose.yaml config --quiet
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: esphome_displayeditor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            esphome_displayeditor/requirements.txt
+            esphome_displayeditor/requirements-dev.txt
+            esphome_displayeditor/constraints.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: esphome_displayeditor/package-lock.json
+      - name: Install test dependencies
+        run: pip install -c constraints.txt -r requirements-dev.txt
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Run frontend tests
+        run: node --test tests/frontend/*.test.mjs
+      - name: Check frontend types
+        run: npm run typecheck
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+      - name: Run browser smoke tests
+        run: npm run test:e2e
       - name: Run tests
-        run: pytest -q
+        run: >-
+          pytest -q --cov=backend --cov-report=term
+          --cov-report=xml:coverage.xml --cov-fail-under=83
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: esphome_displayeditor/coverage.xml
+          if-no-files-found: ignore
       - name: Validate repository YAML
         run: |
           python - <<'PY'
           from pathlib import Path
           import yaml
-          for path in (Path("config.yaml"), Path("../repository.yaml")):
+          for path in (
+              Path("config.yaml"),
+              Path("../repository.yaml"),
+              Path("../compose.yaml"),
+          ):
               with path.open(encoding="utf-8") as handle:
                   assert isinstance(yaml.safe_load(handle), dict)
           PY
 
   container:
+    needs: [quality, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       matrix:
         arch: [amd64, aarch64]
@@ -55,6 +125,8 @@ jobs:
           context: esphome_displayeditor
           platforms: linux/${{ matrix.arch }}
           push: false
+          cache-from: type=gha,scope=container-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=container-${{ matrix.arch }}
           build-args: |
             BUILD_VERSION=${{ steps.app.outputs.version }}
             BUILD_ARCH=${{ matrix.arch }}

@@ -162,8 +162,12 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     assert viewer.status_code == 200
     assert "class ViewerController" in viewer.text
     assert "applyViewerAction" in viewer.text
-    assert "lvgl.widget.show" in viewer.text
-    assert "lvgl.label.update" in viewer.text
+    action_controls = client.get("/viewer/action-controls.js")
+    action_updates = client.get("/viewer/action-updates.js")
+    assert action_controls.status_code == 200
+    assert action_updates.status_code == 200
+    assert "lvgl.widget.show" in action_controls.text
+    assert "lvgl.label.update" in action_updates.text
     styles = client.get("/styles.css")
     assert styles.status_code == 200
     assert styles.headers["Cache-Control"] == "no-cache"

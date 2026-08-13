@@ -7,6 +7,8 @@ __pycache__/
 .coverage
 htmlcov/
 node_modules/
+test-results/
+playwright-report/
 dist/
 .env
 .venv/

@@ -1,3 +1,5 @@
+// @ts-check
+
 // Full Pictogrammers Material Design Icons catalog (name -> codepoint),
 // generated from the official MaterialDesign-Webfont build's own
 // scss/_variables.scss ($mdi-icons map) - the same source that produces
@@ -2490,8 +2492,11 @@ export const MDI_GLYPHS = [
   ["zodiac-leo", 0xF0A82], ["zodiac-libra", 0xF0A83], ["zodiac-pisces", 0xF0A84],
   ["zodiac-sagittarius", 0xF0A85], ["zodiac-scorpio", 0xF0A86], ["zodiac-taurus", 0xF0A87],
   ["zodiac-virgo", 0xF0A88],
-].map(([name, codepoint]) => ({
-  name: `mdi:${name}`,
-  codepoint,
-  glyph: String.fromCodePoint(codepoint),
-}));
+].map((entry) => {
+  const [name, codepoint] = /** @type {[string, number]} */ (entry);
+  return {
+    name: `mdi:${name}`,
+    codepoint,
+    glyph: String.fromCodePoint(codepoint),
+  };
+});

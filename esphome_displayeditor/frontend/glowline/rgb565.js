@@ -1,3 +1,5 @@
+// @ts-check
+
 // The RGB565 colour space, as an RGB565 display actually shows it.
 //
 // 5 bits red, 6 green, 5 blue. Converting back to 8 bits replicates the most
@@ -6,6 +8,7 @@
 //
 // Ported from glowline/rgb565.py.
 
+/** @param {number} r @param {number} g @param {number} b */
 export function rgb888to565(r, g, b) {
   r = Math.max(0, Math.min(255, Math.round(r)));
   g = Math.max(0, Math.min(255, Math.round(g)));
@@ -13,6 +16,7 @@ export function rgb888to565(r, g, b) {
   return ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3);
 }
 
+/** @param {number} value @returns {[number, number, number]} */
 export function rgb565to888(value) {
   value &= 0xffff;
   const r5 = (value >> 11) & 0x1f;
@@ -25,29 +29,35 @@ export function rgb565to888(value) {
   ];
 }
 
+/** @param {unknown} value */
 export function quantize565(value) {
   return Number(value) & 0xffff;
 }
 
 /** Snap an 8-bit colour to the nearest triple RGB565 can represent. */
+/** @param {number} r @param {number} g @param {number} b */
 export function snap888(r, g, b) {
   return rgb565to888(rgb888to565(r, g, b));
 }
 
+/** @param {number} value @param {number} [alpha] */
 export function cssFrom565(value, alpha = 1) {
   const [r, g, b] = rgb565to888(value);
   return alpha >= 1 ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},${alpha})`;
 }
 
 /** Display string, e.g. `0x07FF   #00FFFF   (0,255,255)`. */
+/** @param {number} value */
 export function format565(value) {
   const [r, g, b] = rgb565to888(value);
-  const hex = (n) => n.toString(16).toUpperCase().padStart(2, "0");
+  /** @param {number} number */
+  const hex = (number) => number.toString(16).toUpperCase().padStart(2, "0");
   return `0x${(value & 0xffff).toString(16).toUpperCase().padStart(4, "0")}   `
     + `#${hex(r)}${hex(g)}${hex(b)}   (${r},${g},${b})`;
 }
 
 /** HSV (each 0..1) to 8-bit RGB. */
+/** @param {number} h @param {number} s @param {number} v @returns {number[]} */
 export function hsvToRgb(h, s, v) {
   if (s <= 0) {
     const c = Math.round(v * 255);
@@ -69,6 +79,7 @@ export function hsvToRgb(h, s, v) {
  * The device stores two bytes per pixel, so an export that skips this step
  * shows banding on the display that the editor never warned about.
  */
+/** @param {ImageData} image */
 export function quantizeImageData(image) {
   const data = image.data;
   for (let i = 0; i < data.length; i += 4) {

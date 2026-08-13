@@ -1,3 +1,5 @@
+// @ts-check
+
 // Rendering of glow lines and their flow markers, on a 2D canvas.
 //
 // Technique, unchanged from glowline/renderer.py: **multi-pass stroke glow**.
@@ -25,13 +27,28 @@ import { cssFrom565 } from "./rgb565.js";
 /** Glow passes per quality level. */
 export const PASSES = { draft: 6, final: 18, export: 28 };
 
+/** @typedef {"draft" | "final" | "export"} RenderQuality */
+/** @typedef {number[]} Point */
+/** @typedef {{enabled: boolean, radius: number, intensity: number, use_line_color: boolean, color565: number}} GlowStyle */
+/** @typedef {{enabled: boolean, width: number, spacing: number, size: number, glow_radius: number,
+ * glow_intensity: number, use_line_color: boolean, color565: number, reversed: boolean, mode: string}} FlowStyle */
+/** @typedef {{points: Point[], corner_radius: number, mode: "polyline" | "smooth", closed: boolean,
+ * width: number, color565: number, glow: GlowStyle, flow: FlowStyle}} GlowStroke */
+/** @typedef {{strokes?: GlowStroke[]}} GlowDocument */
+/** @typedef {{points: Point[], lengths: number[], length: number}} PathMeasure */
+/** @typedef {{left: number, top: number, right: number, bottom: number}} Rect */
+/** @typedef {{key: string, path: any, measure: PathMeasure, path2d: Path2D}} PathCacheEntry */
+
 /** Cache of built paths and their measurements, keyed by the stroke object. */
+/** @type {WeakMap<GlowStroke, PathCacheEntry>} */
 const pathCache = new WeakMap();
 
+/** @param {GlowStroke} stroke */
 function cacheKey(stroke) {
   return JSON.stringify([stroke.points, stroke.corner_radius, stroke.mode, stroke.closed]);
 }
 
+/** @param {GlowStroke} stroke @returns {PathCacheEntry} */
 export function strokePath(stroke) {
   const key = cacheKey(stroke);
   const cached = pathCache.get(stroke);
@@ -43,8 +60,10 @@ export function strokePath(stroke) {
   return entry;
 }
 
+/** @param {number} intensity @param {RenderQuality} [quality] @returns {Array<[number, number]>} */
 export function glowPasses(intensity, quality = "final") {
   const n = PASSES[quality] ?? PASSES.final;
+  /** @type {Array<[number, number]>} */
   const out = [];
   let acc = 0;
   for (let i = 1; i <= n; i += 1) {
@@ -65,6 +84,7 @@ export function glowPasses(intensity, quality = "final") {
  * then is phase 1.0 identical to phase 0.0 again and the exported image
  * sequence runs through without a jump.
  */
+/** @param {PathMeasure} measure @param {number} spacing @returns {[number, number]} */
 export function flowLayout(measure, spacing) {
   const length = measure.length;
   if (length <= 0 || spacing <= 0) return [0, 0];
@@ -72,10 +92,12 @@ export function flowLayout(measure, spacing) {
   return [count, length / count];
 }
 
+/** @param {GlowStroke} stroke */
 function flowWidth(stroke) {
   return stroke.flow.width > 0 ? stroke.flow.width : stroke.width;
 }
 
+/** @param {CanvasRenderingContext2D} ctx @param {string} color @param {number} width */
 function applyStrokeStyle(ctx, color, width) {
   ctx.strokeStyle = color;
   ctx.lineWidth = Math.max(0.1, width);
@@ -83,6 +105,7 @@ function applyStrokeStyle(ctx, color, width) {
   ctx.lineJoin = "round";
 }
 
+/** @param {number} px @param {number} py @param {number} dx @param {number} dy @param {number} ca @param {number} sa @returns {Point} */
 function rotated(px, py, dx, dy, ca, sa) {
   return [px + dx * ca - dy * sa, py + dx * sa + dy * ca];
 }
@@ -93,6 +116,7 @@ function rotated(px, py, dx, dy, ca, sa) {
  * A shared path rather than a stroke per marker: the glow then costs as many
  * passes as the line itself, not passes x marker count.
  */
+/** @param {GlowStroke} stroke @param {PathMeasure} measure @param {number} phase @param {number} direction */
 function arrowPath(stroke, measure, phase, direction) {
   const out = new Path2D();
   const [count, step] = flowLayout(measure, stroke.flow.spacing);
@@ -120,6 +144,8 @@ function arrowPath(stroke, measure, phase, direction) {
   return out;
 }
 
+/** @param {CanvasRenderingContext2D} ctx @param {string} color @param {number} width
+ * @param {number} dash @param {number} step @param {number} phase @param {number} direction */
 function applyDashStyle(ctx, color, width, dash, step, phase, direction) {
   applyStrokeStyle(ctx, color, width);
   // Qt expresses dash lengths as multiples of the pen width, so the pattern
@@ -130,6 +156,7 @@ function applyDashStyle(ctx, color, width, dash, step, phase, direction) {
   ctx.lineDashOffset = -direction * phase * step;
 }
 
+/** @param {CanvasRenderingContext2D} ctx @param {GlowStroke} stroke @param {number} [phase] @param {RenderQuality} [quality] */
 export function drawFlow(ctx, stroke, phase = 0, quality = "final") {
   const flow = stroke.flow;
   if (!flow.enabled || (stroke.points || []).length < 2) return;
@@ -179,6 +206,8 @@ export function drawFlow(ctx, stroke, phase = 0, quality = "final") {
  * what the "separate" export builds on: the background once, the markers as an
  * image sequence.
  */
+/** @param {CanvasRenderingContext2D} ctx @param {GlowStroke} stroke @param {RenderQuality} [quality]
+ * @param {number} [phase] @param {boolean} [withLine] @param {boolean} [withFlow] */
 export function drawStroke(ctx, stroke, quality = "final", phase = 0,
                            withLine = true, withFlow = true) {
   if (!(stroke.points || []).length) return;
@@ -207,6 +236,8 @@ export function drawStroke(ctx, stroke, quality = "final", phase = 0,
   if (withFlow) drawFlow(ctx, stroke, phase, quality);
 }
 
+/** @param {CanvasRenderingContext2D} ctx @param {GlowDocument} doc
+ * @param {{quality?: RenderQuality, phase?: number, withLines?: boolean, withFlow?: boolean}} [options] */
 export function drawDocument(ctx, doc, {
   quality = "final", phase = 0, withLines = true, withFlow = true,
 } = {}) {
@@ -215,6 +246,7 @@ export function drawDocument(ctx, doc, {
   }
 }
 
+/** @param {GlowDocument} doc */
 export function hasFlow(doc) {
   return (doc.strokes || []).some((s) => s.flow.enabled && (s.points || []).length >= 2);
 }
@@ -226,6 +258,7 @@ export function hasFlow(doc) {
  * along the *entire* line, so the occupied area is the path plus a margin from
  * marker size, stroke width and glow.
  */
+/** @param {GlowStroke} stroke @returns {Rect | null} */
 export function flowBounds(stroke) {
   const flow = stroke.flow;
   if (!flow.enabled || (stroke.points || []).length < 2) return null;
@@ -246,7 +279,9 @@ export function flowBounds(stroke) {
   };
 }
 
+/** @param {GlowDocument} doc @param {GlowStroke | null} [only] @returns {Rect | null} */
 export function flowBoundsDocument(doc, only = null) {
+  /** @type {Rect | null} */
   let rect = null;
   for (const stroke of doc.strokes || []) {
     if (only && stroke !== only) continue;

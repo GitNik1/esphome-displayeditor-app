@@ -61,6 +61,55 @@ are available in the Geräte view; device commands remain disabled.
 See [app documentation](esphome_displayeditor/DOCS.md) for configuration and
 security details.
 
+## Development checks
+
+Install the development dependencies and run the same checks used by CI:
+
+```bash
+cd esphome_displayeditor
+python -m pip install -c constraints.txt -r requirements-dev.txt
+./scripts/check.sh
+```
+
+On Windows, use `scripts\check.ps1` from PowerShell.
+
+The check currently enforces correctness-focused Ruff rules. Repository-wide
+format enforcement will be enabled separately after the existing Python files
+have been normalized in one dedicated change. Backend coverage is reported and
+must remain at or above 83 percent. Node.js 22 is required for the frontend
+unit tests.
+
+`requirements.txt` and `requirements-dev.txt` contain the direct dependency
+ranges. `constraints.txt` pins the complete Python 3.13 dependency graph for
+local development, CI and the production image. After changing either input,
+regenerate it from the app directory with:
+
+```bash
+uv pip compile --python-version 3.13 --universal \
+  --no-emit-index-url --output-file constraints.txt requirements-dev.txt
+```
+
+### Local container
+
+With Docker Compose installed, build and start the development container from
+the repository root:
+
+```bash
+docker compose up --build -d
+docker compose ps
+```
+
+The editor is available at `http://localhost:8099`. Set
+`ESPHOME_EDITOR_PORT` before starting Compose to use another host port. Follow
+logs with `docker compose logs -f app` and stop the environment with
+`docker compose down`. The named `app-data` volume intentionally survives a
+normal stop; use `docker compose down --volumes` only when its local drafts and
+settings may be deleted.
+
+The Compose environment enables anonymous writes and direct access for local
+development only. Production continues to use Home Assistant Ingress and the
+app configuration from `esphome_displayeditor/config.yaml`.
+
 ## License
 
 MIT. The designer engine is derived from the MIT-licensed

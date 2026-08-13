@@ -1,3 +1,5 @@
+// @ts-check
+
 // Control points to a drawable path.
 //
 // Two modes, ported from glowline/geometry.py:
@@ -18,17 +20,27 @@ const EPS = 1e-9;
 // full-screen drawing stays cheap to measure.
 const FLATTEN_STEP = 0.4;
 
+/** @typedef {number[]} Point */
+/** @typedef {{type: "M", to: Point} | {type: "L", to: Point} | {type: "C", c1: Point, c2: Point, to: Point}} PathSegment */
+/** @typedef {{segments: PathSegment[], closed: boolean}} MeasuredPath */
+/** @typedef {{points: Point[], lengths: number[], length: number}} PathMeasure */
+/** @typedef {[Point, Point, Point, Point]} CornerFillet */
+
+/** @param {Point} a @param {Point} b @returns {Point} */
 function sub(a, b) {
   return [a[0] - b[0], a[1] - b[1]];
 }
 
+/** @param {Point} v @returns {[Point, number]} */
 function unit(v) {
   const length = Math.hypot(v[0], v[1]);
   if (length < EPS) return [[0, 0], 0];
   return [[v[0] / length, v[1] / length], length];
 }
 
+/** @param {Point[]} points @returns {Point[]} */
 function dedup(points) {
+  /** @type {Point[]} */
   const out = [];
   for (const p of points) {
     const q = [Number(p[0]), Number(p[1])];
@@ -43,6 +55,13 @@ function dedup(points) {
 /**
  * Fillet at corner `p` between neighbours `a` and `b`.
  * Returns [t1, c1, c2, t2], or null for a degenerate corner.
+ */
+/**
+ * @param {Point} a
+ * @param {Point} p
+ * @param {Point} b
+ * @param {number} radius
+ * @returns {CornerFillet | null}
  */
 function fillet(a, p, b, radius) {
   const [u1, la] = unit(sub(a, p));
@@ -76,7 +95,9 @@ function fillet(a, p, b, radius) {
   ];
 }
 
+/** @param {Point[]} pts @param {number} radius @param {boolean} closed @returns {MeasuredPath} */
 function roundedPolyline(pts, radius, closed) {
+  /** @type {PathSegment[]} */
   const segments = [];
   const n = pts.length;
 
@@ -89,6 +110,7 @@ function roundedPolyline(pts, radius, closed) {
   const indices = closed
     ? [...Array(n).keys()]
     : [...Array(Math.max(0, n - 2)).keys()].map((i) => i + 1);
+  /** @type {Array<[number, CornerFillet | null]>} */
   const fillets = indices.map((i) => [
     i,
     fillet(pts[(i - 1 + n) % n], pts[i], pts[(i + 1) % n], radius),
@@ -108,7 +130,7 @@ function roundedPolyline(pts, radius, closed) {
     return { segments, closed: false };
   }
 
-  const active = fillets.filter(([, f]) => f !== null);
+  const active = fillets.filter((entry) => entry[1] !== null);
   if (!active.length) {
     segments.push({ type: "M", to: pts[0] });
     for (const p of pts.slice(1)) segments.push({ type: "L", to: p });
@@ -116,7 +138,9 @@ function roundedPolyline(pts, radius, closed) {
   }
 
   // Closed: start behind the first fillet so the ring joins seamlessly.
-  const [startIndex, startFillet] = active[0];
+  const [startIndex, nullableStartFillet] = active[0];
+  if (nullableStartFillet === null) return { segments, closed: true };
+  const startFillet = nullableStartFillet;
   segments.push({ type: "M", to: startFillet[3] });
   const order = [
     ...Array.from({ length: n - startIndex - 1 }, (_, k) => startIndex + 1 + k),
@@ -135,7 +159,9 @@ function roundedPolyline(pts, radius, closed) {
   return { segments, closed: true };
 }
 
+/** @param {Point[]} pts @param {boolean} closed @returns {MeasuredPath} */
 function catmullRom(pts, closed) {
+  /** @type {PathSegment[]} */
   const segments = [{ type: "M", to: pts[0] }];
   const n = pts.length;
   if (n === 2) {
@@ -158,7 +184,14 @@ function catmullRom(pts, closed) {
   return { segments, closed };
 }
 
-/** Control points to a path description. */
+/**
+ * Control points to a path description.
+ * @param {Point[]} points
+ * @param {number} [cornerRadius]
+ * @param {"polyline" | "smooth"} [mode]
+ * @param {boolean} [closed]
+ * @returns {MeasuredPath}
+ */
 export function buildPath(points, cornerRadius = 0, mode = "polyline", closed = false) {
   const pts = dedup(points || []);
   if (!pts.length) return { segments: [], closed: false };
@@ -177,6 +210,7 @@ export function buildPath(points, cornerRadius = 0, mode = "polyline", closed = 
     : roundedPolyline(pts, cornerRadius, closed);
 }
 
+/** @param {MeasuredPath} path @returns {Path2D} */
 export function toPath2D(path) {
   const out = new Path2D();
   for (const seg of path.segments) {
@@ -188,6 +222,7 @@ export function toPath2D(path) {
   return out;
 }
 
+/** @param {Point} p0 @param {Point} c1 @param {Point} c2 @param {Point} p1 @param {number} t @returns {Point} */
 function cubicAt(p0, c1, c2, p1, t) {
   const u = 1 - t;
   const a = u * u * u;
@@ -206,12 +241,17 @@ function cubicAt(p0, c1, c2, p1, t) {
  * This is what stands in for QPainterPath.length()/pointAtPercent()/
  * angleAtPercent(): every marker position and dash offset is derived from it.
  */
+/** @param {MeasuredPath} path @returns {PathMeasure} */
 export function measurePath(path) {
+  /** @type {Point[]} */
   const points = [];
   const lengths = [0];
+  /** @type {Point | null} */
   let cursor = null;
+  /** @type {Point | null} */
   let start = null;
 
+  /** @param {Point} p */
   const push = (p) => {
     if (points.length) {
       const prev = points[points.length - 1];
@@ -236,6 +276,12 @@ export function measurePath(path) {
     }
     // Subdivide by the control polygon's length, so a long curve gets more
     // pieces than a short one and the measured length stays accurate.
+    if (cursor === null) {
+      cursor = seg.to;
+      start ??= seg.to;
+      push(seg.to);
+      continue;
+    }
     const rough = Math.hypot(seg.c1[0] - cursor[0], seg.c1[1] - cursor[1])
       + Math.hypot(seg.c2[0] - seg.c1[0], seg.c2[1] - seg.c1[1])
       + Math.hypot(seg.to[0] - seg.c2[0], seg.to[1] - seg.c2[1]);
@@ -256,6 +302,7 @@ export function measurePath(path) {
   };
 }
 
+/** @param {PathMeasure} measure @param {number} distance @returns {{index: number, t: number}} */
 function locate(measure, distance) {
   const total = measure.length;
   if (total <= 0) return { index: 0, t: 0 };
@@ -275,6 +322,7 @@ function locate(measure, distance) {
 }
 
 /** Point at an absolute distance along the path. */
+/** @param {PathMeasure} measure @param {number} distance @returns {Point} */
 export function pointAtLength(measure, distance) {
   if (!measure.points.length) return [0, 0];
   const { index, t } = locate(measure, distance);
@@ -288,6 +336,7 @@ export function pointAtLength(measure, distance) {
  * counter-clockwise with y pointing up, which is the opposite of the
  * screen's y axis. Kept identical so the marker maths ports unchanged.
  */
+/** @param {PathMeasure} measure @param {number} distance @returns {number} */
 export function angleAtLength(measure, distance) {
   if (measure.points.length < 2) return 0;
   const { index } = locate(measure, distance);
@@ -296,6 +345,7 @@ export function angleAtLength(measure, distance) {
   return (-Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
 }
 
+/** @param {PathMeasure} measure @returns {{left: number, top: number, right: number, bottom: number} | null} */
 export function boundingBox(measure) {
   if (!measure.points.length) return null;
   let x0 = Infinity;
@@ -315,7 +365,14 @@ export function boundingBox(measure) {
  * Segment closest to `pos`, for editing.
  * Returns {index, distance, point} where index is the insert position.
  */
+/**
+ * @param {Point[]} points
+ * @param {Point} pos
+ * @param {boolean} [closed]
+ * @returns {{index: number | null, distance: number, point: Point | null}}
+ */
 export function nearestSegment(points, pos, closed = false) {
+  /** @type {{index: number | null, distance: number, point: Point | null}} */
   let best = { index: null, distance: Infinity, point: null };
   const n = points.length;
   if (n < 2) return best;

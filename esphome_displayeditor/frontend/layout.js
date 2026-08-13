@@ -1,3 +1,5 @@
+// @ts-check
+
 // Approximates LVGL's layout so an imported config shows up in a recognisable
 // arrangement instead of stacking at the origin.
 //
@@ -9,6 +11,16 @@
 // the device with its own font metrics, which we do not have. Positions are
 // plausible, not pixel-exact - check the real thing with an SDL preview.
 
+/** @typedef {Record<string, any> & {id: string, widget_type: string, children?: Widget[], properties?: Record<string, any>, style_tree?: Record<string, any>, layout?: Record<string, any>, grid_cell?: Record<string, any>}} Widget */
+/** @typedef {Record<string, any> & {canvas: {width: number, height: number}, widgets?: Widget[]}} LayoutProject */
+/** @typedef {{width: number, height: number}} Size */
+/** @typedef {{x: number, y: number, width: number, height: number}} PlacementArea */
+/** @typedef {{left: number, top: number, width: number, height: number, managed: boolean, originX: number, originY: number}} WidgetBox */
+/** @typedef {Map<Widget, WidgetBox>} BoxMap */
+/** @typedef {Map<Widget, Size>} SizeCache */
+/** @typedef {{px?: number, fr?: number, content?: boolean}} Track */
+
+/** @type {Record<string, [number, number]>} */
 const ALIGN_ANCHORS = {
   TOP_LEFT: [0, 0], TOP_MID: [0.5, 0], TOP_RIGHT: [1, 0],
   LEFT_MID: [0, 0.5], CENTER: [0.5, 0.5], RIGHT_MID: [1, 0.5],
@@ -16,6 +28,7 @@ const ALIGN_ANCHORS = {
 };
 
 // Where a widget sits relative to another one it is aligned to.
+/** @type {Record<string, [number, number, number, number]>} */
 const OUT_ANCHORS = {
   OUT_TOP_LEFT: [0, -1, 0, 0], OUT_TOP_MID: [0.5, -1, 0.5, 0], OUT_TOP_RIGHT: [1, -1, 1, 0],
   OUT_BOTTOM_LEFT: [0, 1, 0, 1], OUT_BOTTOM_MID: [0.5, 1, 0.5, 1], OUT_BOTTOM_RIGHT: [1, 1, 1, 1],
@@ -26,13 +39,17 @@ const OUT_ANCHORS = {
 const DEFAULT_SIZE = { width: 100, height: 40 };
 const DEFAULT_FONT_SIZE = 16;
 
+/** @type {CanvasRenderingContext2D | null} */
 let measureContext = null;
 
+/** @param {unknown} text @param {number} fontSize @param {string} family @returns {Size} */
 function measureText(text, fontSize, family) {
   if (!measureContext) measureContext = document.createElement("canvas").getContext("2d");
-  measureContext.font = `${fontSize}px ${family}`;
+  if (!measureContext) return { width: 0, height: 0 };
+  const context = measureContext;
+  context.font = `${fontSize}px ${family}`;
   const lines = String(text).split("\n");
-  const width = Math.max(...lines.map((line) => measureContext.measureText(line).width));
+  const width = Math.max(...lines.map((line) => context.measureText(line).width));
   return { width: Math.ceil(width), height: Math.ceil(lines.length * fontSize * 1.25) };
 }
 
@@ -40,6 +57,7 @@ function measureText(text, fontSize, family) {
 // (which registers a FontFace under this exact name once the referenced
 // file loads) so both modules agree on the name without importing each
 // other.
+/** @param {unknown} id */
 export function fontFamilyId(id) {
   return `esphome-font-${String(id || "").replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 }
@@ -47,6 +65,7 @@ export function fontFamilyId(id) {
 // Falls back to a generic sans-serif until (or unless) the real font finishes
 // loading - this is the layout/measurement counterpart to what the canvas
 // widget itself applies via the same family name in app.js.
+/** @param {unknown} id */
 export function resolvedFontFamily(id) {
   if (!id) return "sans-serif";
   const family = fontFamilyId(id);
@@ -57,6 +76,7 @@ export function resolvedFontFamily(id) {
 
 // --- value helpers ----------------------------------------------------------
 
+/** @param {unknown} value @returns {Track} */
 export function parseTrack(value) {
   if (typeof value === "number") return { px: value };
   const text = String(value ?? "").trim().toUpperCase();
@@ -67,6 +87,7 @@ export function parseTrack(value) {
   return Number.isFinite(number) ? { px: number } : { content: true };
 }
 
+/** @param {unknown} value @param {number} parentExtent @param {number} intrinsic @param {number} fallback */
 function resolveSize(value, parentExtent, intrinsic, fallback) {
   if (value === null || value === undefined || value === "") return fallback;
   if (typeof value === "number") return value;
@@ -80,12 +101,14 @@ function resolveSize(value, parentExtent, intrinsic, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+/** @param {LayoutProject} project @param {Widget} widget @returns {Record<string, any>} */
 function styleOf(project, widget) {
   // A named style lives in the library; inline overrides sit on the widget.
+  /** @type {Record<string, any>} */
   const merged = {};
   if (widget.style_mode === "named") {
-    (widget.style_refs || []).forEach((ref) => {
-      const entry = (project.styles || []).find((s) => s.id === ref);
+    (widget.style_refs || []).forEach((/** @type {string} */ ref) => {
+      const entry = (project.styles || []).find((/** @type {any} */ s) => s.id === ref);
       if (entry) Object.assign(merged, entry.style_tree || {});
     });
   }
@@ -93,6 +116,7 @@ function styleOf(project, widget) {
   return { ...(theme || {}), ...merged, ...(widget.style_tree || {}) };
 }
 
+/** @param {Record<string, any>} style */
 function padding(style) {
   const all = Number(style.pad_all) || 0;
   return {
@@ -103,18 +127,20 @@ function padding(style) {
   };
 }
 
+/** @param {LayoutProject} project @param {Record<string, any>} style */
 function fontSize(project, style) {
   const id = style.text_font || project.default_font;
-  const font = (project.fonts || []).find((f) => f.id === id);
+  const font = (project.fonts || []).find((/** @type {any} */ f) => f.id === id);
   if (font?.size) return Number(font.size);
   // ESPHome's builtin fonts are named montserrat_<size>; nothing else to go on.
   const guess = String(id || "").match(/_(\d+)$/);
   return guess ? Number(guess[1]) : DEFAULT_FONT_SIZE;
 }
 
+/** @param {LayoutProject} project @param {unknown} srcId @returns {Size | null} */
 function imageSize(project, srcId) {
   const id = Array.isArray(srcId) ? srcId[0] : srcId;
-  const entry = (project.images || []).find((i) => i.id === id);
+  const entry = (project.images || []).find((/** @type {any} */ i) => i.id === id);
   // `resize: 560x680` states the final size exactly - no image load needed.
   const resize = String(entry?.resize || "").match(/^(\d+)\s*x\s*(\d+)$/i);
   if (resize) return { width: Number(resize[1]), height: Number(resize[2]) };
@@ -123,8 +149,10 @@ function imageSize(project, srcId) {
 
 // --- pass 1: intrinsic sizes -----------------------------------------------
 
+/** @param {LayoutProject} project @param {Widget} widget @param {SizeCache} cache @returns {Size} */
 function intrinsicSize(project, widget, cache) {
-  if (cache.has(widget)) return cache.get(widget);
+  const cached = cache.get(widget);
+  if (cached) return cached;
   const style = styleOf(project, widget);
   let size;
 
@@ -136,8 +164,9 @@ function intrinsicSize(project, widget, cache) {
   } else if ((widget.children || []).length) {
     // A container is as big as the arrangement of its children.
     const pad = padding(style);
+    /** @type {BoxMap} */
     const boxes = new Map();
-    placeChildren(project, widget.children, widget.layout || {}, style,
+    placeChildren(project, widget.children || [], widget.layout || {}, style,
                   { x: 0, y: 0, width: 0, height: 0 }, boxes, cache);
     let width = 0;
     let height = 0;
@@ -156,6 +185,7 @@ function intrinsicSize(project, widget, cache) {
 
 // --- pass 2: placement ------------------------------------------------------
 
+/** @param {unknown[]} specs @param {number} extent @param {number} gap @param {number[]} contentSizes */
 function trackSizes(specs, extent, gap, contentSizes) {
   const parsed = specs.map(parseTrack);
   const sizes = parsed.map((track, index) => {
@@ -174,7 +204,9 @@ function trackSizes(specs, extent, gap, contentSizes) {
   return sizes;
 }
 
+/** @param {number[]} sizes @param {number} gap */
 function trackOffsets(sizes, gap) {
+  /** @type {number[]} */
   const offsets = [];
   let running = 0;
   sizes.forEach((size) => {
@@ -184,6 +216,8 @@ function trackOffsets(sizes, gap) {
   return offsets;
 }
 
+/** @param {LayoutProject} project @param {Widget[]} children @param {Record<string, any>} layout
+ * @param {Record<string, any>} style @param {PlacementArea} box @param {BoxMap} boxes @param {SizeCache} cache */
 function placeGrid(project, children, layout, style, box, boxes, cache) {
   const gapX = Number(style.pad_column ?? layout.pad_column) || 0;
   const gapY = Number(style.pad_row ?? layout.pad_row) || 0;
@@ -250,16 +284,20 @@ function placeGrid(project, children, layout, style, box, boxes, cache) {
   });
 }
 
+/** @param {unknown} align @param {number} available @param {number} size */
 function alignOffset(align, available, size) {
   if (align === "CENTER") return (available - size) / 2;
   if (align === "END") return available - size;
   return 0;
 }
 
+/** @type {Record<string, number>} */
 const MAIN_DISTRIBUTIONS = {
   START: 0, END: 1, CENTER: 0.5,
 };
 
+/** @param {LayoutProject} project @param {Widget[]} children @param {Record<string, any>} layout
+ * @param {Record<string, any>} style @param {PlacementArea} box @param {BoxMap} boxes @param {SizeCache} cache */
 function placeFlex(project, children, layout, style, box, boxes, cache) {
   const flow = String(layout.flex_flow || "ROW").toUpperCase();
   const horizontal = flow.startsWith("ROW");
@@ -284,7 +322,11 @@ function placeFlex(project, children, layout, style, box, boxes, cache) {
   });
   if (reverse) items.reverse();
 
+  /** @typedef {{child: Widget, width: number, height: number, main: number, cross: number, grow: number}} FlexItem */
+  /** @typedef {{items: FlexItem[], used: number}} FlexTrack */
+  /** @type {FlexTrack[]} */
   const tracks = [];
+  /** @type {FlexItem[]} */
   let current = [];
   let used = 0;
   items.forEach((item) => {
@@ -337,11 +379,13 @@ function placeFlex(project, children, layout, style, box, boxes, cache) {
   });
 }
 
+/** @param {unknown} align @param {number} extent @param {number} total */
 function distributionStart(align, extent, total) {
   const fraction = MAIN_DISTRIBUTIONS[String(align || "START").toUpperCase()] ?? 0;
   return (extent - total) * fraction;
 }
 
+/** @param {unknown} align @param {number} count @param {number} extent @param {number} used @param {number} gap */
 function distribution(align, count, extent, used, gap) {
   const key = String(align || "START").toUpperCase();
   const free = Math.max(0, extent - used);
@@ -357,7 +401,10 @@ function distribution(align, count, extent, used, gap) {
   return { start: distributionStart(key, extent, used), gap };
 }
 
+/** @param {LayoutProject} project @param {Widget[]} children @param {PlacementArea} box
+ * @param {BoxMap} boxes @param {SizeCache} cache */
 function placeAbsolute(project, children, box, boxes, cache) {
+  /** @type {Array<{child: Widget, width: number, height: number, align: string}>} */
   const pending = [];
   children.forEach((child) => {
     const intrinsic = intrinsicSize(project, child, cache);
@@ -397,6 +444,8 @@ function placeAbsolute(project, children, box, boxes, cache) {
   });
 }
 
+/** @param {LayoutProject} project @param {Widget[]} children @param {Record<string, any>} layout
+ * @param {Record<string, any>} style @param {PlacementArea} box @param {BoxMap} boxes @param {SizeCache} cache */
 function placeChildren(project, children, layout, style, box, boxes, cache) {
   const type = String(layout.type || "NONE").toUpperCase();
   if (!children.length) return;
@@ -405,10 +454,12 @@ function placeChildren(project, children, layout, style, box, boxes, cache) {
   else placeAbsolute(project, children, box, boxes, cache);
 }
 
+/** @param {LayoutProject} project @param {Widget[]} nodes @param {BoxMap} boxes @param {SizeCache} cache */
 function descend(project, nodes, boxes, cache) {
   nodes.forEach((node) => {
     const outer = boxes.get(node);
-    if (!outer || !(node.children || []).length) return;
+    const children = node.children || [];
+    if (!outer || !children.length) return;
     const style = styleOf(project, node);
     const pad = padding(style);
     const inner = {
@@ -417,8 +468,8 @@ function descend(project, nodes, boxes, cache) {
       width: Math.max(0, outer.width - pad.left - pad.right),
       height: Math.max(0, outer.height - pad.top - pad.bottom),
     };
-    placeChildren(project, node.children, node.layout || {}, style, inner, boxes, cache);
-    descend(project, node.children, boxes, cache);
+    placeChildren(project, children, node.layout || {}, style, inner, boxes, cache);
+    descend(project, children, boxes, cache);
   });
 }
 
@@ -430,8 +481,11 @@ function descend(project, nodes, boxes, cache) {
  * position, so dragging it would write an x/y offset that fights the layout.
  * `originX/originY` is the origin its x/y is relative to.
  */
+/** @param {LayoutProject} project @returns {BoxMap} */
 export function computeLayout(project) {
+  /** @type {BoxMap} */
   const boxes = new Map();
+  /** @type {SizeCache} */
   const cache = new Map();
   // The screen carries its own layout and padding in ESPHome; here it lives in
   // the preserved lvgl block, because nothing in the model represents it.
@@ -444,8 +498,9 @@ export function computeLayout(project) {
     height: Math.max(0, project.canvas.height - pad.top - pad.bottom),
   };
 
-  placeChildren(project, project.widgets || [], screen.layout || {}, screen, box, boxes, cache);
-  descend(project, project.widgets || [], boxes, cache);
+  const widgets = project.widgets || [];
+  placeChildren(project, widgets, screen.layout || {}, screen, box, boxes, cache);
+  descend(project, widgets, boxes, cache);
   return boxes;
 }
 
@@ -456,6 +511,7 @@ export function computeLayout(project) {
  * `container.children`, without having to duplicate the padding math that
  * `descend()` already applies to existing children.
  */
+/** @param {LayoutProject} project @param {Widget} container */
 export function contentOrigin(project, container) {
   const boxes = computeLayout(project);
   const outer = boxes.get(container);

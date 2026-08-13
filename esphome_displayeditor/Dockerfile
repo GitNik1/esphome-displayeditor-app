@@ -13,7 +13,9 @@ RUN apk add --no-cache python3 py3-pip \
     && /opt/esphome-displayeditor/bin/pip install --no-cache-dir --upgrade pip
 
 COPY requirements.txt /tmp/requirements.txt
-RUN SKIP_CYTHON=1 /opt/esphome-displayeditor/bin/pip install --no-cache-dir -r /tmp/requirements.txt
+COPY constraints.txt /tmp/constraints.txt
+RUN SKIP_CYTHON=1 /opt/esphome-displayeditor/bin/pip install --no-cache-dir \
+    -c /tmp/constraints.txt -r /tmp/requirements.txt
 
 COPY backend /app/backend
 COPY frontend /app/frontend
@@ -28,5 +30,7 @@ ENV PYTHONPATH=/app \
 
 WORKDIR /app
 EXPOSE 8099
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/api/v1/health', timeout=2)" || exit 1
 ENTRYPOINT []
 CMD ["/run.sh"]

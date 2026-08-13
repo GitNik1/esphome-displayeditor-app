@@ -1,0 +1,14 @@
+{
+  "name": "esphome-displayeditor-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:unit": "node --test tests/frontend/*.test.mjs",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "typescript": "7.0.2"
+  }
+}
