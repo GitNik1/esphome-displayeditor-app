@@ -2,9 +2,27 @@
 
 ## Unreleased
 
+## 0.27.0
+
 ## 0.26.0
 
 ## 0.25.0
+
+- Imports unsupported entity-to-LVGL automations as `Custom YAML · Imported`
+  bindings. Their action trees round-trip semantically, can be edited through
+  a server-validated YAML editor, restored to the imported original, or
+  removed. ESPHome tags such as `!lambda` survive project save/load.
+
+- Added direct numeric-sensor bindings for bidirectional Glow Line flow.
+  Positive and negative values select the forward or reverse animation, the
+  configurable deadband stops both, and animation speed can follow magnitude.
+
+- Fixed generated ESPHome binding lambdas to use valid C++ floating-point
+  literals such as `1.0f` and `0.0f` instead of invalid `1f` and `0f`.
+
+- Fixed Bar YAML export: `start_value` is now emitted only when `mode` is
+  `RANGE`. The configured value remains stored in the project when another
+  mode is selected.
 
 - Improved the configuration diff with high-contrast, accessible colour
   coding: additions are green, deletions red, paired replacements amber, and

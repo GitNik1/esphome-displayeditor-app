@@ -7,6 +7,11 @@ running, so imported projects still use the existing generic project model.
 
 from __future__ import annotations
 
+import copy
+from typing import Any
+
+from .designer_core.model import Project
+
 from .designer_core.widgetschema import (
     CONTENT,
     STYLE,
@@ -117,3 +122,31 @@ def register_addon_widgets() -> None:
                 *_text_style_props("ticks"),
             ),
         )
+
+
+def prepare_addon_widget_export(project: Project) -> Project:
+    """Return an export copy with mode-dependent add-on fields normalised.
+
+    ESPHome accepts ``bar.start_value`` only in RANGE mode. The editor keeps
+    that value in the project when another mode is selected so switching back
+    to RANGE does not lose user input, but the inactive field must not reach
+    generated YAML.
+    """
+    prepared = copy.deepcopy(project)
+    for widget in prepared.all_widgets():
+        if widget.widget_type == "bar" and widget.properties.get("mode", "NORMAL") != "RANGE":
+            widget.properties.pop("start_value", None)
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            bar = value.get("bar")
+            if isinstance(bar, dict) and bar.get("mode", "NORMAL") != "RANGE":
+                bar.pop("start_value", None)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(prepared.extra_lvgl)
+    return prepared

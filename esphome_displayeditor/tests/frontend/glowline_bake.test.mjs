@@ -55,6 +55,36 @@ test("bakes static and bidirectional frames with deterministic ids", async () =>
   assert.equal(stroke.flow.reversed, false);
 });
 
+test("rebaking refreshes glow flow binding target ids after a line rename", async () => {
+  const project = freshProject();
+  const stroke = freshGlowStroke("line_1");
+  stroke.name = "Solar Flow";
+  stroke.points = [[0, 0], [40, 0]];
+  stroke.flow.enabled = true;
+  stroke.flow.bidirectional = true;
+  stroke.flow.bake_frame_count = 1;
+  project.bindings = [{
+    id: "solar_flow",
+    target: {
+      glow_stroke_id: "line_1",
+      widget_id: "old_anim",
+      reverse_widget_id: "old_anim_rev",
+      property: "flow_direction",
+    },
+  }];
+
+  await bakeGlowStroke({
+    project,
+    stroke,
+    renderFrame: async () => ({}),
+    uploadFrame: async (name) => `images/${name}`,
+    contentOrigin: () => ({ x: 0, y: 0 }),
+  });
+
+  assert.equal(project.bindings[0].target.widget_id, "solar_flow_anim");
+  assert.equal(project.bindings[0].target.reverse_widget_id, "solar_flow_anim_rev");
+});
+
 test("rebaking disabled flow removes obsolete animations", async () => {
   const project = freshProject();
   const stroke = freshGlowStroke("line_1");
@@ -92,4 +122,3 @@ test("baked child widgets are positioned relative to their parent", async () => 
   assert.ok(parent.children[0].x < 20);
   assert.ok(parent.children[0].y < 30);
 });
-

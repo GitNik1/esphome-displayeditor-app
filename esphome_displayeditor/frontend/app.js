@@ -844,6 +844,10 @@ function bindDesigner() {
   $("#device-binding-property").addEventListener("change", () => renderDeviceBindingIndicator(state.selectedWidget));
   $("#save-device-binding").addEventListener("click", saveDeviceBinding);
   $("#remove-device-binding").addEventListener("click", deleteDeviceBinding);
+  $("#save-custom-binding").addEventListener("click", saveCustomDeviceBinding);
+  $("#restore-custom-binding").addEventListener("click", restoreCustomDeviceBinding);
+  $("#save-flow-binding").addEventListener("click", saveGlowFlowBinding);
+  $("#remove-flow-binding").addEventListener("click", removeGlowFlowBinding);
   state.runtimeStatusTimer ||= window.setInterval(() => {
     renderRuntimeBindingStatus();
     applyDesignerRuntimePreview();
@@ -2668,8 +2672,101 @@ function renderLineProperties() {
   $("#bake-frame-count").value = stroke.flow.bake_frame_count;
   $("#bake-crop").checked = stroke.flow.bake_crop;
 
+  renderGlowFlowBinding(stroke);
+
   drawColorWheel();
   renderColorWheelReadout();
+}
+
+function glowFlowBinding(/** @type {any} */ stroke) {
+  return (state.project.bindings || []).find(
+    (/** @type {any} */ binding) => binding.target?.glow_stroke_id === stroke?.id
+      && binding.target?.property === "flow_direction",
+  ) || null;
+}
+
+function renderGlowFlowBinding(/** @type {any} */ stroke) {
+  const binding = glowFlowBinding(stroke);
+  const select = $("#flow-binding-entity");
+  select.replaceChildren(new Option("— Sensor wählen —", ""));
+  (state.project.entities || [])
+    .filter((/** @type {any} */ entity) => entity.readable && entity.data_type === "number")
+    .forEach((/** @type {any} */ entity) => select.append(
+      new Option(`${entity.domain}.${entity.id}${entity.unit ? ` · ${entity.unit}` : ""}`, entity.id),
+    ));
+  select.value = binding?.source?.id || "";
+  const transform = binding?.transform || {};
+  $("#flow-binding-off").value = transform.off_threshold ?? 0;
+  $("#flow-binding-fast").value = transform.fast_threshold ?? 1000;
+  $("#flow-binding-normal").value = transform.normal_duration ?? 900;
+  $("#flow-binding-fast-duration").value = transform.fast_duration ?? 300;
+  $("#remove-flow-binding").disabled = !binding;
+  $("#flow-binding-error").classList.add("hidden");
+}
+
+function saveGlowFlowBinding() {
+  const stroke = state.selectedStroke;
+  const error = $("#flow-binding-error");
+  const entityId = $("#flow-binding-entity").value;
+  const entity = (state.project.entities || []).find(
+    (/** @type {any} */ item) => item.id === entityId && item.readable && item.data_type === "number",
+  );
+  const fail = (/** @type {string} */ message) => {
+    error.textContent = message;
+    error.classList.remove("hidden");
+  };
+  if (!stroke?.flow?.enabled || !stroke.flow.bidirectional) {
+    fail("Für diese Bindung müssen Fluss und bidirektionaler Modus aktiviert sein.");
+    return;
+  }
+  if (!entity) {
+    fail("Bitte einen numerischen ESPHome-Sensor auswählen.");
+    return;
+  }
+  const off = Math.max(0, Number($("#flow-binding-off").value) || 0);
+  const fast = Number($("#flow-binding-fast").value) || 0;
+  const normalDuration = Math.max(10, Number($("#flow-binding-normal").value) || 0);
+  const fastDuration = Math.max(10, Number($("#flow-binding-fast-duration").value) || 0);
+  if (fast <= off) {
+    fail("Der Schnell-Schwellwert muss größer als die Totzone sein.");
+    return;
+  }
+  const baseName = strokeBaseName(stroke);
+  const existing = glowFlowBinding(stroke);
+  const binding = {
+    id: existing?.id || defaultBindingId(`${stroke.id}_flow`, entity.id),
+    direction: "entity_to_widget",
+    source: { domain: entity.domain, id: entity.id },
+    target: {
+      widget_id: `${baseName}_anim`,
+      reverse_widget_id: `${baseName}_anim_rev`,
+      glow_stroke_id: stroke.id,
+      property: "flow_direction",
+    },
+    transform: {
+      off_threshold: off,
+      fast_threshold: fast,
+      normal_duration: normalDuration,
+      fast_duration: fastDuration,
+    },
+    conditions: [],
+  };
+  pushUndo();
+  state.project.bindings = upsertDeviceBinding(state.project.bindings || [], binding);
+  markProjectDirty();
+  renderGlowFlowBinding(stroke);
+}
+
+function removeGlowFlowBinding() {
+  const stroke = state.selectedStroke;
+  const binding = glowFlowBinding(stroke);
+  if (!binding) return;
+  pushUndo();
+  state.project.bindings = (state.project.bindings || []).filter(
+    (/** @type {any} */ item) => item.id !== binding.id,
+  );
+  markProjectDirty();
+  renderGlowFlowBinding(stroke);
 }
 
 function bindLinePropertyInputs() {
@@ -3653,14 +3750,22 @@ function renderDeviceBindings(/** @type {any} */ widget, /** @type {any} */ sele
   if (!visible) return;
   state.project.entities ||= [];
   state.project.bindings ||= [];
-  const own = bindingsForWidget(state.project.bindings, widget.id);
+  const own = bindingsForWidget(state.project.bindings, widget.id).filter(
+    (/** @type {any} */ binding) => !binding.deleted,
+  );
   const existing = $("#device-binding-existing");
   const selectedId = selectedBinding?.id || existing.value;
   existing.replaceChildren(new Option("— Neue Bindung —", ""));
-  own.forEach((/** @type {any} */ binding) => existing.append(new Option(`${binding.id} · ${binding.direction}`, binding.id)));
+  own.forEach((/** @type {any} */ binding) => existing.append(new Option(
+    ["opaque_yaml", "custom_yaml"].includes(binding.kind)
+      ? `${binding.id} · ${t("deviceBinding.importedOnly")}`
+      : `${binding.id} · ${binding.direction}`,
+    binding.id,
+  )));
   existing.value = own.some((/** @type {any} */ binding) => binding.id === selectedId) ? selectedId : "";
 
   const binding = selectedBinding || own.find((/** @type {any} */ item) => item.id === existing.value);
+  const importedOnly = binding?.kind === "opaque_yaml" || binding?.kind === "custom_yaml";
   const direction = binding?.direction || $("#device-binding-direction").value || "entity_to_widget";
   $("#device-binding-direction").value = direction;
   const entity = direction === "widget_to_entity" ? binding?.target : binding?.source;
@@ -3689,6 +3794,20 @@ function renderDeviceBindings(/** @type {any} */ widget, /** @type {any} */ sele
   $("#device-binding-transform").value = JSON.stringify(binding?.transform || {}, null, 2);
   $("#device-binding-conditions").value = JSON.stringify(binding?.conditions || [], null, 2);
   $("#remove-device-binding").disabled = !binding;
+  ["device-binding-direction", "device-binding-entity", "device-binding-property",
+    "device-binding-event", "device-binding-indicator", "device-binding-command",
+    "device-binding-transform", "device-binding-conditions", "save-device-binding"]
+    .forEach((id) => { $(`#${id}`).disabled = importedOnly; });
+  $("#device-binding-custom-fields").classList.toggle("hidden", !importedOnly);
+  $("#device-binding-custom-yaml").value = importedOnly ? binding.raw_yaml || "" : "";
+  $("#restore-custom-binding").classList.toggle("hidden", binding?.origin !== "imported");
+  const bindingError = $("#device-binding-error");
+  if (importedOnly) {
+    bindingError.textContent = t("deviceBinding.importedHint");
+    bindingError.classList.remove("hidden");
+  } else {
+    bindingError.classList.add("hidden");
+  }
   renderDeviceBindingIndicator(widget);
 
   const list = $("#device-binding-list");
@@ -3697,7 +3816,9 @@ function renderDeviceBindings(/** @type {any} */ widget, /** @type {any} */ sele
     const row = document.createElement("div");
     const source = item.direction === "widget_to_entity" ? `${widget.id}.${item.source.event}` : `${item.source.domain}.${item.source.id}`;
     const target = item.direction === "widget_to_entity" ? `${item.target.domain}.${item.target.id}` : `${widget.id}.${item.target.property}`;
-    row.textContent = `${source} → ${target}`;
+    row.textContent = ["opaque_yaml", "custom_yaml"].includes(item.kind)
+      ? `${source} → ${target} · ${t("deviceBinding.importedOnly")}`
+      : `${source} → ${target}`;
     list.append(row);
   });
   const graphElement = $("#device-binding-graph");
@@ -3723,6 +3844,10 @@ function saveDeviceBinding() {
   const widget = state.selectedWidget;
   const error = $("#device-binding-error");
   if (!widget) return;
+  const selected = (state.project.bindings || []).find(
+    (/** @type {any} */ item) => item.id === $("#device-binding-existing").value,
+  );
+  if (selected?.kind === "opaque_yaml" || selected?.kind === "custom_yaml") return;
   const direction = $("#device-binding-direction").value;
   const entityId = $("#device-binding-entity").value;
   const entity = (state.project.entities || []).find((/** @type {any} */ item) => item.id === entityId);
@@ -3771,9 +3896,46 @@ function deleteDeviceBinding() {
   const id = $("#device-binding-existing").value;
   if (!id) return;
   pushUndo();
-  state.project.bindings = removeDeviceBinding(state.project.bindings, id);
+  const binding = (state.project.bindings || []).find((/** @type {any} */ item) => item.id === id);
+  state.project.bindings = ["opaque_yaml", "custom_yaml"].includes(binding?.kind)
+    ? state.project.bindings.map((/** @type {any} */ item) => item.id === id ? { ...item, deleted: true } : item)
+    : removeDeviceBinding(state.project.bindings, id);
   markProjectDirty();
   renderDeviceBindings(state.selectedWidget);
+}
+
+async function saveCustomDeviceBinding() {
+  const id = $("#device-binding-existing").value;
+  const binding = (state.project.bindings || []).find((/** @type {any} */ item) => item.id === id);
+  if (!binding || !["opaque_yaml", "custom_yaml"].includes(binding.kind)) return;
+  const error = $("#device-binding-error");
+  try {
+    const result = await api("designer/bindings/custom-yaml/validate", {
+      method: "POST",
+      body: JSON.stringify({ content: $("#device-binding-custom-yaml").value }),
+    });
+    pushUndo();
+    binding.kind = "custom_yaml";
+    binding.raw_action = result.action;
+    binding.raw_yaml = result.yaml;
+    binding.read_only = false;
+    markProjectDirty();
+    renderDeviceBindings(state.selectedWidget, binding);
+  } catch (/** @type {any} */ validationError) {
+    error.textContent = validationError.message;
+    error.classList.remove("hidden");
+  }
+}
+
+function restoreCustomDeviceBinding() {
+  const id = $("#device-binding-existing").value;
+  const binding = (state.project.bindings || []).find((/** @type {any} */ item) => item.id === id);
+  if (!binding?.original_action || !binding?.original_yaml) return;
+  pushUndo();
+  binding.raw_action = structuredClone(binding.original_action);
+  binding.raw_yaml = binding.original_yaml;
+  markProjectDirty();
+  renderDeviceBindings(state.selectedWidget, binding);
 }
 
 function projectWidgetEntries() {

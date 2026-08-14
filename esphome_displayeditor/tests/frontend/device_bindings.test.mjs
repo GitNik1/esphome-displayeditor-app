@@ -28,6 +28,29 @@ test("binding graph deduplicates nodes and represents bidirectional edges", () =
   assert.deepEqual(graph.edges.map((edge) => edge.bidirectional), [false, true]);
 });
 
+test("binding graph hides deleted imported YAML tombstones", () => {
+  const graph = bindingGraph([
+    {
+      id: "kept",
+      kind: "custom_yaml",
+      origin: "imported",
+      direction: "entity_to_widget",
+      source: { domain: "sensor", id: "power" },
+      target: { widget_id: "flow", property: "imported_yaml" },
+    },
+    {
+      id: "deleted",
+      kind: "custom_yaml",
+      origin: "imported",
+      deleted: true,
+      direction: "entity_to_widget",
+      source: { domain: "sensor", id: "old" },
+      target: { widget_id: "flow", property: "imported_yaml" },
+    },
+  ]);
+  assert.deepEqual(graph.edges.map((edge) => edge.id), ["kept"]);
+});
+
 test("entity compatibility respects read, write and bidirectional modes", () => {
   const entities = [
     { id: "sensor", readable: true, writable: false },

@@ -9,7 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .addon_widgets import register_addon_widgets
+from .addon_widgets import prepare_addon_widget_export, register_addon_widgets
 from .designer_core.idgen import IdRegistry
 from .designer_core.model import PROJECT_FORMAT, PROJECT_FORMAT_VERSION, Project
 from .designer_core.widgetschema import GRID_CELL_PROPS, STATE_VALUES, WIDGET_SCHEMAS
@@ -29,6 +29,7 @@ from .entity_bindings import (
     binding_schemas,
     compile_bindings,
     discover_entities,
+    extract_imported_bindings,
     validate_project_bindings,
 )
 from .msgbox_support import apply_msgbox_payload, materialize_msgboxes
@@ -603,8 +604,9 @@ class DesignerService:
             raise ApiError("import_failed", str(exc), 422) from exc
 
         payload, surface_stats = materialize_surfaces(result.project, result.issues)
-        payload["entities"] = discover_entities(load_lvgl_yaml(text))
-        payload["bindings"] = []
+        document = load_lvgl_yaml(text)
+        payload["entities"] = discover_entities(document)
+        payload["bindings"] = extract_imported_bindings(document)
         payload["msgboxes"], msgbox_stats = materialize_msgboxes(
             result.project, result.issues
         )
@@ -685,7 +687,7 @@ class DesignerService:
                 "invalid_project", "Project validation failed.", 422, {"issues": issues}
             )
         compiled = compile_bindings(project)
-        project = compiled.project
+        project = prepare_addon_widget_export(compiled.project)
         try:
             with tempfile.TemporaryDirectory(dir=self.export_root) as directory:
                 result = export_project(project, str(Path(directory) / "ui.yaml"))

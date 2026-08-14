@@ -8,6 +8,8 @@ from backend.designer_core.yamlimport import load_lvgl_yaml
 from backend.entity_bindings import (
     compile_bindings,
     discover_entities,
+    extract_imported_bindings,
+    parse_custom_binding_yaml,
     validate_project_bindings,
 )
 from backend.lvgl_merge import merge_project_into_yaml
@@ -212,6 +214,64 @@ lvgl:
     assert "sensor" in first.replaced_keys
 
 
+def test_opaque_binding_import_roundtrips_semantically_and_can_be_deleted() -> None:
+    source = """sensor:
+  - platform: template
+    id: power
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: return x > 0;
+            then:
+              - lvgl.widget.show: forward_anim
+              - lvgl.widget.hide: reverse_anim
+lvgl:
+  widgets:
+    - animimg:
+        id: forward_anim
+        src: [frame_1]
+    - animimg:
+        id: reverse_anim
+        src: [frame_2]
+"""
+    document = load_lvgl_yaml(source)
+    imported = extract_imported_bindings(document)
+    assert len(imported) == 1
+    assert imported[0]["kind"] == "custom_yaml"
+    assert imported[0]["origin"] == "imported"
+    assert (
+        imported[0]["raw_action"]["if"]["condition"]["lambda"]
+        == "return x > 0;"
+    )
+    assert imported[0]["target"]["widget_id"] == "forward_anim"
+
+    project = Project(
+        widgets=[
+            WidgetNode(id="forward_anim", widget_type="animimg"),
+            WidgetNode(id="reverse_anim", widget_type="animimg"),
+        ]
+    )
+    project.bindings = imported
+    kept = merge_project_into_yaml(project, source).content
+    kept_actions = load_lvgl_yaml(kept)["sensor"][0]["on_value"]["then"]
+    assert kept_actions == document["sensor"][0]["on_value"]["then"]
+
+    project.bindings[0]["deleted"] = True
+    removed = merge_project_into_yaml(project, kept).content
+    assert load_lvgl_yaml(removed)["sensor"][0]["on_value"]["then"] == []
+
+
+def test_custom_binding_yaml_parser_preserves_esphome_tags() -> None:
+    action, normalized = parse_custom_binding_yaml(
+        "lvgl.label.update:\n  id: status\n  text: !lambda return x;\n"
+    )
+    assert action["lvgl.label.update"]["text"] == {
+        "__esphome_lambda__": "return x;"
+    }
+    assert "text: !lambda 'return x;'" in normalized
+
+
 def test_changed_conditional_binding_replaces_previous_nested_target() -> None:
     existing = (
         "sensor:\n- platform: template\n  id: temperature\nlvgl:\n  widgets: []\n"
@@ -278,7 +338,56 @@ def test_transform_generates_scaling_clamping_and_rounding_lambda() -> None:
     ]
     action = compile_bindings(project).entity_actions[0]["action"]
     code = action["lvgl.indicator.update"]["value"]["__esphome_lambda__"]
-    assert "std::max" in code and "std::round" in code and "100f / 100f" in code
+    assert "std::max" in code and "std::round" in code
+    assert "value * 1.0f + 0.0f" in code
+    assert "100.0f / 100.0f" in code
+
+
+def test_glow_flow_direction_binding_selects_animation_from_sensor_sign() -> None:
+    project = Project(
+        widgets=[
+            WidgetNode(id="power_anim", widget_type="animimg"),
+            WidgetNode(id="power_anim_rev", widget_type="animimg"),
+        ]
+    )
+    project.entities = [
+        {
+            "domain": "sensor",
+            "id": "power",
+            "readable": True,
+            "writable": False,
+            "data_type": "number",
+            "trigger": "on_value",
+            "commands": [],
+        }
+    ]
+    project.bindings = [
+        {
+            "id": "power_flow",
+            "direction": "entity_to_widget",
+            "source": {"domain": "sensor", "id": "power"},
+            "target": {
+                "widget_id": "power_anim",
+                "reverse_widget_id": "power_anim_rev",
+                "property": "flow_direction",
+            },
+            "transform": {
+                "off_threshold": 2,
+                "fast_threshold": 500,
+                "normal_duration": 800,
+                "fast_duration": 200,
+            },
+        }
+    ]
+
+    action = compile_bindings(project).entity_actions[0]["action"]
+    assert action["if"]["condition"]["lambda"]["__esphome_lambda__"] == (
+        "return abs((int)x) <= 2;"
+    )
+    direction = action["if"]["else"][0]["if"]
+    assert direction["condition"]["lambda"]["__esphome_lambda__"] == "return x > 0;"
+    assert direction["then"][1] == {"lvgl.widget.show": "power_anim"}
+    assert direction["else"][1] == {"lvgl.widget.show": "power_anim_rev"}
 
 
 def test_project_store_round_trips_addon_entity_catalog_and_bindings(tmp_path) -> None:

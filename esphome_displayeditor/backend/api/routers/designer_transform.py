@@ -11,7 +11,9 @@ from ...errors import ApiError
 from ...filesystem import FilesystemBackend
 from ...lvgl_bundle import build_project_zip
 from ...lvgl_merge import MergeError, build_project_yaml_for_bundle, merge_project_into_yaml
-from ..schemas import DesignerProjectRequest, MergeDraftRequest
+from ...entity_bindings import parse_custom_binding_yaml
+from ...designer_core.yamlimport import LvglImportError
+from ..schemas import CustomBindingYamlRequest, DesignerProjectRequest, MergeDraftRequest
 
 
 def create_designer_transform_router(
@@ -33,6 +35,14 @@ def create_designer_transform_router(
         project, issues = designer.validate(body.project)
         return {"valid": not any(issue["severity"] == "error" for issue in issues),
                 "issues": issues, "project": designer.project_payload(project)}
+
+    @router.post("/bindings/custom-yaml/validate")
+    async def validate_custom_binding_yaml(body: CustomBindingYamlRequest) -> dict:
+        try:
+            action, normalized = parse_custom_binding_yaml(body.content)
+        except LvglImportError as exc:
+            raise ApiError("invalid_custom_binding_yaml", str(exc), 422) from exc
+        return {"valid": True, "action": action, "yaml": normalized}
 
     @router.post("/projects/export-yaml")
     async def export_yaml(body: DesignerProjectRequest) -> dict:
