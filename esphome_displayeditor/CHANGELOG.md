@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.26.0
+
+## 0.25.0
+
+- Improved the configuration diff with high-contrast, accessible colour
+  coding: additions are green, deletions red, paired replacements amber, and
+  headers/hunks have dedicated styling. A sticky translated legend remains
+  visible while scrolling; `+`/`-` prefixes still convey meaning without
+  relying on colour alone.
+
+- Added end-to-end ESPHome device bindings. Imports now build a typed catalog
+  for sensors, binary/text sensors, switches, lights, numbers, selects,
+  buttons, fans, covers, climate, locks, media players, alarm panels and
+  scripts. Every supported widget declares readable properties and writable
+  events; bindings can be one-way or bidirectional, scaled, clamped, rounded,
+  formatted and conditionally applied. A property-panel editor and project
+  binding graph persist these definitions inside `.lvgldesign` projects.
+- Binding-aware YAML merge compiles entity changes into idempotent
+  `on_value`/`on_state` actions and widget commands into LVGL events. Existing
+  user automations remain in order, stale/missing ids and incompatible types
+  block the draft, and ordinary non-binding domains retain the previous
+  byte-preserving merge behaviour.
+
 ## 0.24.0
 
 - Added complete editor and Viewer support for ESPHome's LVGL `meter` widget.

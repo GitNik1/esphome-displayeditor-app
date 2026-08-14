@@ -231,6 +231,15 @@ input:focus { border-color: var(--accent); }
   .viewer-statusline span { display: block; }
 }
 
+.device-binding-section { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.device-binding-section > summary { cursor: pointer; font-weight: 650; color: var(--text); }
+.device-binding-section[open] { display: grid; gap: 8px; }
+.device-binding-section label { display: grid; gap: 4px; }
+.device-binding-list { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.device-binding-list > div { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; overflow-wrap: anywhere; }
+.device-binding-graph { display: grid; gap: 5px; }
+.device-binding-edge { position: relative; padding: 7px 9px 7px 14px; border-left: 3px solid var(--accent-2); background: color-mix(in srgb, var(--surface) 88%, var(--accent-2)); border-radius: 4px; font: 12px/1.35 ui-monospace, monospace; overflow-wrap: anywhere; }
+
 .empty { color: var(--muted); padding: 20px 16px; font-size: 13px; line-height: 1.5; }
 .hidden { display: none !important; }
 .properties { padding: 16px; }
@@ -517,6 +526,23 @@ input:focus { border-color: var(--accent); }
 .yaml-editor-status { justify-content: space-between; border-top: 1px solid var(--line); border-bottom: 0; }
 .yaml-editor-status .dirty { color: var(--warning); }
 .output { max-height: 230px; overflow: auto; margin: 0; padding: 15px 20px; border-top: 1px solid var(--line); color: #bdcadd; background: #0e1722; font: 12px/1.5 monospace; white-space: pre-wrap; }
+.output.diff-output { max-height: min(55vh, 620px); padding: 0; white-space: normal; background: #09111a; }
+.diff-legend { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 10px 16px; border-bottom: 1px solid #2a3949; background: rgb(13 24 36 / 96%); backdrop-filter: blur(8px); font: 600 12px/1.3 system-ui, sans-serif; }
+.diff-legend-item { display: inline-flex; align-items: center; gap: 7px; color: #dbe8f4; }
+.diff-legend-item::before { width: 11px; height: 11px; border-radius: 3px; content: ""; box-shadow: 0 0 0 1px rgb(255 255 255 / 18%) inset; }
+.diff-legend-item.added::before { background: #22c55e; }
+.diff-legend-item.deleted::before { background: #ef4444; }
+.diff-legend-item.changed::before { background: #f59e0b; }
+.diff-lines { display: block; min-width: max-content; padding: 8px 0 12px; font: 12px/1.55 "Cascadia Code", Consolas, monospace; }
+.diff-line { display: block; min-height: 1.55em; padding: 0 16px; border-left: 4px solid transparent; white-space: pre; }
+.diff-context { color: #91a4b8; }
+.diff-header { color: #d8b4fe; background: #251936; font-weight: 700; }
+.diff-hunk { margin: 5px 0; padding-top: 3px; padding-bottom: 3px; color: #93c5fd; background: #102b46; border-left-color: #3b82f6; font-weight: 700; }
+.diff-added { color: #bbf7d0; background: #0b3522; border-left-color: #22c55e; }
+.diff-deleted { color: #fecaca; background: #42191d; border-left-color: #ef4444; }
+.diff-changed-old { color: #fed7aa; background: #42230f; border-left-color: #f97316; text-decoration: line-through; text-decoration-color: rgb(251 146 60 / 60%); }
+.diff-changed-new { color: #fef3c7; background: #3c2e09; border-left-color: #f59e0b; }
+.diff-added::selection, .diff-deleted::selection, .diff-changed-old::selection, .diff-changed-new::selection { background: #2563eb; color: white; }
 .builder-jobs { max-height: 240px; overflow: auto; border-top: 1px solid var(--line); padding: 12px 16px; background: var(--surface); }
 .builder-jobs-heading, .builder-job { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .builder-jobs-heading { margin-bottom: 8px; }

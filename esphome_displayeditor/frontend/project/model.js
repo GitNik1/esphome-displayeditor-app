@@ -40,12 +40,17 @@ export function freshProject() {
     export_sections: ["color", "font", "image", "lvgl"],
     import_source: {},
     glow_strokes: [],
+    reserved_ids: [],
+    entities: [],
+    bindings: [],
   };
 }
 
 /** @param {Project} project @returns {Project} */
 export function normalizeProjectSurfaces(project) {
   if (!Array.isArray(project.widgets)) project.widgets = [];
+  if (!Array.isArray(project.entities)) project.entities = [];
+  if (!Array.isArray(project.bindings)) project.bindings = [];
   if (!Array.isArray(project.pages)) project.pages = [];
   if (typeof project.page_wrap !== "boolean") project.page_wrap = true;
 
