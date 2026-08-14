@@ -65,12 +65,27 @@ state and content — in the properties panel on the right.
 ### GlowLine animated flow lines
 
 Draw a line by adding it from the palette and dragging its endpoint handles
-into place; an RGB565 colour wheel lets you tune the line, glow and flow
-colours to exactly what the target display will reproduce.
+into place, then use "Draw line" to append further points — corners snap to
+straight, right-angled segments just as easily as a curved diagonal. An
+RGB565 colour wheel and per-line line/glow/flow settings (in the properties
+panel on the right) let you tune exactly what the target display will
+reproduce.
 
-![A glowing diagonal flow line drawn on the canvas](docs/screenshots/glowline-editor.png)
+A small energy-flow dashboard built entirely from Designer widgets: a
+sidebar navigation menu, four components (Solar, Grid, Battery, Consumer)
+routed through a central hub with right-angled GlowLines, each with its own
+animated flow. The component cards use the same per-widget style properties
+as any other widget — background gradient, gradient direction and a
+colour-matched glow shadow — for a look well beyond flat single colours:
 
-![GlowLine colour wheel and line/glow/flow property panel](docs/screenshots/glowline-color-wheel.png)
+![Solar, Grid, Battery and Consumer connected through a hub with right-angled GlowLines, next to a sidebar menu, all styled with colour gradients and glow shadows](docs/screenshots/glowline-editor.png)
+
+Enabling **Flow** animates moving markers along each line with a
+configurable marker shape, spacing, size and direction — this is what makes
+a GlowLine read as live energy/data flow between components instead of a
+static connector:
+
+![Animated arrow markers flowing along right-angled GlowLines between Solar, Grid, Battery, Consumer and a central hub](docs/screenshots/glowline-energy-flow.gif)
 
 ### Generating ESPHome YAML
 
