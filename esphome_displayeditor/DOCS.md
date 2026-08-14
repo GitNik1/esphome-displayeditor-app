@@ -127,6 +127,26 @@ loads one filtered snapshot and then follows filtered WebSocket updates. The
 Viewer endpoint omits host names, ports, key references, encryption keys and
 logs. It is read-only; no Native API command is available from the Viewer.
 
+### ESPHome-Gerätebindungen
+
+The **ESPHome-Gerätebindungen** section is separate from the read-only Viewer
+preview above. When a configuration is imported, the add-on catalogs its
+id-bearing sensors and actors and offers only widget properties/events that
+match the entity capabilities. Device bindings are saved in the
+`.lvgldesign` project and compiled when **Als Entwurf speichern** merges the
+project into that configuration.
+
+Entity-to-widget bindings extend the entity's existing `on_value` or
+`on_state` automation with an LVGL update. Widget-to-entity bindings become
+widget events inside `lvgl:`. Bidirectional bindings generate both. Numeric
+bindings support factor/offset, range mapping, clamping and rounding; all
+bindings can carry comparisons. Repeated merges replace the matching
+generated target action instead of duplicating it. Existing user actions are
+kept. Because a bound entity domain must be semantically re-serialized,
+comments and hand formatting inside that one top-level domain may be
+normalized; the change is always written only to a draft for diff/validation
+before publication.
+
 Device records form a server-side allow-list. Browser requests contain only a
 device ID; they cannot supply an arbitrary network target. API keys are stored
 separately from device records, are accepted only by a write-only endpoint and

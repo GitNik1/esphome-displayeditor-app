@@ -18,7 +18,9 @@ _PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.lvgldesign$")
 
 
 class ProjectStore:
-    def __init__(self, data_root: Path, designer: DesignerService, max_size: int) -> None:
+    def __init__(
+        self, data_root: Path, designer: DesignerService, max_size: int
+    ) -> None:
         self.root = data_root / "projects"
         self.root.mkdir(parents=True, exist_ok=True)
         self.designer = designer
@@ -38,7 +40,11 @@ class ProjectStore:
     def list(self) -> list[dict]:
         projects = []
         for path in self.root.glob("*.lvgldesign"):
-            if path.is_symlink() or not path.is_file() or not _PROJECT_NAME.fullmatch(path.name):
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or not _PROJECT_NAME.fullmatch(path.name)
+            ):
                 continue
             try:
                 raw = self._read_bytes(path)
@@ -65,9 +71,13 @@ class ProjectStore:
         except UnicodeDecodeError as exc:
             raise ApiError("invalid_encoding", "Project must be valid UTF-8.") from exc
         except json.JSONDecodeError as exc:
-            raise ApiError("invalid_project", "Stored project contains invalid JSON.", 422) from exc
+            raise ApiError(
+                "invalid_project", "Stored project contains invalid JSON.", 422
+            ) from exc
         if not isinstance(payload, dict):
-            raise ApiError("invalid_project", "Stored project root must be an object.", 422)
+            raise ApiError(
+                "invalid_project", "Stored project root must be an object.", 422
+            )
         project, issues = self.designer.validate(payload)
         return {
             "name": name,
@@ -86,7 +96,9 @@ class ProjectStore:
         project, issues = self.designer.validate(payload)
         blocking = [issue for issue in issues if issue["severity"] == "error"]
         if blocking:
-            raise ApiError("invalid_project", "Project validation failed.", 422, {"issues": issues})
+            raise ApiError(
+                "invalid_project", "Project validation failed.", 422, {"issues": issues}
+            )
 
         old_revision: str | None = None
         if path.exists():
@@ -103,7 +115,10 @@ class ProjectStore:
                     "revision_conflict",
                     "The stored project changed after it was loaded.",
                     409,
-                    {"expected_revision": expected_revision, "actual_revision": old_revision},
+                    {
+                        "expected_revision": expected_revision,
+                        "actual_revision": old_revision,
+                    },
                 )
         elif expected_revision is not None:
             raise ApiError(
@@ -113,14 +128,23 @@ class ProjectStore:
                 {"expected_revision": expected_revision, "actual_revision": None},
             )
 
-        raw = (json.dumps(project.to_dict(), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        stored_payload = project.to_dict()
+        stored_payload["entities"] = getattr(project, "entities", [])
+        stored_payload["bindings"] = getattr(project, "bindings", [])
+        raw = (json.dumps(stored_payload, ensure_ascii=False, indent=2) + "\n").encode(
+            "utf-8"
+        )
         if len(raw) > self.max_size:
-            raise ApiError("file_too_large", "Project exceeds the configured size limit.", 413)
+            raise ApiError(
+                "file_too_large", "Project exceeds the configured size limit.", 413
+            )
         self._atomic_write(path, raw)
         verified = self._read_bytes(path)
         new_revision = revision_for(verified)
         if verified != raw:
-            raise ApiError("save_verification_failed", "Saved project could not be verified.", 500)
+            raise ApiError(
+                "save_verification_failed", "Saved project could not be verified.", 500
+            )
         return {
             "name": name,
             "old_revision": old_revision,
@@ -136,7 +160,10 @@ class ProjectStore:
                 "revision_conflict",
                 "The stored project changed after it was loaded.",
                 409,
-                {"expected_revision": expected_revision, "actual_revision": current_revision},
+                {
+                    "expected_revision": expected_revision,
+                    "actual_revision": current_revision,
+                },
             )
         path.unlink()
         return {"name": name, "revision": current_revision}
@@ -145,18 +172,26 @@ class ProjectStore:
         try:
             descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         except FileNotFoundError as exc:
-            raise ApiError("project_not_found", "Designer project was not found.", 404) from exc
+            raise ApiError(
+                "project_not_found", "Designer project was not found.", 404
+            ) from exc
         except OSError as exc:
-            raise ApiError("invalid_path", "Project file could not be opened safely.") from exc
+            raise ApiError(
+                "invalid_path", "Project file could not be opened safely."
+            ) from exc
         try:
             stat = os.fstat(descriptor)
             if stat.st_size > self.max_size:
-                raise ApiError("file_too_large", "Project exceeds the configured size limit.", 413)
+                raise ApiError(
+                    "file_too_large", "Project exceeds the configured size limit.", 413
+                )
             with os.fdopen(descriptor, "rb", closefd=True) as handle:
                 descriptor = -1
                 raw = handle.read(self.max_size + 1)
             if len(raw) > self.max_size:
-                raise ApiError("file_too_large", "Project exceeds the configured size limit.", 413)
+                raise ApiError(
+                    "file_too_large", "Project exceeds the configured size limit.", 413
+                )
             return raw
         finally:
             if descriptor >= 0:

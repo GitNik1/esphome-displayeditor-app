@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>ESPHome Display Editor</title>
-    <link rel="stylesheet" href="styles.css?v=0.24.0">
+    <link rel="stylesheet" href="styles.css?v=0.26.0">
   </head>
   <body>
     <header class="topbar">
@@ -552,6 +552,42 @@
               </div>
             </div>
 
+            <details id="device-binding-section" class="device-binding-section">
+              <summary data-i18n="deviceBinding.section">ESPHome-Gerätebindungen</summary>
+              <p class="hint" data-i18n="deviceBinding.hint">Diese Bindungen werden beim Zusammenführen als echte ESPHome-Automationen in die Geräte-YAML geschrieben.</p>
+              <label><span data-i18n="deviceBinding.existing">Vorhandene Bindung</span>
+                <select id="device-binding-existing"><option value="" data-i18n="deviceBinding.new">— Neue Bindung —</option></select>
+              </label>
+              <label><span data-i18n="deviceBinding.direction">Richtung</span>
+                <select id="device-binding-direction">
+                  <option value="entity_to_widget" data-i18n="deviceBinding.entityToWidget">Entität → Widget</option>
+                  <option value="widget_to_entity" data-i18n="deviceBinding.widgetToEntity">Widget → Entität</option>
+                  <option value="bidirectional" data-i18n="deviceBinding.bidirectional">Bidirektional</option>
+                </select>
+              </label>
+              <label><span data-i18n="deviceBinding.entity">ESPHome-Entität</span><select id="device-binding-entity"></select></label>
+              <label><span data-i18n="deviceBinding.property">Widget-Eigenschaft/Ereignis</span><select id="device-binding-property"></select></label>
+              <label id="device-binding-event-field" class="hidden"><span data-i18n="deviceBinding.reverseEvent">Widget-Ereignis für Rückrichtung</span><select id="device-binding-event"></select></label>
+              <label id="device-binding-indicator-field" class="hidden"><span data-i18n="deviceBinding.indicator">Meter-Indikator</span><select id="device-binding-indicator"></select></label>
+              <label id="device-binding-command-field" class="hidden"><span data-i18n="deviceBinding.command">Aktor-Befehl</span><select id="device-binding-command"></select></label>
+              <label><span data-i18n="deviceBinding.transform">Transformation (JSON)</span>
+                <textarea id="device-binding-transform" rows="5" spellcheck="false">{}</textarea>
+              </label>
+              <p class="hint" data-i18n="deviceBinding.transformHint">Unterstützt u. a. factor, offset, input_min, input_max, output_min, output_max, clamp, round und format.</p>
+              <label><span data-i18n="deviceBinding.conditions">Bedingungen (JSON)</span>
+                <textarea id="device-binding-conditions" rows="3" spellcheck="false">[]</textarea>
+              </label>
+              <p class="hint" data-i18n="deviceBinding.conditionsHint">Beispiel: [{"operator":"gte","value":30}]. Mehrere Bedingungen werden mit UND verknüpft.</p>
+              <p id="device-binding-error" class="hint issue-error hidden"></p>
+              <div class="actions runtime-binding-actions">
+                <button id="save-device-binding" type="button" class="button primary compact" data-i18n="deviceBinding.save">Binding übernehmen</button>
+                <button id="remove-device-binding" type="button" class="button subtle compact" data-i18n="deviceBinding.remove">Entfernen</button>
+              </div>
+              <div id="device-binding-list" class="device-binding-list"></div>
+              <div class="property-section" data-i18n="deviceBinding.graph">Binding-Graph des Projekts</div>
+              <div id="device-binding-graph" class="device-binding-graph"></div>
+            </details>
+
             <div id="extra-keys-section" class="hidden">
               <div class="property-section" data-i18n="extra.section">Unbekannte Schlüssel</div>
               <p class="hint" data-i18n="extra.hint">Werden unverändert mitgeführt und beim Export wieder ausgegeben, sind hier aber nicht bearbeitbar.</p>
@@ -806,7 +842,7 @@
         <label><span data-i18n="dialog.yamlOutput.mergeTarget">Zieldatei</span>
           <select id="merge-draft-target"><option value="" data-i18n="dialog.yamlOutput.mergeTargetPick">Datei wählen …</option></select>
         </label>
-        <p class="hint issue-error" data-i18n="dialog.yamlOutput.mergeHint">Ersetzt in der gewählten Datei nur die Top-Level-Schlüssel color:/font:/image:/lvgl: - alles andere in der Datei bleibt unverändert. Schreibt nur einen Entwurf, keine aktive Datei.</p>
+        <p class="hint issue-error" data-i18n="dialog.yamlOutput.mergeHint">Ersetzt color:/font:/image:/lvgl: und ergänzt bei Gerätebindungen gezielt die Automation der gebundenen Entität. Andere Bereiche bleiben unverändert. Schreibt nur einen Entwurf, keine aktive Datei.</p>
       </div>
       <div class="dialog-actions">
         <button id="merge-draft-save" class="button subtle" data-i18n="dialog.yamlOutput.mergeSave" disabled>Als Entwurf speichern</button>
@@ -948,6 +984,6 @@
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js?v=0.24.0"></script>
+    <script type="module" src="app.js?v=0.26.0"></script>
   </body>
 </html>

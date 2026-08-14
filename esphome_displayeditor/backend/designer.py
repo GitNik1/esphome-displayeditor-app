@@ -13,14 +13,30 @@ from .addon_widgets import register_addon_widgets
 from .designer_core.idgen import IdRegistry
 from .designer_core.model import PROJECT_FORMAT, PROJECT_FORMAT_VERSION, Project
 from .designer_core.widgetschema import GRID_CELL_PROPS, STATE_VALUES, WIDGET_SCHEMAS
-from .designer_core.yamlexport import ESPHomeDumper, ExportError, HexColor, export_project
+from .designer_core.yamlexport import (
+    ESPHomeDumper,
+    ExportError,
+    HexColor,
+    export_project,
+)
 from .designer_core.yamlimport import (
     LvglImportError,
     import_esphome_yaml,
+    load_lvgl_yaml,
 )
 from .errors import ApiError
+from .entity_bindings import (
+    binding_schemas,
+    compile_bindings,
+    discover_entities,
+    validate_project_bindings,
+)
 from .msgbox_support import apply_msgbox_payload, materialize_msgboxes
-from .page_support import apply_surface_payload, materialize_surfaces, strip_empty_root_widgets
+from .page_support import (
+    apply_surface_payload,
+    materialize_surfaces,
+    strip_empty_root_widgets,
+)
 
 _ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _HEX_COLOR_PATTERN = re.compile(r"^(?:0x|#)?([0-9A-Fa-f]{6})$")
@@ -56,6 +72,7 @@ def _materialize_action_lambdas(payload: dict[str, Any]) -> None:
 
 def _normalise_meter_payload(payload: dict[str, Any], *, for_export: bool) -> None:
     """Normalise nested meter scales without changing the shared core."""
+
     def meter_value(value: Any, key: str = "") -> Any:
         if isinstance(value, list):
             return [meter_value(item) for item in value]
@@ -65,7 +82,11 @@ def _normalise_meter_payload(payload: dict[str, Any], *, for_export: bool) -> No
             if for_export and isinstance(value, str):
                 match = _HEX_COLOR_PATTERN.fullmatch(value.strip())
                 return HexColor(int(match.group(1), 16)) if match else value
-            if not for_export and isinstance(value, int) and not isinstance(value, bool):
+            if (
+                not for_export
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+            ):
                 return f"{value & 0xFFFFFF:06X}"
             if not for_export and isinstance(value, str):
                 match = _HEX_COLOR_PATTERN.fullmatch(value.strip())
@@ -79,7 +100,9 @@ def _normalise_meter_payload(payload: dict[str, Any], *, for_export: bool) -> No
             return
         if not isinstance(value, dict):
             return
-        if value.get("widget_type") == "meter" and isinstance(value.get("properties"), dict):
+        if value.get("widget_type") == "meter" and isinstance(
+            value.get("properties"), dict
+        ):
             scales = value["properties"].get("scales")
             if scales is not None:
                 value["properties"]["scales"] = meter_value(
@@ -92,7 +115,10 @@ def _normalise_meter_payload(payload: dict[str, Any], *, for_export: bool) -> No
 
 
 def _claim_meter_indicator_ids(
-    properties: dict[str, Any], registry: IdRegistry, issues: list[dict], owner: str,
+    properties: dict[str, Any],
+    registry: IdRegistry,
+    issues: list[dict],
+    owner: str,
 ) -> None:
     scales = properties.get("scales")
     if not isinstance(scales, list):
@@ -108,10 +134,13 @@ def _claim_meter_indicator_ids(
                 continue
             indicator_id = str(config["id"])
             if not _ID_PATTERN.fullmatch(indicator_id):
-                issues.append({
-                    "severity": "error", "widget": indicator_id,
-                    "message": "Invalid ESPHome indicator id.",
-                })
+                issues.append(
+                    {
+                        "severity": "error",
+                        "widget": indicator_id,
+                        "message": "Invalid ESPHome indicator id.",
+                    }
+                )
             registry.claim(
                 indicator_id,
                 f"meter indicator at {owner}.scales[{scale_index}].indicators[{indicator_index}].{kind}",
@@ -212,16 +241,18 @@ def _normalise_button_child_text(
                 node["properties"] = properties
                 if text not in (None, ""):
                     button_id = str(node.get("id") or "button")
-                    children.append({
-                        "id": unique_id(f"{button_id}_label"),
-                        "widget_type": "label",
-                        "width": None,
-                        "height": None,
-                        "align": "CENTER",
-                        "properties": {"text": text},
-                        "children": [],
-                        "synthetic_id": True,
-                    })
+                    children.append(
+                        {
+                            "id": unique_id(f"{button_id}_label"),
+                            "widget_type": "label",
+                            "width": None,
+                            "height": None,
+                            "align": "CENTER",
+                            "properties": {"text": text},
+                            "children": [],
+                            "synthetic_id": True,
+                        }
+                    )
                 repaired.append(str(node.get("id") or "button"))
             visit(children)
 
@@ -250,8 +281,10 @@ def _is_confined_asset_path(path: str) -> bool:
     the YAML, so blocking it here would just defeat those two features."""
     parts = Path(path).parts
     return (
-        bool(parts) and parts[0] in _CONFINED_ASSET_SUBDIRS
-        and ".." not in parts and not Path(path).is_absolute()
+        bool(parts)
+        and parts[0] in _CONFINED_ASSET_SUBDIRS
+        and ".." not in parts
+        and not Path(path).is_absolute()
     )
 
 
@@ -267,7 +300,8 @@ class DesignerService:
             entry = asdict(schema)
             entry["label"] = schema.label(lang)
             entry["properties"] = [
-                {**asdict(prop), "label": prop.label(lang)} for prop in schema.properties
+                {**asdict(prop), "label": prop.label(lang)}
+                for prop in schema.properties
             ]
             widgets.append(entry)
         return {
@@ -280,28 +314,52 @@ class DesignerService:
                 {**asdict(prop), "label": prop.label(lang)} for prop in GRID_CELL_PROPS
             ],
             "states": list(STATE_VALUES),
+            "bindings": binding_schemas(),
         }
 
     def validate(self, payload: dict[str, Any]) -> tuple[Project, list[dict]]:
         if payload.get("format") != PROJECT_FORMAT:
-            raise ApiError("invalid_project", "Unknown or missing designer project format.")
+            raise ApiError(
+                "invalid_project", "Unknown or missing designer project format."
+            )
         try:
             version = int(payload.get("format_version", 1))
         except (TypeError, ValueError) as exc:
-            raise ApiError("invalid_project", "Project format version is invalid.") from exc
+            raise ApiError(
+                "invalid_project", "Project format version is invalid."
+            ) from exc
         if version > PROJECT_FORMAT_VERSION:
             raise ApiError(
                 "unsupported_project_version",
                 "The project was created by a newer designer version.",
                 409,
-                {"project_version": version, "supported_version": PROJECT_FORMAT_VERSION},
+                {
+                    "project_version": version,
+                    "supported_version": PROJECT_FORMAT_VERSION,
+                },
             )
         try:
-            project = Project.from_dict(apply_msgbox_payload(apply_surface_payload(payload)))
+            project = Project.from_dict(
+                apply_msgbox_payload(apply_surface_payload(payload))
+            )
         except (TypeError, ValueError, KeyError) as exc:
             raise ApiError("invalid_project", "Project data is malformed.") from exc
-        if not (1 <= project.canvas_width <= 4096 and 1 <= project.canvas_height <= 4096):
-            raise ApiError("invalid_project", "Canvas dimensions must be between 1 and 4096.")
+        project.entities = (
+            copy.deepcopy(payload.get("entities", []))
+            if isinstance(payload.get("entities", []), list)
+            else []
+        )
+        project.bindings = (
+            copy.deepcopy(payload.get("bindings", []))
+            if isinstance(payload.get("bindings", []), list)
+            else []
+        )
+        if not (
+            1 <= project.canvas_width <= 4096 and 1 <= project.canvas_height <= 4096
+        ):
+            raise ApiError(
+                "invalid_project", "Canvas dimensions must be between 1 and 4096."
+            )
 
         issues: list[dict] = []
         registry = IdRegistry()
@@ -322,20 +380,38 @@ class DesignerService:
                 count += 1
                 node_path = f"{parent_path}[{index}]"
                 if count > 1000:
-                    raise ApiError("invalid_project", "A project may contain at most 1000 widgets.")
+                    raise ApiError(
+                        "invalid_project", "A project may contain at most 1000 widgets."
+                    )
                 if node.widget_type not in WIDGET_SCHEMAS:
-                    issues.append({"severity": "error", "widget": node.id, "message": "Unknown widget type."})
+                    issues.append(
+                        {
+                            "severity": "error",
+                            "widget": node.id,
+                            "message": "Unknown widget type.",
+                        }
+                    )
                 if not _ID_PATTERN.fullmatch(node.id):
-                    issues.append({"severity": "error", "widget": node.id, "message": "Invalid ESPHome id."})
+                    issues.append(
+                        {
+                            "severity": "error",
+                            "widget": node.id,
+                            "message": "Invalid ESPHome id.",
+                        }
+                    )
                 registry.claim(node.id, f"widget at {node_path}")
                 if node.widget_type == "meter":
-                    _claim_meter_indicator_ids(node.properties, registry, issues, node_path)
+                    _claim_meter_indicator_ids(
+                        node.properties, registry, issues, node_path
+                    )
                 visit(node.children, depth + 1, f"{node_path}.children")
 
         visit(project.widgets)
         surface_payload, _surface_stats = materialize_surfaces(project)
 
-        def visit_surface_widgets(nodes, depth: int = 0, parent_path: str = "pages") -> None:
+        def visit_surface_widgets(
+            nodes, depth: int = 0, parent_path: str = "pages"
+        ) -> None:
             nonlocal count
             if depth > 32:
                 raise ApiError("invalid_project", "Widget nesting exceeds 32 levels.")
@@ -343,60 +419,83 @@ class DesignerService:
                 count += 1
                 node_path = f"{parent_path}[{index}]"
                 if count > 1000:
-                    raise ApiError("invalid_project", "A project may contain at most 1000 widgets.")
+                    raise ApiError(
+                        "invalid_project", "A project may contain at most 1000 widgets."
+                    )
                 widget_id = str(node.get("id", ""))
                 widget_type = str(node.get("widget_type", ""))
                 if widget_type not in WIDGET_SCHEMAS:
-                    issues.append({
-                        "severity": "error", "widget": widget_id,
-                        "message": "Unknown widget type.",
-                    })
+                    issues.append(
+                        {
+                            "severity": "error",
+                            "widget": widget_id,
+                            "message": "Unknown widget type.",
+                        }
+                    )
                 if not _ID_PATTERN.fullmatch(widget_id):
-                    issues.append({
-                        "severity": "error", "widget": widget_id,
-                        "message": "Invalid ESPHome id.",
-                    })
+                    issues.append(
+                        {
+                            "severity": "error",
+                            "widget": widget_id,
+                            "message": "Invalid ESPHome id.",
+                        }
+                    )
                 registry.claim(widget_id, f"widget at {node_path}")
                 if widget_type == "meter":
                     _claim_meter_indicator_ids(
-                        node.get("properties", {}), registry, issues, node_path,
+                        node.get("properties", {}),
+                        registry,
+                        issues,
+                        node_path,
                     )
                 visit_surface_widgets(
-                    node.get("children", []), depth + 1, f"{node_path}.children")
+                    node.get("children", []), depth + 1, f"{node_path}.children"
+                )
 
         for page_index, page in enumerate(surface_payload.get("pages", [])):
             page_id = str(page.get("id", ""))
             if not _ID_PATTERN.fullmatch(page_id):
-                issues.append({
-                    "severity": "error", "page": page_id,
-                    "message": "Invalid ESPHome page id.",
-                })
+                issues.append(
+                    {
+                        "severity": "error",
+                        "page": page_id,
+                        "message": "Invalid ESPHome page id.",
+                    }
+                )
             registry.claim(page_id, f"pages[{page_index}]")
             visit_surface_widgets(
-                page.get("widgets", []), parent_path=f"pages[{page_index}].widgets")
+                page.get("widgets", []), parent_path=f"pages[{page_index}].widgets"
+            )
         for layer_name in ("bottom_layer", "top_layer"):
             layer = surface_payload.get(layer_name)
             if layer:
                 visit_surface_widgets(
-                    layer.get("widgets", []), parent_path=f"{layer_name}.widgets")
+                    layer.get("widgets", []), parent_path=f"{layer_name}.widgets"
+                )
         if project.widgets and surface_payload.get("pages"):
-            issues.append({
-                "severity": "error",
-                "message": "ESPHome does not allow root widgets and pages together.",
-            })
+            issues.append(
+                {
+                    "severity": "error",
+                    "message": "ESPHome does not allow root widgets and pages together.",
+                }
+            )
 
         msgbox_payload, _msgbox_stats = materialize_msgboxes(project)
         for msgbox_index, msgbox in enumerate(msgbox_payload):
             msgbox_id = str(msgbox.get("id", ""))
             if not _ID_PATTERN.fullmatch(msgbox_id):
-                issues.append({
-                    "severity": "error", "msgbox": msgbox_id,
-                    "message": "Invalid ESPHome msgbox id.",
-                })
+                issues.append(
+                    {
+                        "severity": "error",
+                        "msgbox": msgbox_id,
+                        "message": "Invalid ESPHome msgbox id.",
+                    }
+                )
             registry.claim(msgbox_id, f"msgboxes[{msgbox_index}]")
             for key in ("buttons", "header_buttons"):
                 visit_surface_widgets(
-                    msgbox.get(key, []), parent_path=f"msgboxes[{msgbox_index}].{key}")
+                    msgbox.get(key, []), parent_path=f"msgboxes[{msgbox_index}].{key}"
+                )
         for kind, entries in (
             ("style", project.styles),
             ("font", project.fonts),
@@ -405,7 +504,13 @@ class DesignerService:
         ):
             for index, entry in enumerate(entries):
                 if not _ID_PATTERN.fullmatch(entry.id):
-                    issues.append({"severity": "error", "resource": entry.id, "message": f"Invalid {kind} id."})
+                    issues.append(
+                        {
+                            "severity": "error",
+                            "resource": entry.id,
+                            "message": f"Invalid {kind} id.",
+                        }
+                    )
                 registry.claim(entry.id, f"{kind}[{index}]")
         # The reference-image background gets its own synthetic image: entry
         # when exported (see build_image_block() in yamlexport.py) - if its
@@ -415,12 +520,19 @@ class DesignerService:
         # entry. ESPHome then rejects the whole config with "ID ... redefined!".
         if project.background.export_as_lvgl_image and project.background.path:
             if not _ID_PATTERN.fullmatch(project.background.image_id):
-                issues.append({
-                    "severity": "error", "resource": project.background.image_id,
-                    "message": "Invalid background image id.",
-                })
+                issues.append(
+                    {
+                        "severity": "error",
+                        "resource": project.background.image_id,
+                        "message": "Invalid background image id.",
+                    }
+                )
             registry.claim(project.background.image_id, "background image")
-        issues.extend({"severity": "error", "message": message} for message in registry.collisions())
+        issues.extend(
+            {"severity": "error", "message": message}
+            for message in registry.collisions()
+        )
+        issues.extend(issue.to_dict() for issue in validate_project_bindings(project))
 
         # Importing assets from the local filesystem stays disabled until
         # uploads can be confined to a dedicated asset store - it would let a
@@ -484,20 +596,30 @@ class DesignerService:
         whether to keep it, using the ordinary project-save endpoint.
         """
         try:
-            result = import_esphome_yaml(text, source_name=source_name, canvas_size=canvas)
+            result = import_esphome_yaml(
+                text, source_name=source_name, canvas_size=canvas
+            )
         except LvglImportError as exc:
             raise ApiError("import_failed", str(exc), 422) from exc
 
         payload, surface_stats = materialize_surfaces(result.project, result.issues)
-        payload["msgboxes"], msgbox_stats = materialize_msgboxes(result.project, result.issues)
+        payload["entities"] = discover_entities(load_lvgl_yaml(text))
+        payload["bindings"] = []
+        payload["msgboxes"], msgbox_stats = materialize_msgboxes(
+            result.project, result.issues
+        )
         _normalise_meter_payload(payload, for_export=False)
         # Run the normal validation too, so the caller gets one issue list and
         # the same failure modes as any other project.
         _project, validation_issues = self.validate(payload)
         issues = [issue.to_dict() for issue in result.issues]
         issues.extend(
-            {"severity": i["severity"], "message": i["message"],
-             "path": "", "widget_id": i.get("widget") or i.get("resource", "")}
+            {
+                "severity": i["severity"],
+                "message": i["message"],
+                "path": "",
+                "widget_id": i.get("widget") or i.get("resource", ""),
+            }
             for i in validation_issues
         )
         blocking = [i for i in issues if i["severity"] in ("A", "error")]
@@ -511,10 +633,13 @@ class DesignerService:
         for widget_type, count in surface_stats["surface_widget_types"].items():
             merged_types[widget_type] = merged_types.get(widget_type, 0) + count
         stats["widget_types"] = dict(sorted(merged_types.items()))
-        stats.update({
-            key: value for key, value in surface_stats.items()
-            if key != "surface_widget_types"
-        })
+        stats.update(
+            {
+                key: value
+                for key, value in surface_stats.items()
+                if key != "surface_widget_types"
+            }
+        )
         stats.update(msgbox_stats)
         return {
             "project": payload,
@@ -540,10 +665,13 @@ class DesignerService:
         for widget_type, count in surface_stats["surface_widget_types"].items():
             merged_types[widget_type] = merged_types.get(widget_type, 0) + count
         stats["widget_types"] = dict(sorted(merged_types.items()))
-        stats.update({
-            key: value for key, value in surface_stats.items()
-            if key not in {"surface_widget_count", "surface_widget_types"}
-        })
+        stats.update(
+            {
+                key: value
+                for key, value in surface_stats.items()
+                if key not in {"surface_widget_count", "surface_widget_types"}
+            }
+        )
         stats.update(msgbox_stats)
         return stats
 
@@ -553,21 +681,36 @@ class DesignerService:
         _materialize_action_lambdas(normalized_payload)
         project, issues = self.validate(normalized_payload)
         if any(issue["severity"] == "error" for issue in issues):
-            raise ApiError("invalid_project", "Project validation failed.", 422, {"issues": issues})
+            raise ApiError(
+                "invalid_project", "Project validation failed.", 422, {"issues": issues}
+            )
+        compiled = compile_bindings(project)
+        project = compiled.project
         try:
             with tempfile.TemporaryDirectory(dir=self.export_root) as directory:
                 result = export_project(project, str(Path(directory) / "ui.yaml"))
         except ExportError as exc:
             raise ApiError("export_failed", str(exc), 422) from exc
         export_issues = [asdict(issue) for issue in result.issues]
-        export_issues.extend({
-            "severity": "C",
-            "message": (
-                "Legacy button text was exported as a child label because "
-                "the button contains child widgets."
-            ),
-            "widget_id": button_id,
-        } for button_id in repaired_buttons)
+        if compiled.entity_actions:
+            export_issues.append(
+                {
+                    "severity": "B",
+                    "message": "Entity-to-widget bindings require merging into the source ESPHome configuration.",
+                    "widget_id": "",
+                }
+            )
+        export_issues.extend(
+            {
+                "severity": "C",
+                "message": (
+                    "Legacy button text was exported as a child label because "
+                    "the button contains child widgets."
+                ),
+                "widget_id": button_id,
+            }
+            for button_id in repaired_buttons
+        )
         return {
             "yaml": strip_empty_root_widgets(result.yaml_text, project),
             "issues": export_issues,
@@ -577,4 +720,6 @@ class DesignerService:
         """Decorate a stored core project with read-only Viewer surfaces."""
         payload = materialize_surfaces(project)[0]
         payload["msgboxes"] = materialize_msgboxes(project)[0]
+        payload["entities"] = copy.deepcopy(getattr(project, "entities", []))
+        payload["bindings"] = copy.deepcopy(getattr(project, "bindings", []))
         return payload

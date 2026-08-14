@@ -10,7 +10,10 @@ formatting) stays byte-identical, because it is never re-parsed or
 re-dumped. That is deliberately safer than a full YAML round-trip for an
 existing file: PyYAML's dumper does not preserve comments or the source's
 own formatting, so re-serializing the whole document would silently change
-parts a human never asked to touch.
+parts a human never asked to touch. Device bindings are the deliberate
+exception: only the bound entity's top-level domain is semantically re-dumped
+so its trigger can retain existing actions and receive the generated LVGL
+action. The merge result is always presented as a draft/diff before publish.
 """
 
 from __future__ import annotations
@@ -29,10 +32,33 @@ from .designer_core.yamlexport import (
     build_font_block,
     build_lvgl_tree,
 )
+from .designer_core.yamlimport import TaggedScalar, load_lvgl_yaml
+from .entity_bindings import compile_bindings
 
 #: The four top-level keys a Designer project can contribute, in the order
 #: they are considered - matches yamlexport.export_project()'s own order.
 MERGE_KEYS = ("color", "font", "image", "lvgl")
+
+
+def _represent_tagged_scalar(dumper, value):
+    return dumper.represent_scalar(
+        value.tag or "tag:yaml.org,2002:str",
+        str(value),
+        style="|" if "\n" in str(value) else None,
+    )
+
+
+ESPHomeDumper.add_representer(TaggedScalar, _represent_tagged_scalar)
+
+
+def _materialize_lambdas(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_materialize_lambdas(item) for item in value]
+    if isinstance(value, dict):
+        if set(value) == {"__esphome_lambda__"}:
+            return TaggedScalar(str(value["__esphome_lambda__"]), "!lambda")
+        return {key: _materialize_lambdas(item) for key, item in value.items()}
+    return value
 
 
 class MergeError(Exception):
@@ -60,7 +86,11 @@ def _image_block_for_merge(project: Project) -> list[dict[str, Any]] | None:
     """
     entries = []
     for img in project.images:
-        entry: dict[str, Any] = {"platform": "file", "id": img.id, "file": img.file_path or ""}
+        entry: dict[str, Any] = {
+            "platform": "file",
+            "id": img.id,
+            "file": img.file_path or "",
+        }
         if img.resize:
             entry["resize"] = img.resize
         if img.dither:
@@ -72,11 +102,14 @@ def _image_block_for_merge(project: Project) -> list[dict[str, Any]] | None:
         entry.update({k: v for k, v in img.extra.items() if k not in entry})
         entries.append(entry)
     if project.background.export_as_lvgl_image and project.background.path:
-        entries.append({
-            "platform": "file", "id": project.background.image_id,
-            "file": project.background.path,
-            "resize": f"{project.canvas_width}x{project.canvas_height}",
-        })
+        entries.append(
+            {
+                "platform": "file",
+                "id": project.background.image_id,
+                "file": project.background.path,
+                "resize": f"{project.canvas_width}x{project.canvas_height}",
+            }
+        )
     return entries or None
 
 
@@ -120,8 +153,14 @@ def _build_merge_doc(project: Project) -> tuple[dict[str, Any], list[ExportIssue
 
 
 def _dump_block(key: str, value: Any) -> str:
-    return yaml.dump({key: value}, Dumper=ESPHomeDumper, sort_keys=False,
-                     default_flow_style=False, allow_unicode=True, width=100)
+    return yaml.dump(
+        {key: value},
+        Dumper=ESPHomeDumper,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+        width=100,
+    )
 
 
 def build_project_yaml_for_bundle(project: Project) -> tuple[str, list[ExportIssue]]:
@@ -134,7 +173,19 @@ def build_project_yaml_for_bundle(project: Project) -> tuple[str, list[ExportIss
     which bundles the actual asset bytes itself, straight from where the
     Designer's own upload endpoint already put them.
     """
-    doc, issues = _build_merge_doc(project)
+    compiled = compile_bindings(project)
+    doc, issues = _build_merge_doc(compiled.project)
+    issues.extend(
+        ExportIssue("A" if issue.severity == "error" else "B", issue.message)
+        for issue in compiled.issues
+    )
+    if compiled.entity_actions:
+        issues.append(
+            ExportIssue(
+                "B",
+                "Entity-to-widget bindings require merging into the source ESPHome configuration.",
+            )
+        )
     parts = [_dump_block(key, doc[key]) for key in MERGE_KEYS if key in doc]
     return "\n".join(parts), issues
 
@@ -168,7 +219,9 @@ def _find_top_level_block(lines: list[str], key: str) -> tuple[int, int] | None:
     if start is None:
         return None
     end = start + 1
-    while end < len(lines) and (lines[end] in ("\n", "\r\n") or lines[end].startswith((" ", "\t", "-"))):
+    while end < len(lines) and (
+        lines[end] in ("\n", "\r\n") or lines[end].startswith((" ", "\t", "-"))
+    ):
         end += 1
     return start, end
 
@@ -185,7 +238,13 @@ def merge_project_into_yaml(project: Project, existing_content: str) -> MergeRes
     merge only ever adds or updates, consistent with never surprising a
     human by deleting something they did not touch in the Designer.
     """
-    doc, issues = _build_merge_doc(project)
+    compiled = compile_bindings(project)
+    issues = [
+        ExportIssue("A" if issue.severity == "error" else "B", issue.message)
+        for issue in compiled.issues
+    ]
+    generated_doc, export_issues = _build_merge_doc(compiled.project)
+    issues.extend(export_issues)
     lines = existing_content.splitlines(keepends=True)
     if lines and not lines[-1].endswith(("\n", "\r\n")):
         lines[-1] += "\n"
@@ -194,9 +253,9 @@ def merge_project_into_yaml(project: Project, existing_content: str) -> MergeRes
     to_append: list[str] = []
     appended: list[str] = []
     for key in MERGE_KEYS:
-        if key not in doc:
+        if key not in generated_doc:
             continue
-        block_text = _dump_block(key, doc[key])
+        block_text = _dump_block(key, _materialize_lambdas(generated_doc[key]))
         found = _find_top_level_block(lines, key)
         if found is None:
             to_append.append(block_text)
@@ -211,4 +270,125 @@ def merge_project_into_yaml(project: Project, existing_content: str) -> MergeRes
         if not result_text.endswith("\n"):
             result_text += "\n"
         result_text += "\n" + "\n".join(to_append)
-    return MergeResult(content=result_text, replaced_keys=replaced, appended_keys=appended, issues=issues)
+    if compiled.entity_actions:
+        result_text, changed_domains = _merge_entity_binding_actions(
+            result_text,
+            compiled.entity_actions,
+        )
+        for domain in changed_domains:
+            if domain not in replaced:
+                replaced.append(domain)
+    return MergeResult(
+        content=result_text,
+        replaced_keys=replaced,
+        appended_keys=appended,
+        issues=issues,
+    )
+
+
+def _find_entity(value: Any, entity_id: str) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        if value.get("id") == entity_id:
+            return value
+        for child in value.values():
+            found = _find_entity(child, entity_id)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_entity(child, entity_id)
+            if found is not None:
+                return found
+    return None
+
+
+def _action_target(action: dict[str, Any]) -> tuple[str, str] | None:
+    if len(action) == 1:
+        name, payload = next(iter(action.items()))
+        if str(name).startswith("lvgl."):
+            if isinstance(payload, str):
+                return str(name), payload
+            if isinstance(payload, dict) and isinstance(payload.get("id"), str):
+                return str(name), payload["id"]
+    # Conditional visibility/threshold bindings wrap the actual update in an
+    # ``if`` action. Find that nested LVGL target so changing a condition or
+    # transformation replaces the old generated action instead of adding a
+    # second one on the next merge.
+    for value in action.values():
+        if isinstance(value, dict):
+            nested = _action_target(value)
+            if nested:
+                return nested
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    nested = _action_target(item)
+                    if nested:
+                        return nested
+    return None
+
+
+def _merge_entity_binding_actions(
+    content: str, actions: list[dict[str, Any]]
+) -> tuple[str, list[str]]:
+    """Semantically update only domains that receive generated bindings.
+
+    Existing component entries and user actions are retained. A previously
+    generated LVGL action with the same action name and target id is replaced,
+    making repeated merges idempotent.
+    """
+    document = load_lvgl_yaml(content)
+    changed: set[str] = set()
+    for compiled in actions:
+        domain, entity_id, trigger = (
+            compiled["domain"],
+            compiled["entity_id"],
+            compiled["trigger"],
+        )
+        entity = _find_entity(document.get(domain), entity_id)
+        if entity is None:
+            raise MergeError(
+                f"Binding source '{domain}.{entity_id}' no longer exists in the target YAML."
+            )
+        raw_trigger = entity.get(trigger)
+        if raw_trigger is None:
+            trigger_body: dict[str, Any] = {"then": []}
+            entity[trigger] = trigger_body
+        elif isinstance(raw_trigger, dict):
+            trigger_body = raw_trigger
+            trigger_body.setdefault("then", [])
+        elif isinstance(raw_trigger, list):
+            # ESPHome accepts an action list as shorthand. Normalising it to
+            # the explicit automation form preserves every action and gives
+            # the binding compiler one deterministic insertion point.
+            trigger_body = {"then": raw_trigger}
+            entity[trigger] = trigger_body
+        else:
+            raise MergeError(
+                f"Cannot safely extend {domain}.{entity_id}.{trigger}; expected a mapping."
+            )
+        then = trigger_body.get("then")
+        if not isinstance(then, list):
+            then = [] if then is None else [then]
+            trigger_body["then"] = then
+        new_action = _materialize_lambdas(compiled["action"])
+        target = _action_target(new_action)
+        if target:
+            then[:] = [
+                item
+                for item in then
+                if not (isinstance(item, dict) and _action_target(item) == target)
+            ]
+        if new_action not in then:
+            then.append(new_action)
+        changed.add(domain)
+
+    lines = content.splitlines(keepends=True)
+    for domain in sorted(changed):
+        found = _find_top_level_block(lines, domain)
+        if found is None:
+            raise MergeError(f"Binding domain '{domain}:' disappeared during merge.")
+        start, end = found
+        block = _dump_block(domain, document[domain])
+        lines[start:end] = block.splitlines(keepends=True)
+    return "".join(lines), sorted(changed)

@@ -2,6 +2,7 @@
 
 import { computeLayout, contentOrigin, fontFamilyId, resolvedFontFamily } from "./layout.js";
 import { createApiClient, encodedName } from "./api/client.js";
+import { renderUnifiedDiff } from "./configurations/diff-view.js";
 import { blobToBase64, uploadImageAsset } from "./api/assets.js";
 import {
   actionIdsForEditor,
@@ -72,6 +73,15 @@ import {
   runtimeStateFor,
   runtimeTargets as targetsForRuntime,
 } from "./runtime/bindings.js";
+import {
+  bindingGraph,
+  bindingsForWidget,
+  compatibleEntities,
+  defaultBindingId,
+  deviceBindingTargets,
+  removeDeviceBinding,
+  upsertDeviceBinding,
+} from "./bindings/device-bindings.js";
 import { createStore } from "./state/store.js";
 import { createActions } from "./state/actions.js";
 import { selectCapability, selectDesignerStatus, selectSelectedDevice } from "./state/selectors.js";
@@ -828,6 +838,12 @@ function bindDesigner() {
     state.designerRuntimePreview = event.target.checked;
     renderCanvas();
   });
+  $("#device-binding-direction").addEventListener("change", () => renderDeviceBindings(state.selectedWidget));
+  $("#device-binding-existing").addEventListener("change", loadSelectedDeviceBinding);
+  $("#device-binding-entity").addEventListener("change", () => populateDeviceBindingCommands());
+  $("#device-binding-property").addEventListener("change", () => renderDeviceBindingIndicator(state.selectedWidget));
+  $("#save-device-binding").addEventListener("click", saveDeviceBinding);
+  $("#remove-device-binding").addEventListener("click", deleteDeviceBinding);
   state.runtimeStatusTimer ||= window.setInterval(() => {
     renderRuntimeBindingStatus();
     applyDesignerRuntimePreview();
@@ -3173,6 +3189,7 @@ function renderProperties() {
   renderImageButtonSettings(widget);
   renderWidgetActions(widget);
   renderRuntimeBinding(widget);
+  renderDeviceBindings(widget);
   renderExtraKeys(widget);
 }
 
@@ -3596,6 +3613,168 @@ function removeWidgetAction(/** @type {any} */ widget, /** @type {any} */ trigge
 }
 
 const runtimeTargets = (/** @type {any} */ widget) => targetsForRuntime(widget, t);
+
+function meterIndicatorIds(/** @type {any} */ widget) {
+  /** @type {string[]} */
+  const ids = [];
+  (widget?.properties?.scales || []).forEach((/** @type {any} */ scale) => {
+    (scale?.indicators || []).forEach((/** @type {any} */ entry) => {
+      Object.values(entry || {}).forEach((/** @type {any} */ payload) => {
+        if (payload && typeof payload === "object" && payload.id) ids.push(payload.id);
+      });
+    });
+  });
+  return ids;
+}
+
+function renderDeviceBindingIndicator(/** @type {any} */ widget) {
+  const visible = $("#device-binding-property").value.startsWith("indicator_");
+  $("#device-binding-indicator-field").classList.toggle("hidden", !visible);
+  const select = $("#device-binding-indicator");
+  const previous = select.value;
+  select.replaceChildren();
+  meterIndicatorIds(widget).forEach((id) => select.append(new Option(id, id)));
+  if ([...select.options].some((option) => option.value === previous)) select.value = previous;
+}
+
+function populateDeviceBindingCommands(selected = "") {
+  const entityId = $("#device-binding-entity").value;
+  const entity = (state.project.entities || []).find((/** @type {any} */ item) => item.id === entityId);
+  const select = $("#device-binding-command");
+  select.replaceChildren();
+  (entity?.commands || []).forEach((/** @type {any} */ command) => select.append(new Option(command, command)));
+  if (selected && [...select.options].some((option) => option.value === selected)) select.value = selected;
+}
+
+function renderDeviceBindings(/** @type {any} */ widget, /** @type {any} */ selectedBinding = null) {
+  const section = $("#device-binding-section");
+  const visible = Boolean(widget);
+  section.classList.toggle("hidden", !visible);
+  if (!visible) return;
+  state.project.entities ||= [];
+  state.project.bindings ||= [];
+  const own = bindingsForWidget(state.project.bindings, widget.id);
+  const existing = $("#device-binding-existing");
+  const selectedId = selectedBinding?.id || existing.value;
+  existing.replaceChildren(new Option("— Neue Bindung —", ""));
+  own.forEach((/** @type {any} */ binding) => existing.append(new Option(`${binding.id} · ${binding.direction}`, binding.id)));
+  existing.value = own.some((/** @type {any} */ binding) => binding.id === selectedId) ? selectedId : "";
+
+  const binding = selectedBinding || own.find((/** @type {any} */ item) => item.id === existing.value);
+  const direction = binding?.direction || $("#device-binding-direction").value || "entity_to_widget";
+  $("#device-binding-direction").value = direction;
+  const entity = direction === "widget_to_entity" ? binding?.target : binding?.source;
+  const widgetSide = direction === "widget_to_entity" ? binding?.source : binding?.target;
+
+  const entitySelect = $("#device-binding-entity");
+  entitySelect.replaceChildren(new Option("— Entität wählen —", ""));
+  compatibleEntities(state.project.entities, direction).forEach((/** @type {any} */ item) => {
+    entitySelect.append(new Option(`${item.domain}.${item.id}${item.unit ? ` · ${item.unit}` : ""}`, item.id));
+  });
+  entitySelect.value = entity?.id || "";
+
+  const propertySelect = $("#device-binding-property");
+  propertySelect.replaceChildren();
+  deviceBindingTargets(widget, direction).forEach((/** @type {string} */ property) => propertySelect.append(new Option(property, property)));
+  propertySelect.value = widgetSide?.property || widgetSide?.event || propertySelect.options[0]?.value || "";
+
+  const bidirectional = direction === "bidirectional";
+  $("#device-binding-event-field").classList.toggle("hidden", !bidirectional);
+  const eventSelect = $("#device-binding-event");
+  eventSelect.replaceChildren();
+  deviceBindingTargets(widget, "widget_to_entity").forEach((/** @type {string} */ event) => eventSelect.append(new Option(event, event)));
+  eventSelect.value = widgetSide?.event || eventSelect.options[0]?.value || "value";
+  $("#device-binding-command-field").classList.toggle("hidden", direction === "entity_to_widget");
+  populateDeviceBindingCommands(entity?.command || "");
+  $("#device-binding-transform").value = JSON.stringify(binding?.transform || {}, null, 2);
+  $("#device-binding-conditions").value = JSON.stringify(binding?.conditions || [], null, 2);
+  $("#remove-device-binding").disabled = !binding;
+  renderDeviceBindingIndicator(widget);
+
+  const list = $("#device-binding-list");
+  list.replaceChildren();
+  own.forEach((/** @type {any} */ item) => {
+    const row = document.createElement("div");
+    const source = item.direction === "widget_to_entity" ? `${widget.id}.${item.source.event}` : `${item.source.domain}.${item.source.id}`;
+    const target = item.direction === "widget_to_entity" ? `${item.target.domain}.${item.target.id}` : `${widget.id}.${item.target.property}`;
+    row.textContent = `${source} → ${target}`;
+    list.append(row);
+  });
+  const graphElement = $("#device-binding-graph");
+  graphElement.replaceChildren();
+  const graph = bindingGraph(state.project.bindings);
+  graph.edges.forEach((/** @type {any} */ edge) => {
+    const from = graph.nodes.find((node) => node.id === edge.from)?.label || edge.from;
+    const to = graph.nodes.find((node) => node.id === edge.to)?.label || edge.to;
+    const row = document.createElement("div");
+    row.className = "device-binding-edge";
+    row.textContent = `${from} ${edge.bidirectional ? "⇄" : "→"} ${to}`;
+    row.title = edge.id;
+    graphElement.append(row);
+  });
+}
+
+function loadSelectedDeviceBinding() {
+  const binding = (state.project.bindings || []).find((/** @type {any} */ item) => item.id === $("#device-binding-existing").value);
+  renderDeviceBindings(state.selectedWidget, binding || null);
+}
+
+function saveDeviceBinding() {
+  const widget = state.selectedWidget;
+  const error = $("#device-binding-error");
+  if (!widget) return;
+  const direction = $("#device-binding-direction").value;
+  const entityId = $("#device-binding-entity").value;
+  const entity = (state.project.entities || []).find((/** @type {any} */ item) => item.id === entityId);
+  if (!entity) {
+    error.textContent = "Bitte eine kompatible ESPHome-Entität auswählen.";
+    error.classList.remove("hidden"); return;
+  }
+  let transform, conditions;
+  try {
+    transform = JSON.parse($("#device-binding-transform").value || "{}");
+    conditions = JSON.parse($("#device-binding-conditions").value || "[]");
+    if (!Array.isArray(conditions)) throw new Error("Bedingungen müssen eine Liste sein.");
+  }
+  catch (/** @type {any} */ parseError) {
+    error.textContent = `Transformation ist kein gültiges JSON: ${parseError.message}`;
+    error.classList.remove("hidden"); return;
+  }
+  const property = $("#device-binding-property").value;
+  const existingId = $("#device-binding-existing").value;
+  const id = existingId || defaultBindingId(widget.id, entity.id);
+  /** @type {Record<string, any>} */
+  const widgetSide = { widget_id: widget.id };
+  if (direction === "widget_to_entity") widgetSide.event = property;
+  else {
+    widgetSide.property = property;
+    if (property.startsWith("indicator_")) widgetSide.indicator_id = $("#device-binding-indicator").value;
+    if (direction === "bidirectional") widgetSide.event = $("#device-binding-event").value;
+  }
+  /** @type {Record<string, any>} */
+  const entitySide = { domain: entity.domain, id: entity.id };
+  if (direction !== "entity_to_widget") entitySide.command = $("#device-binding-command").value;
+  /** @type {any} */
+  const binding = {
+    id, direction, transform, conditions,
+    source: direction === "widget_to_entity" ? widgetSide : entitySide,
+    target: direction === "widget_to_entity" ? entitySide : widgetSide,
+  };
+  pushUndo();
+  state.project.bindings = upsertDeviceBinding(state.project.bindings, binding);
+  markProjectDirty();
+  error.classList.add("hidden");
+  renderDeviceBindings(widget, binding);
+}
+
+function deleteDeviceBinding() {
+  const id = $("#device-binding-existing").value;
+  if (!id) return;
+  pushUndo();
+  state.project.bindings = removeDeviceBinding(state.project.bindings, id);
+  markProjectDirty();
+  renderDeviceBindings(state.selectedWidget);
+}
 
 function projectWidgetEntries() {
   return collectActionTargets(state.project);
@@ -6814,6 +6993,7 @@ async function checkYaml() {
     const source = state.hasDraft ? "draft" : "active";
     const result = await api(`configurations/${encodedName(state.activeConfig)}/check-yaml?source=${source}`, { method: "POST" });
     const output = $("#config-output");
+    output.classList.remove("diff-output");
     output.textContent = result.valid
       ? t("config.output.yamlValid", { revision: result.revision })
       : t("config.output.yamlError", { line: result.line, column: result.column, error: result.error });
@@ -6826,7 +7006,11 @@ async function showDiff() {
   try {
     const result = await api(`configurations/${encodedName(state.activeConfig)}/diff`);
     const output = $("#config-output");
-    output.textContent = result.diff || t("config.output.noDifferences");
+    if (result.diff) renderUnifiedDiff(output, result.diff, t);
+    else {
+      output.classList.remove("diff-output");
+      output.textContent = t("config.output.noDifferences");
+    }
     output.classList.remove("hidden");
   } catch (/** @type {any} */ error) { toast(error.message, true); }
 }
@@ -6903,6 +7087,7 @@ function updateBuilderButtons() {
 async function validateEspHome() {
   if (!state.activeConfig || state.hasDraft) return;
   const output = $("#config-output");
+  output.classList.remove("diff-output");
   output.textContent = t("config.output.validating");
   output.classList.remove("hidden");
   try {
