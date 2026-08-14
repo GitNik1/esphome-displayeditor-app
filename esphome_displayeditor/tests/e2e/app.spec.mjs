@@ -50,3 +50,28 @@ test("creates a fresh project", async ({ page }) => {
   await page.locator("#new-project").click();
   await expect(page.locator("#canvas .canvas-widget")).toHaveCount(0);
 });
+
+test("viewer remains switchable between HTML and complete LVGL WASM", async ({ page }) => {
+  await page.evaluate((nextProject) => {
+    window.__appState.project = nextProject;
+  }, {
+    ...project,
+    canvas: { width: 320, height: 240 },
+    widgets: [
+      { id: "title", widget_type: "label", x: 15, y: 15, width: 160, height: 28, properties: { text: "Dual renderer" }, style_tree: {}, children: [] },
+      { id: "toggle", widget_type: "switch", x: 20, y: 70, width: 54, height: 28, properties: { state_checked: true }, style_tree: {}, children: [] },
+      { id: "action", widget_type: "button", x: 100, y: 70, width: 120, height: 42, properties: { text: "Update" }, style_tree: {}, children: [], events: { on_click: [{ "lvgl.label.update": { id: "title", text: "Native action" } }] } },
+    ],
+  });
+  await page.locator("#open-viewer").click();
+  await expect(page.locator("#viewer-dialog")).toBeVisible();
+  await expect(page.locator("#viewer-display .viewer-widget")).toHaveCount(3);
+  await page.locator("#viewer-renderer").selectOption("wasm");
+  await expect(page.locator("#viewer-display canvas.viewer-wasm-canvas")).toBeVisible();
+  await expect(page.locator("#viewer-status")).toContainText("LVGL v9.2.2 / WASM");
+  const box = await page.locator("#viewer-display canvas").boundingBox();
+  await page.mouse.click(box.x + box.width * 160 / 320, box.y + box.height * 91 / 240);
+  await page.locator("#viewer-renderer").selectOption("html");
+  await expect(page.locator("#viewer-display .viewer-widget")).toHaveCount(3);
+  await expect(page.locator('[data-widget-id="title"] .viewer-widget-text')).toHaveText("Native action");
+});

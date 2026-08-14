@@ -22,6 +22,7 @@ import {
 import {
   clamp,
 } from "./style.js";
+import { LvglWasmRenderer } from "../viewer-wasm/adapter.js";
 export { applyRuntimeBinding, entityMatchesRuntimeTarget, formatRuntimeValue, runtimeBindingHealth, runtimeBoolean } from "./runtime.js";
 export { applyViewerAction } from "./action-interpreter.js";
 export { describeViewerArc, viewerBarGeometry } from "./geometry.js";
@@ -36,7 +37,7 @@ export { effectiveViewerPartStyle, effectiveViewerStyle, resolveViewerColor, vie
  * display: HTMLElement, title: HTMLElement, status: HTMLElement, zoomLabel: HTMLElement,
  * rotationControl: HTMLInputElement, eventLog: HTMLElement, eventCount: HTMLElement,
  * pageControls: HTMLElement, pageSelect: HTMLSelectElement, pagePrevious: HTMLButtonElement,
- * pageNext: HTMLButtonElement}} ViewerElements */
+ * pageNext: HTMLButtonElement, rendererControl?: HTMLSelectElement}} ViewerElements */
 
 /** @param {any} project @returns {any} */
 export function cloneViewerProject(project) {
@@ -69,7 +70,7 @@ export class ViewerController {
   /** @param {ViewerElements} elements */
   constructor({
     dialog, stage, frame, display, title, status, zoomLabel, rotationControl,
-    eventLog, eventCount, pageControls, pageSelect, pagePrevious, pageNext,
+    eventLog, eventCount, pageControls, pageSelect, pagePrevious, pageNext, rendererControl,
   }) {
     this.dialog = dialog;
     this.stage = stage;
@@ -85,6 +86,11 @@ export class ViewerController {
     this.pageSelect = pageSelect;
     this.pagePrevious = pagePrevious;
     this.pageNext = pageNext;
+    this.rendererControl = rendererControl || null;
+    this.rendererMode = "html";
+    this.wasmRenderer = null;
+    this.wasmMetrics = null;
+    this.renderGeneration = 0;
     /** @type {ViewerProject | null} */ this.sourceProject = null;
     /** @type {ViewerProject | null} */ this.project = null;
     this.name = "";
@@ -159,6 +165,7 @@ export class ViewerController {
     this.runtimeBindings = [];
     this.runtimeStates.clear();
     this.runtimeDevices.clear();
+    this.wasmRenderer?.stop();
     this.display.replaceChildren();
     if (this.dialog.open) this.dialog.close();
   }
@@ -173,6 +180,14 @@ export class ViewerController {
     this.logEntries = [];
     this.applyAllRuntimeBindings({ render: false });
     this.renderEventLog();
+    this.render();
+  }
+
+  /** @param {string} mode */
+  setRenderer(mode) {
+    this.rendererMode = mode === "wasm" ? "wasm" : "html";
+    if (this.rendererControl) this.rendererControl.value = this.rendererMode;
+    this.wasmRenderer?.stop();
     this.render();
   }
 
@@ -262,6 +277,14 @@ export class ViewerController {
     const live = this.runtimeBindings.length
       ? t("viewer.status.liveSuffix", { online, total: liveDevices.size, bindings: this.runtimeBindings.length })
       : "";
+    if (this.rendererMode === "wasm") {
+      const metrics = this.wasmMetrics;
+      this.status.textContent = metrics
+        ? `LVGL ${metrics.manifest?.lvgl_version || "9"} / WASM · ${Math.round(metrics.startupMs || 0)} ms Start · ${Math.round((metrics.wasmBytes || 0) / 1024)} KiB · ${metrics.supportedObjects || 0} Objekte · ${metrics.unsupported?.length || 0} nicht unterstützt`
+        : "LVGL 9 / WASM · experimenteller Renderer wird geladen …";
+      this.status.title = metrics?.unsupported?.length ? `Nicht unterstützt: ${metrics.unsupported.join(", ")}` : "";
+      return;
+    }
     this.status.textContent = warningCount
       ? `${t("viewer.status.prefix")}${live} · ${t("viewer.status.warnings", { count: warningCount })}`
       : `${t("viewer.status.prefix")}${live} · ${t("viewer.status.pixelNote")}`;
@@ -671,6 +694,11 @@ export class ViewerController {
 
   render() {
     if (!this.project) return;
+    if (this.rendererMode === "wasm") {
+      this.renderWasm();
+      return;
+    }
+    this.wasmRenderer?.stop();
     this.stopAnimations();
     const warnings = new Set();
     const width = Number(this.project.canvas?.width) || 480;
@@ -743,5 +771,69 @@ export class ViewerController {
     this.updatePageControls();
     this.refreshStatus();
     this.applyTransform();
+  }
+
+  async renderWasm() {
+    if (!this.project) return;
+    this.stopAnimations();
+    const generation = ++this.renderGeneration;
+    const width = Number(this.project.canvas?.width) || 480;
+    const height = Number(this.project.canvas?.height) || 480;
+    this.display.style.width = `${width}px`;
+    this.display.style.height = `${height}px`;
+    const canvas = document.createElement("canvas");
+    canvas.className = "viewer-wasm-canvas";
+    canvas.setAttribute("aria-label", "Experimentelle LVGL-9-WebAssembly-Vorschau");
+    this.display.replaceChildren(canvas);
+    this.wasmRenderer?.stop();
+    this.wasmRenderer = new LvglWasmRenderer(canvas, { onEvent: (event) => this.handleWasmEvent(event) });
+    this.wasmMetrics = null;
+    this.refreshStatus();
+    this.updatePageControls();
+    this.applyTransform();
+    try {
+      const metrics = await this.wasmRenderer.render(this.project, this.runtime);
+      if (generation !== this.renderGeneration || this.rendererMode !== "wasm") return;
+      this.wasmMetrics = metrics;
+      this.renderWarnings = new Set((metrics.unsupported || []).map((type) => `LVGL/WASM: ${type}`));
+      this.refreshStatus();
+    } catch (error) {
+      if (generation !== this.renderGeneration || this.rendererMode !== "wasm") return;
+      this.recordEvent("warning", `LVGL/WASM nicht verfügbar: ${error instanceof Error ? error.message : String(error)}`);
+      this.rendererMode = "html";
+      if (this.rendererControl) this.rendererControl.value = "html";
+      this.render();
+    }
+  }
+
+  /** Apply native LVGL input through the same isolated state and allowlist as HTML input. */
+  handleWasmEvent(/** @type {any} */ event) {
+    if (!this.project || this.rendererMode !== "wasm") return;
+    const widget = findWidget(this.project, event.id);
+    if (!widget) return;
+    widget.properties ||= {};
+    if (["switch", "checkbox", "button"].includes(widget.widget_type)) {
+      widget.properties.state_checked = Boolean(event.value);
+    } else if (["slider", "arc", "spinbox"].includes(widget.widget_type)) {
+      widget.properties.value = Number(event.value);
+    } else if (["dropdown", "roller"].includes(widget.widget_type)) {
+      widget.properties.selected_index = Number(event.value);
+    } else if (widget.widget_type === "textarea" && typeof event.text === "string") {
+      widget.properties.text = event.text;
+    }
+    const context = {
+      x: ["switch", "checkbox", "button"].includes(widget.widget_type)
+        ? Boolean(event.value) : Number(event.value),
+    };
+    let changed = false;
+    if (event.kind === 1) changed = this.runEvent(widget, "on_click", context);
+    else if (event.kind === 3) changed = this.runEvent(widget, "on_press", context);
+    else if (event.kind === 4) changed = this.runEvent(widget, "on_release", context);
+    else {
+      changed = this.runEvent(widget, "on_value", context) || changed;
+      changed = this.runEvent(widget, "on_change", context) || changed;
+      this.recordEvent("state", `${widget.id || widget.widget_type}: ${event.text || event.value}`);
+    }
+    if (changed) this.render();
   }
 }

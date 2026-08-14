@@ -34,6 +34,10 @@ def check_frontend_boundaries() -> list[str]:
 def check_strict_frontend_modules() -> list[str]:
     errors: list[str] = []
     for path in sorted(FRONTEND.rglob("*.js")):
+        if path.relative_to(FRONTEND).as_posix() == "viewer-wasm/lvgl-wasm.js":
+            # Generated and minified by the pinned Emscripten build. Its
+            # handwritten adapter is checked; editing this artifact is not.
+            continue
         leading_lines = path.read_text(encoding="utf-8-sig").splitlines()[:20]
         if "// @ts-check" not in (line.strip() for line in leading_lines):
             errors.append(

@@ -1,0 +1,8 @@
+{
+  "built_at_utc": "2026-08-14T13:53:13.1959020Z",
+  "sha256": "8cb64fd9823a8c4589e21ff0c97970cefefc9875aae2b74681981207e25a9ded",
+  "prototype": "lvgl9-browser-viewer",
+  "bytes": 288064,
+  "lvgl_version": "v9.2.2",
+  "emscripten_version": "4.0.10"
+}
