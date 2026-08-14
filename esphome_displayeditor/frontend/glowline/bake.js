@@ -117,5 +117,12 @@ export async function bakeGlowStroke({
     removeBakedWidget(project, `${baseName}_anim`, target);
     removeBakedWidget(project, `${baseName}_anim_rev`, target);
   }
+  // Flow bindings address the baked widgets but retain the stroke id as their
+  // stable identity. Refresh the derived ids after renaming or rebaking.
+  (project.bindings || []).forEach((/** @type {any} */ binding) => {
+    if (binding?.target?.glow_stroke_id !== stroke.id) return;
+    binding.target.widget_id = `${baseName}_anim`;
+    binding.target.reverse_widget_id = `${baseName}_anim_rev`;
+  });
   return { baseName, forwardId, reverseId };
 }

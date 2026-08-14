@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>ESPHome Display Editor</title>
-    <link rel="stylesheet" href="styles.css?v=0.26.0">
+    <link rel="stylesheet" href="styles.css?v=0.27.0">
   </head>
   <body>
     <header class="topbar">
@@ -578,6 +578,16 @@
                 <textarea id="device-binding-conditions" rows="3" spellcheck="false">[]</textarea>
               </label>
               <p class="hint" data-i18n="deviceBinding.conditionsHint">Beispiel: [{"operator":"gte","value":30}]. Mehrere Bedingungen werden mit UND verknüpft.</p>
+              <div id="device-binding-custom-fields" class="hidden">
+                <label><span data-i18n="deviceBinding.customYaml">Custom YAML-Aktion</span>
+                  <textarea id="device-binding-custom-yaml" rows="12" spellcheck="false"></textarea>
+                </label>
+                <p class="hint" data-i18n="deviceBinding.customHint">Genau eine ESPHome-Aktion. Syntax und ESPHome-Tags werden vor dem Speichern geprüft.</p>
+                <div class="actions runtime-binding-actions">
+                  <button id="save-custom-binding" type="button" class="button primary compact" data-i18n="deviceBinding.customSave">YAML speichern</button>
+                  <button id="restore-custom-binding" type="button" class="button subtle compact" data-i18n="deviceBinding.customRestore">Importiertes Original</button>
+                </div>
+              </div>
               <p id="device-binding-error" class="hint issue-error hidden"></p>
               <div class="actions runtime-binding-actions">
                 <button id="save-device-binding" type="button" class="button primary compact" data-i18n="deviceBinding.save">Binding übernehmen</button>
@@ -657,6 +667,23 @@
               <label class="checkbox-field"><span data-i18n="glow.crop">Zuschneiden</span> <input id="bake-crop" type="checkbox" checked></label>
             </div>
             <p class="hint" data-i18n="glow.bakeHint">Bilder werden erst beim YAML-Erzeugen/Download generiert - hier nur die Einstellungen dafür.</p>
+
+            <div class="property-section" data-i18n="glow.sensorBinding">Sensorbindung Flussrichtung</div>
+            <p class="hint" data-i18n="glow.sensorBindingHint">Positive Werte zeigen die Vorwärtsanimation, negative Werte die Rückwärtsanimation und Werte innerhalb der Totzone stoppen den Fluss.</p>
+            <label><span data-i18n="glow.sensorEntity">Numerischer Sensor</span><select id="flow-binding-entity"></select></label>
+            <div class="field-row">
+              <label><span data-i18n="glow.offThreshold">Totzone ±</span><input id="flow-binding-off" type="number" min="0" step="any" value="0"></label>
+              <label><span data-i18n="glow.fastThreshold">Schnell ab Betrag</span><input id="flow-binding-fast" type="number" min="0" step="any" value="1000"></label>
+            </div>
+            <div class="field-row">
+              <label><span data-i18n="glow.normalDuration">Normal (ms)</span><input id="flow-binding-normal" type="number" min="10" value="900"></label>
+              <label><span data-i18n="glow.fastDuration">Schnell (ms)</span><input id="flow-binding-fast-duration" type="number" min="10" value="300"></label>
+            </div>
+            <p id="flow-binding-error" class="hint issue-error hidden"></p>
+            <div class="actions runtime-binding-actions">
+              <button id="save-flow-binding" type="button" class="button primary compact" data-i18n="glow.saveSensorBinding">Sensorbindung speichern</button>
+              <button id="remove-flow-binding" type="button" class="button subtle compact" data-i18n="glow.removeSensorBinding">Entfernen</button>
+            </div>
 
             <div class="actions"><button id="delete-line" type="button" class="button danger" data-i18n="glow.delete">Linie löschen</button></div>
           </form>
@@ -984,6 +1011,6 @@
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js?v=0.26.0"></script>
+    <script type="module" src="app.js?v=0.27.0"></script>
   </body>
 </html>

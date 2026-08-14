@@ -25,6 +25,7 @@ import yaml
 
 from .designer_core.idgen import IdRegistry
 from .designer_core.model import Project
+from .addon_widgets import prepare_addon_widget_export
 from .designer_core.yamlexport import (
     ESPHomeDumper,
     ExportIssue,
@@ -57,6 +58,8 @@ def _materialize_lambdas(value: Any) -> Any:
     if isinstance(value, dict):
         if set(value) == {"__esphome_lambda__"}:
             return TaggedScalar(str(value["__esphome_lambda__"]), "!lambda")
+        if set(value) == {"__esphome_tag__", "value"}:
+            return TaggedScalar(str(value["value"]), str(value["__esphome_tag__"]))
         return {key: _materialize_lambdas(item) for key, item in value.items()}
     return value
 
@@ -114,6 +117,7 @@ def _image_block_for_merge(project: Project) -> list[dict[str, Any]] | None:
 
 
 def _build_merge_doc(project: Project) -> tuple[dict[str, Any], list[ExportIssue]]:
+    project = prepare_addon_widget_export(project)
     issues: list[ExportIssue] = []
     registry = IdRegistry()
     for w in project.all_widgets():
@@ -347,6 +351,8 @@ def _merge_entity_binding_actions(
         )
         entity = _find_entity(document.get(domain), entity_id)
         if entity is None:
+            if compiled.get("opaque") and compiled.get("deleted"):
+                continue
             raise MergeError(
                 f"Binding source '{domain}.{entity_id}' no longer exists in the target YAML."
             )
@@ -372,6 +378,12 @@ def _merge_entity_binding_actions(
             then = [] if then is None else [then]
             trigger_body["then"] = then
         new_action = _materialize_lambdas(compiled["action"])
+        if compiled.get("opaque"):
+            then[:] = [item for item in then if item != new_action]
+            if not compiled.get("deleted"):
+                then.append(new_action)
+            changed.add(domain)
+            continue
         target = _action_target(new_action)
         if target:
             then[:] = [

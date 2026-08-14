@@ -9,7 +9,7 @@ const INPUTS = {
   label: ["text", "visible", "opacity", "color"], textarea: ["text", "visible"],
   meter: ["indicator_value", "indicator_start", "indicator_end", "visible", "opacity"],
   bar: ["value", "visible", "opacity", "color"], led: ["value", "visible", "opacity", "color"],
-  image: ["image", "visible", "opacity"], animimg: ["visible", "opacity"],
+  image: ["image", "visible", "opacity"], animimg: ["visible", "opacity", "flow_direction"],
   button: ["text", "checked", "visible", "opacity", "color"], switch: ["checked", "visible"],
   checkbox: ["checked", "text", "visible"], slider: ["value", "visible"],
   arc: ["value", "visible", "color"], dropdown: ["selected", "visible"],
@@ -69,6 +69,7 @@ export function bindingGraph(bindings) {
   /** @type {{id: string, from: string, to: string, bidirectional: boolean}[]} */
   const edges = [];
   (bindings || []).forEach((binding) => {
+    if (binding.deleted) return;
     const widget = binding.direction === "widget_to_entity" ? binding.source : binding.target;
     const entity = binding.direction === "widget_to_entity" ? binding.target : binding.source;
     const widgetId = `widget:${widget.widget_id}`;

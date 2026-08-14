@@ -9,12 +9,16 @@ actions that are merged into the matching component by id.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
+import yaml
+
 from .designer_core.model import Project
+from .designer_core.yamlimport import LvglImportError, TaggedScalar, load_lvgl_yaml
 
 ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -88,7 +92,10 @@ WIDGET_CAPABILITIES: dict[str, dict[str, list[str]]] = {
     "bar": {"inputs": ["value", "visible", "opacity", "color"], "outputs": []},
     "led": {"inputs": ["value", "visible", "opacity", "color"], "outputs": ["click"]},
     "image": {"inputs": ["image", "visible", "opacity"], "outputs": ["click"]},
-    "animimg": {"inputs": ["visible", "opacity"], "outputs": ["click"]},
+    "animimg": {
+        "inputs": ["visible", "opacity", "flow_direction"],
+        "outputs": ["click"],
+    },
     "button": {
         "inputs": ["text", "checked", "visible", "opacity", "color"],
         "outputs": ["click", "press", "release", "value"],
@@ -232,6 +239,14 @@ def validate_project_bindings(project: Project) -> list[BindingIssue]:
                 )
             )
         seen.add(binding_id)
+        if binding.get("kind") in {"opaque_yaml", "custom_yaml"}:
+            if not isinstance(binding.get("raw_action"), dict):
+                issues.append(
+                    BindingIssue(
+                        "error", "Imported binding has no YAML action.", binding_id
+                    )
+                )
+            continue
         direction = binding.get("direction")
         if direction not in ("entity_to_widget", "widget_to_entity", "bidirectional"):
             issues.append(
@@ -298,6 +313,7 @@ def validate_project_bindings(project: Project) -> list[BindingIssue]:
                     "indicator_value": {"number"},
                     "indicator_start": {"number"},
                     "indicator_end": {"number"},
+                    "flow_direction": {"number"},
                 }
                 accepted = allowed_types.get(prop)
                 if accepted and entity.get("data_type") not in accepted:
@@ -314,6 +330,17 @@ def validate_project_bindings(project: Project) -> list[BindingIssue]:
                 issues.append(
                     BindingIssue(
                         "error", "Meter indicator id does not exist.", binding_id
+                    )
+                )
+        if prop == "flow_direction":
+            reverse_id = str(widget_side.get("reverse_widget_id", ""))
+            reverse = widgets.get(reverse_id)
+            if not reverse or reverse.widget_type != "animimg":
+                issues.append(
+                    BindingIssue(
+                        "error",
+                        "Flow-direction binding requires the reverse animation widget.",
+                        binding_id,
                     )
                 )
         if direction == "bidirectional":
@@ -353,14 +380,20 @@ def validate_project_bindings(project: Project) -> list[BindingIssue]:
     return issues
 
 
+def _cpp_float(value: int | float) -> str:
+    """Render a valid C++ floating-point literal with an ``f`` suffix."""
+    rendered = f"{float(value):g}"
+    if "." not in rendered and "e" not in rendered.lower():
+        rendered += ".0"
+    return f"{rendered}f"
+
+
 def _lambda_value(transform: dict[str, Any], expression: str = "x") -> str:
     factor = float(transform.get("factor", 1) or 1)
     offset = float(transform.get("offset", 0) or 0)
     input_min, input_max = transform.get("input_min"), transform.get("input_max")
     output_min, output_max = transform.get("output_min"), transform.get("output_max")
-    code = (
-        f"float value = float({expression}); value = value * {factor:g}f + {offset:g}f;"
-    )
+    code = f"float value = float({expression}); value = value * {_cpp_float(factor)} + {_cpp_float(offset)};"
     if (
         all(
             isinstance(v, (int, float))
@@ -368,7 +401,7 @@ def _lambda_value(transform: dict[str, Any], expression: str = "x") -> str:
         )
         and input_max != input_min
     ):
-        code += f" value = {float(output_min):g}f + (value - {float(input_min):g}f) * {float(output_max - output_min):g}f / {float(input_max - input_min):g}f;"
+        code += f" value = {_cpp_float(output_min)} + (value - {_cpp_float(input_min)}) * {_cpp_float(output_max - output_min)} / {_cpp_float(input_max - input_min)};"
     if transform.get("clamp"):
         low = (
             output_min if isinstance(output_min, (int, float)) else transform.get("min")
@@ -377,7 +410,7 @@ def _lambda_value(transform: dict[str, Any], expression: str = "x") -> str:
             output_max if isinstance(output_max, (int, float)) else transform.get("max")
         )
         if isinstance(low, (int, float)) and isinstance(high, (int, float)):
-            code += f" value = std::max({float(low):g}f, std::min({float(high):g}f, value));"
+            code += f" value = std::max({_cpp_float(low)}, std::min({_cpp_float(high)}, value));"
     decimals = int(transform.get("round", 0) or 0)
     if decimals <= 0:
         code += " return int(std::round(value));"
@@ -402,6 +435,76 @@ def _incoming_action(
         if isinstance(binding.get("transform"), dict)
         else {}
     )
+    if prop == "flow_direction":
+        reverse_id = str(target.get("reverse_widget_id", ""))
+        off = max(0, int(float(transform.get("off_threshold", 0) or 0)))
+        fast = max(off + 1, int(float(transform.get("fast_threshold", 1000) or 1000)))
+        normal_ms = max(10, int(float(transform.get("normal_duration", 900) or 900)))
+        fast_ms = max(10, int(float(transform.get("fast_duration", 300) or 300)))
+
+        def speed_branch(animation_id: str) -> list[dict[str, Any]]:
+            return [
+                {"lvgl.animimg.start": animation_id},
+                {
+                    "if": {
+                        "condition": {
+                            "lambda": {
+                                "__esphome_lambda__": f"return abs((int)x) >= {fast};"
+                            }
+                        },
+                        "then": [
+                            {
+                                "lvgl.animimg.update": {
+                                    "id": animation_id,
+                                    "duration": f"{fast_ms}ms",
+                                }
+                            }
+                        ],
+                        "else": [
+                            {
+                                "lvgl.animimg.update": {
+                                    "id": animation_id,
+                                    "duration": f"{normal_ms}ms",
+                                }
+                            }
+                        ],
+                    }
+                },
+            ]
+
+        action = {
+            "if": {
+                "condition": {
+                    "lambda": {
+                        "__esphome_lambda__": f"return abs((int)x) <= {off};"
+                    }
+                },
+                "then": [
+                    {"lvgl.widget.hide": target_id},
+                    {"lvgl.widget.hide": reverse_id},
+                ],
+                "else": [
+                    {
+                        "if": {
+                            "condition": {
+                                "lambda": {"__esphome_lambda__": "return x > 0;"}
+                            },
+                            "then": [
+                                {"lvgl.widget.hide": reverse_id},
+                                {"lvgl.widget.show": target_id},
+                                *speed_branch(str(target_id)),
+                            ],
+                            "else": [
+                                {"lvgl.widget.hide": target_id},
+                                {"lvgl.widget.show": reverse_id},
+                                *speed_branch(reverse_id),
+                            ],
+                        }
+                    }
+                ],
+            }
+        }
+        return _with_conditions(action, binding)
     if prop and str(prop).startswith("indicator_"):
         field = {
             "indicator_value": "value",
@@ -595,6 +698,20 @@ def compile_bindings(project: Project) -> CompiledBindings:
     entities = {(e["domain"], e["id"]): e for e in getattr(project, "entities", [])}
     widgets = _widget_index(result.project)
     for binding in getattr(project, "bindings", []):
+        if binding.get("kind") in {"opaque_yaml", "custom_yaml"}:
+            source = binding.get("source", {})
+            result.entity_actions.append(
+                {
+                    "binding_id": binding["id"],
+                    "domain": source.get("domain", ""),
+                    "entity_id": source.get("id", ""),
+                    "trigger": source.get("trigger", "on_state"),
+                    "action": copy.deepcopy(binding["raw_action"]),
+                    "opaque": True,
+                    "deleted": bool(binding.get("deleted")),
+                }
+            )
+            continue
         direction = binding["direction"]
         if direction in ("entity_to_widget", "bidirectional"):
             source = binding["source"]
@@ -641,3 +758,161 @@ def binding_schemas() -> dict[str, Any]:
         "entities": copy.deepcopy(ENTITY_CAPABILITIES),
         "widgets": copy.deepcopy(WIDGET_CAPABILITIES),
     }
+
+
+def _contains_lvgl_action(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(
+            str(key).startswith("lvgl.") or _contains_lvgl_action(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_lvgl_action(child) for child in value)
+    return False
+
+
+def _first_lvgl_target(value: Any) -> str:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).startswith("lvgl."):
+                if isinstance(child, str):
+                    return child
+                if isinstance(child, list) and child and isinstance(child[0], str):
+                    return child[0]
+                if isinstance(child, dict) and isinstance(child.get("id"), str):
+                    return child["id"]
+            target = _first_lvgl_target(child)
+            if target:
+                return target
+    elif isinstance(value, list):
+        for child in value:
+            target = _first_lvgl_target(child)
+            if target:
+                return target
+    return ""
+
+
+def _trigger_actions(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        then = value.get("then")
+        return [item for item in then if isinstance(item, dict)] if isinstance(then, list) else []
+    if not isinstance(value, list):
+        return []
+    if value and all(isinstance(item, dict) and "then" in item for item in value):
+        result: list[dict[str, Any]] = []
+        for automation in value:
+            result.extend(_trigger_actions(automation))
+        return result
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _portable_yaml_value(value: Any) -> Any:
+    if isinstance(value, TaggedScalar):
+        if value.tag == "!lambda":
+            return {"__esphome_lambda__": str(value)}
+        return {"__esphome_tag__": value.tag, "value": str(value)}
+    if isinstance(value, dict):
+        return {key: _portable_yaml_value(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_portable_yaml_value(child) for child in value]
+    return value
+
+
+def _materialize_portable_yaml(value: Any) -> Any:
+    if isinstance(value, dict):
+        if set(value) == {"__esphome_lambda__"}:
+            return TaggedScalar(str(value["__esphome_lambda__"]), "!lambda")
+        if set(value) == {"__esphome_tag__", "value"}:
+            return TaggedScalar(str(value["value"]), str(value["__esphome_tag__"]))
+        return {key: _materialize_portable_yaml(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_materialize_portable_yaml(child) for child in value]
+    return value
+
+
+class _CustomYamlDumper(yaml.SafeDumper):
+    pass
+
+
+def _represent_custom_tag(dumper: yaml.Dumper, value: TaggedScalar):
+    return dumper.represent_scalar(
+        value.tag or "tag:yaml.org,2002:str",
+        str(value),
+        style="|" if "\n" in str(value) else None,
+    )
+
+
+_CustomYamlDumper.add_representer(TaggedScalar, _represent_custom_tag)
+
+
+def dump_custom_binding_yaml(action: dict[str, Any]) -> str:
+    return yaml.dump(
+        _materialize_portable_yaml(action),
+        Dumper=_CustomYamlDumper,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+    ).rstrip()
+
+
+def parse_custom_binding_yaml(text: str) -> tuple[dict[str, Any], str]:
+    try:
+        action = load_lvgl_yaml(text)
+    except LvglImportError:
+        raise
+    if len(action) != 1:
+        raise LvglImportError("A custom binding must contain exactly one top-level action.")
+    portable = _portable_yaml_value(action)
+    return portable, dump_custom_binding_yaml(portable)
+
+
+def extract_imported_bindings(document: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract non-destructively round-trippable LVGL entity automations."""
+    imported: list[dict[str, Any]] = []
+    for domain in ENTITY_CAPABILITIES:
+        entries = document.get(domain)
+        if isinstance(entries, dict):
+            entries = [entries]
+        if not isinstance(entries, list):
+            continue
+        for entity in entries:
+            if not isinstance(entity, dict) or not isinstance(entity.get("id"), str):
+                continue
+            for trigger, body in entity.items():
+                if not str(trigger).startswith("on_"):
+                    continue
+                for index, action in enumerate(_trigger_actions(body)):
+                    if not _contains_lvgl_action(action):
+                        continue
+                    identity = json.dumps(
+                        [domain, entity["id"], trigger, index, action],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+                    portable_action = _portable_yaml_value(action)
+                    imported.append(
+                        {
+                            "id": f"imported_{digest}",
+                            "kind": "custom_yaml",
+                            "origin": "imported",
+                            "direction": "entity_to_widget",
+                            "source": {
+                                "domain": domain,
+                                "id": entity["id"],
+                                "trigger": str(trigger),
+                            },
+                            "target": {
+                                "widget_id": _first_lvgl_target(action),
+                                "property": "imported_yaml",
+                            },
+                            "raw_action": portable_action,
+                            "raw_yaml": dump_custom_binding_yaml(portable_action),
+                            "original_action": copy.deepcopy(portable_action),
+                            "original_yaml": dump_custom_binding_yaml(portable_action),
+                            "read_only": False,
+                            "deleted": False,
+                        }
+                    )
+    return imported

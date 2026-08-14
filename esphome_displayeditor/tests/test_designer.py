@@ -428,6 +428,38 @@ def test_addon_bar_and_arc_export_and_import_without_changing_core(tmp_path: Pat
     assert widgets["temperature_arc"]["properties"]["value"] == 42
 
 
+def test_bar_start_value_is_exported_only_in_range_mode(tmp_path: Path) -> None:
+    service = DesignerService(tmp_path)
+    project = project_with_button()
+    bar = {
+        "id": "load_bar",
+        "widget_type": "bar",
+        "x": 10,
+        "y": 10,
+        "width": 180,
+        "height": 24,
+        "properties": {
+            "value": 65,
+            "start_value": 20,
+            "min_value": 0,
+            "max_value": 100,
+            "mode": "NORMAL",
+            "animated": True,
+        },
+        "style_tree": {},
+        "children": [],
+    }
+    project["widgets"] = [bar]
+
+    normal_yaml = service.export_yaml(project)["yaml"]
+    assert "start_value:" not in normal_yaml
+    assert bar["properties"]["start_value"] == 20
+
+    bar["properties"]["mode"] = "RANGE"
+    range_yaml = service.export_yaml(project)["yaml"]
+    assert "start_value: 20" in range_yaml
+
+
 def test_meter_all_scales_and_indicators_roundtrip(tmp_path: Path) -> None:
     service = DesignerService(tmp_path)
     source = """

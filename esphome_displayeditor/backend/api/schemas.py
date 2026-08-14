@@ -19,6 +19,10 @@ class DesignerProjectRequest(BaseModel):
     project: dict[str, Any]
 
 
+class CustomBindingYamlRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=128 * 1024)
+
+
 class MergeDraftRequest(BaseModel):
     """Designer data to merge into an existing configuration draft."""
 
@@ -100,4 +104,3 @@ class InstallRequest(BaseModel):
     # generic command arguments are deliberately not exposed by this API.
     port: str = Field(default="OTA", pattern="^OTA$")
     confirmed: bool = False
-
