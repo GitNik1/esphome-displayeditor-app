@@ -20,3 +20,9 @@ test("basic property view preserves unknown enum values and lists", () => {
   assert.equal(select.items.at(-1).value, "B");
   assert.equal(list.value, "a, b");
 });
+
+test("basic property view creates formatted JSON textareas", () => {
+  const control = createBasicPropertyControl(document, { kind: "json", default: [] }, [{ range_from: 0 }]);
+  assert.equal(control.tag, "textarea");
+  assert.deepEqual(JSON.parse(control.value), [{ range_from: 0 }]);
+});

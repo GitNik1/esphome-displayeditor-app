@@ -103,6 +103,7 @@ import {
   propertyValueClears,
 } from "./properties/model.js";
 import { createBasicPropertyControl } from "./properties/view.js";
+import { renderViewerMeter } from "./viewer/widget-primitives.js";
 import {
   cursorPosition,
   editorIsDirty,
@@ -783,7 +784,23 @@ function bindDesigner() {
   $("#widget-action-type").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-target").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-flow-stroke").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
+  $("#widget-action-indicator-trigger-value").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#add-widget-action").addEventListener("click", addWidgetAction);
+  $("#close-meter-dialog").addEventListener("click", () => $("#meter-dialog").close());
+  $("#cancel-meter-dialog").addEventListener("click", () => $("#meter-dialog").close());
+  $("#apply-meter-dialog").addEventListener("click", applyMeterConfigurator);
+  $("#meter-add-scale").addEventListener("click", addMeterScale);
+  $("#meter-add-indicator").addEventListener("click", addMeterIndicator);
+  $("#meter-preview-indicator").addEventListener("change", () => {
+    meterPreviewIndicatorId = $("#meter-preview-indicator").value;
+    renderMeterConfiguratorPreview();
+  });
+  $("#meter-preview-value").addEventListener("input", () => {
+    const testValue = Number($("#meter-preview-value").value);
+    meterPreviewTestValues.set(meterPreviewIndicatorId, testValue);
+    $("#meter-preview-value-label").value = String(testValue);
+    renderMeterConfiguratorPreview(false);
+  });
   $("#apply-image-button").addEventListener("click", applyImageButtonSettings);
   $("#runtime-binding-target").addEventListener("change", () => renderRuntimeBinding(state.selectedWidget));
   $("#runtime-binding-device").addEventListener("change", () => {
@@ -2935,6 +2952,8 @@ function renderWidget(/** @type {any} */ item) {
     : null;
   if (["bar", "arc"].includes(widget.widget_type)) {
     node.append(renderCanvasValueVisual(widget));
+  } else if (widget.widget_type === "meter") {
+    node.append(renderViewerMeter(state.project, widget, previewState ? [previewState] : []));
   } else if (imageSource) {
     const picture = document.createElement("img");
     picture.className = "widget-image";
@@ -3341,7 +3360,7 @@ function renderWidgetActions(/** @type {any} */ widget) {
       count += 1;
       const description = describeAction(action, t);
       const missing = description.skipMissingCheck ? [] : description.targetIds.filter(
-        (id) => !projectWidgetEntries().some((item) => item.id === id));
+        (id) => !actionTargetEntries().some((item) => item.id === id));
       const row = document.createElement("div");
       row.className = `widget-action-item${!description.supported || missing.length ? " invalid" : ""}`;
       const label = document.createElement("span");
@@ -3372,11 +3391,35 @@ function flowEligibleStrokes() {
   return (state.project.glow_strokes || []).filter((/** @type {any} */ stroke) => stroke.flow.enabled);
 }
 
+function meterIndicatorEntries() {
+  /** @type {any[]} */
+  const entries = [];
+  projectWidgetEntries().filter((item) => item.widget_type === "meter").forEach((meter) => {
+    (meter.properties?.scales || []).forEach((/** @type {any} */ scale, /** @type {number} */ scaleIndex) => {
+      (scale?.indicators || []).forEach((/** @type {any} */ entry) => {
+        if (!entry || typeof entry !== "object") return;
+        const [kind, config] = Object.entries(entry)[0] || [];
+        if (!kind || !config || typeof config !== "object" || !config.id) return;
+        entries.push({
+          id: String(config.id), widget_type: "meter_indicator",
+          indicator_type: kind, meter_id: meter.id, scale_index: scaleIndex,
+        });
+      });
+    });
+  });
+  return entries;
+}
+
+function actionTargetEntries() {
+  return [...projectWidgetEntries(), ...meterIndicatorEntries()];
+}
+
 function renderWidgetActionBuilder(/** @type {any} */ widget) {
   if (!widget) return;
   const trigger = $("#widget-action-trigger").value;
   const type = $("#widget-action-type").value;
   const flow = type === "flow";
+  const indicatorUpdate = type === "indicator_update";
   const conditionField = $("#widget-action-condition-field");
   const supportsCondition = trigger === "on_value" && !flow && widgetSupportsValueCondition(widget);
   conditionField.classList.toggle("hidden", !supportsCondition);
@@ -3389,7 +3432,7 @@ function renderWidgetActionBuilder(/** @type {any} */ widget) {
   const choices = flow ? []
     : type === "page_show"
       ? (state.project.pages || []).map((/** @type {any} */ page) => ({ value: page.id, label: `${page.id} · Seite` }))
-      : projectWidgetEntries()
+      : (indicatorUpdate ? meterIndicatorEntries() : projectWidgetEntries())
         .filter((item) => !animimgOnly || item.widget_type === "animimg")
         .map((item) => ({ value: item.id, label: `${item.id} · ${item.widget_type}` }));
   target.replaceChildren();
@@ -3398,7 +3441,7 @@ function renderWidgetActionBuilder(/** @type {any} */ widget) {
 
   const update = type === "update";
   $("#widget-action-update-fields").classList.toggle("hidden", !update);
-  const targetWidget = projectWidgetEntries().find((item) => item.id === target.value);
+  const targetWidget = actionTargetEntries().find((item) => item.id === target.value);
   $("#widget-action-text-field").classList.toggle(
     "hidden", !update || !["label", "button"].includes(targetWidget?.widget_type || ""),
   );
@@ -3406,6 +3449,12 @@ function renderWidgetActionBuilder(/** @type {any} */ widget) {
     "hidden", !update || targetWidget?.widget_type !== "image",
   );
   populateImageChoice($("#widget-action-image"), "");
+
+  $("#widget-action-indicator-fields").classList.toggle("hidden", !indicatorUpdate);
+  const useTriggerValue = $("#widget-action-indicator-trigger-value");
+  useTriggerValue.disabled = trigger !== "on_value";
+  if (trigger !== "on_value") useTriggerValue.checked = false;
+  $("#widget-action-indicator-value").disabled = Boolean(useTriggerValue.checked);
 
   $("#widget-action-flow-fields").classList.toggle("hidden", !flow);
   if (flow) {
@@ -3482,7 +3531,7 @@ function addWidgetAction() {
       fastDuration: $("#widget-action-flow-fast-duration").value,
     });
   } else {
-    const targetWidget = projectWidgetEntries().find((item) => item.id === targetId);
+    const targetWidget = actionTargetEntries().find((item) => item.id === targetId);
     try {
       action = buildWidgetAction({
         type,
@@ -3495,6 +3544,11 @@ function addWidgetAction() {
           text_color: $("#widget-action-text-color").value,
           border_color: $("#widget-action-border-color").value,
           opa: $("#widget-action-opacity").value,
+          triggerValue: $("#widget-action-indicator-trigger-value").checked,
+          value: $("#widget-action-indicator-value").value,
+          start_value: $("#widget-action-indicator-start-value").value,
+          end_value: $("#widget-action-indicator-end-value").value,
+          ...(type === "indicator_update" ? { opa: $("#widget-action-indicator-opacity").value } : {}),
         },
       });
     } catch (/** @type {any} */ error) {
@@ -3517,8 +3571,11 @@ function addWidgetAction() {
   markProjectDirty();
   error.classList.add("hidden");
   ["#widget-action-text", "#widget-action-bg-color", "#widget-action-text-color",
-    "#widget-action-border-color", "#widget-action-opacity", "#widget-action-image"]
+    "#widget-action-border-color", "#widget-action-opacity", "#widget-action-image",
+    "#widget-action-indicator-value", "#widget-action-indicator-start-value",
+    "#widget-action-indicator-end-value", "#widget-action-indicator-opacity"]
     .forEach((selector) => { $(selector).value = ""; });
+  $("#widget-action-indicator-trigger-value").checked = false;
   syncLinkedColorPickers();
   renderWidgetActions(widget);
 }
@@ -5036,7 +5093,339 @@ const IMAGE_TRANSPARENCY_OPTIONS = [
   ["alpha_channel", "alpha_channel"],
 ];
 
+/** @type {any | null} */
+let meterConfiguratorWidget = null;
+/** @type {any[]} */
+let meterConfiguratorScales = [];
+let meterConfiguratorScaleIndex = 0;
+let meterPreviewIndicatorId = "";
+/** @type {Map<string, number>} */
+let meterPreviewTestValues = new Map();
+
+function defaultMeterScale() {
+  return {
+    range_from: 0, range_to: 100, angle_range: 240, rotation: 150,
+    draw_ticks_on_top: true,
+    ticks: {
+      count: 11, width: 2, length: 8, color: "808080",
+      major: { stride: 2, width: 4, length: 12, color: "FFFFFF", label_gap: 6 },
+    },
+    indicators: [],
+  };
+}
+
+function defaultMeterIndicator(/** @type {string} */ kind = "line") {
+  const used = new Set(actionTargetEntries().map((/** @type {any} */ entry) => entry.id));
+  meterConfiguratorScales.forEach((/** @type {any} */ scale) => (scale.indicators || []).forEach((/** @type {any} */ entry) => {
+    const config = entry && typeof entry === "object" ? Object.values(entry)[0] : null;
+    if (config && typeof config === "object" && config.id) used.add(String(config.id));
+  }));
+  let id = "meter_indicator";
+  let suffix = 2;
+  while (used.has(id)) id = `meter_indicator_${suffix++}`;
+  if (kind === "arc") return { arc: { id, start_value: 0, end_value: 50, width: 8, color: "20C7B7", rounded: true } };
+  if (kind === "image") return { image: { id, src: "", value: 0, pivot_x: 0, pivot_y: 0, opa: "100%" } };
+  if (kind === "tick_style") return { tick_style: { start_value: 0, end_value: 100, width: 3, color_start: "20C7B7", color_end: "FF0000", local: true } };
+  return { line: { id, value: 0, width: 3, length: "85%", radial_offset: 0, color: "FF0000", rounded: true } };
+}
+
+function openMeterConfigurator(/** @type {any} */ widget) {
+  meterConfiguratorWidget = widget;
+  const source = widget.properties?.scales;
+  meterConfiguratorScales = JSON.parse(JSON.stringify(Array.isArray(source) && source.length ? source : [defaultMeterScale()]));
+  meterConfiguratorScaleIndex = 0;
+  meterPreviewIndicatorId = "";
+  meterPreviewTestValues = new Map();
+  $("#meter-dialog-widget-id").textContent = widget.id;
+  renderMeterConfigurator();
+  $("#meter-dialog").showModal();
+}
+
+function meterField(
+  /** @type {HTMLElement} */ parent, /** @type {string} */ labelText,
+  /** @type {any} */ target, /** @type {string} */ key,
+  /** @type {{type?: string, step?: string, wide?: boolean, color?: boolean}} */ options = {},
+) {
+  const label = document.createElement("label");
+  if (options.wide) label.className = "wide";
+  const caption = document.createElement("span");
+  caption.textContent = labelText;
+  const input = document.createElement("input");
+  input.type = options.type || "number";
+  if (options.step) input.step = options.step;
+  if (input.type === "checkbox") input.checked = Boolean(target[key]);
+  else input.value = String(target[key] ?? "");
+  input.addEventListener("input", () => {
+    target[key] = input.type === "checkbox" ? input.checked
+      : input.type === "number" ? (input.value === "" ? null : Number(input.value))
+        : input.value;
+    renderMeterConfiguratorPreview();
+  });
+  label.append(input.type === "checkbox" ? input : caption);
+  if (input.type === "checkbox") label.append(caption);
+  else if (options.color) {
+    input.setAttribute("list", "project-color-options");
+    const row = document.createElement("div");
+    row.className = "color-input-row";
+    const picker = document.createElement("input");
+    picker.type = "color";
+    picker.setAttribute("aria-label", `${labelText} auswählen`);
+    const syncPicker = () => {
+      const resolved = resolveViewerColor(state.project, input.value);
+      picker.value = resolved && /^#[0-9a-f]{6}$/i.test(resolved) ? resolved : "#000000";
+    };
+    picker.addEventListener("input", () => {
+      input.value = picker.value.slice(1).toUpperCase();
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    input.addEventListener("input", syncPicker);
+    syncPicker();
+    row.append(input, picker);
+    label.append(row);
+  } else label.append(input);
+  parent.append(label);
+  return input;
+}
+
+function meterPreviewIndicators(/** @type {any[]} */ scales = meterConfiguratorScales) {
+  /** @type {any[]} */
+  const entries = [];
+  scales.forEach((/** @type {any} */ scale, /** @type {number} */ scaleIndex) => (scale.indicators || []).forEach((/** @type {any} */ entry, /** @type {number} */ indicatorIndex) => {
+    if (!entry || typeof entry !== "object") return;
+    const [kind, config] = Object.entries(entry)[0] || [];
+    if (!["line", "arc", "image"].includes(kind) || !config || typeof config !== "object") return;
+    entries.push({
+      kind, config, scale, scaleIndex, indicatorIndex,
+      id: String(config.id || `${kind}_${scaleIndex}_${indicatorIndex}`),
+      key: `${scaleIndex}:${indicatorIndex}`,
+    });
+  }));
+  return entries;
+}
+
+function syncMeterPreviewControls() {
+  const entries = meterPreviewIndicators();
+  const select = $("#meter-preview-indicator");
+  const previous = meterPreviewIndicatorId;
+  select.replaceChildren();
+  entries.forEach((entry) => select.append(new Option(`${entry.config.id || entry.kind} · ${entry.kind}`, entry.key)));
+  meterPreviewIndicatorId = entries.some((entry) => entry.key === previous) ? previous : entries[0]?.key || "";
+  select.value = meterPreviewIndicatorId;
+  const selected = entries.find((entry) => entry.key === meterPreviewIndicatorId);
+  const slider = $("#meter-preview-value");
+  slider.disabled = !selected;
+  select.disabled = !entries.length;
+  if (!selected) {
+    $("#meter-preview-value-label").value = "—";
+    return;
+  }
+  const minimum = Number(selected.scale.range_from ?? 0);
+  const maximum = Number(selected.scale.range_to ?? 100);
+  slider.min = String(Math.min(minimum, maximum));
+  slider.max = String(Math.max(minimum, maximum));
+  slider.step = "1";
+  let testValue = meterPreviewTestValues.get(selected.key);
+  if (testValue === undefined || !Number.isFinite(testValue)) {
+    testValue = Number(
+      selected.kind === "arc" ? selected.config.end_value : selected.config.value,
+    ) || minimum;
+  }
+  testValue = clamp(testValue, Math.min(minimum, maximum), Math.max(minimum, maximum));
+  meterPreviewTestValues.set(selected.key, testValue);
+  slider.value = String(testValue);
+  $("#meter-preview-value-label").value = String(testValue);
+}
+
+function renderMeterConfiguratorPreview(/** @type {boolean} */ syncControls = true) {
+  if (syncControls) syncMeterPreviewControls();
+  const preview = $("#meter-preview");
+  preview.replaceChildren();
+  if (!meterConfiguratorWidget) return;
+  const previewScales = JSON.parse(JSON.stringify(meterConfiguratorScales));
+  meterPreviewIndicators(previewScales).forEach((entry) => {
+    const testValue = meterPreviewTestValues.get(entry.key);
+    if (testValue === undefined) return;
+    if (entry.kind === "arc") entry.config.end_value = testValue;
+    else entry.config.value = testValue;
+  });
+  const widget = {
+    ...meterConfiguratorWidget,
+    width: 320,
+    height: 320,
+    properties: { ...(meterConfiguratorWidget.properties || {}), scales: previewScales },
+  };
+  preview.append(renderViewerMeter(state.project, widget, []));
+}
+
+function renderMeterScaleEditor(/** @type {any} */ scale) {
+  const root = $("#meter-scale-editor");
+  root.replaceChildren();
+  const heading = document.createElement("div");
+  heading.className = "meter-indicator-heading";
+  const title = document.createElement("strong");
+  title.textContent = t("dialog.meter.scale", { number: meterConfiguratorScaleIndex + 1 });
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "button danger compact";
+  remove.textContent = t("dialog.meter.removeScale");
+  remove.disabled = meterConfiguratorScales.length === 1;
+  remove.addEventListener("click", () => {
+    meterConfiguratorScales.splice(meterConfiguratorScaleIndex, 1);
+    meterConfiguratorScaleIndex = Math.max(0, meterConfiguratorScaleIndex - 1);
+    renderMeterConfigurator();
+  });
+  heading.append(title, remove);
+  root.append(heading);
+  const grid = document.createElement("div");
+  grid.className = "meter-form-grid";
+  meterField(grid, "Minimum", scale, "range_from");
+  meterField(grid, "Maximum", scale, "range_to");
+  meterField(grid, "Winkelbereich (°)", scale, "angle_range");
+  meterField(grid, "Startdrehung (°)", scale, "rotation");
+  meterField(grid, "Ticks über Indikatoren", scale, "draw_ticks_on_top", { type: "checkbox", wide: true });
+  const ticks = scale.ticks ||= {};
+  meterField(grid, "Tick-Anzahl", ticks, "count");
+  meterField(grid, "Tick-Breite", ticks, "width");
+  meterField(grid, "Tick-Länge", ticks, "length", { type: "text" });
+  meterField(grid, "Tick-Farbe", ticks, "color", { type: "text", color: true });
+  const major = ticks.major ||= {};
+  meterField(grid, "Major-Abstand", major, "stride");
+  meterField(grid, "Major-Breite", major, "width");
+  meterField(grid, "Major-Länge", major, "length", { type: "text" });
+  meterField(grid, "Major-Farbe", major, "color", { type: "text", color: true });
+  meterField(grid, "Beschriftungsabstand", major, "label_gap");
+  root.append(grid);
+}
+
+function indicatorFields(/** @type {HTMLElement} */ parent, /** @type {string} */ kind, /** @type {any} */ config) {
+  if (kind !== "tick_style") meterField(parent, "ID", config, "id", { type: "text", wide: true });
+  if (kind === "line") {
+    meterField(parent, "Wert", config, "value");
+    meterField(parent, "Breite", config, "width");
+    meterField(parent, "Länge", config, "length", { type: "text" });
+    meterField(parent, "Radialer Versatz", config, "radial_offset", { type: "text" });
+    meterField(parent, "Farbe", config, "color", { type: "text", color: true });
+    meterField(parent, "Gerundet", config, "rounded", { type: "checkbox" });
+  } else if (kind === "arc") {
+    meterField(parent, "Startwert", config, "start_value");
+    meterField(parent, "Endwert", config, "end_value");
+    meterField(parent, "Breite", config, "width");
+    meterField(parent, "Abstand zur Skala", config, "padding");
+    meterField(parent, "Farbe", config, "color", { type: "text", color: true });
+    meterField(parent, "Gerundet", config, "rounded", { type: "checkbox" });
+  } else if (kind === "image") {
+    const label = document.createElement("label");
+    label.textContent = "Bildquelle";
+    const select = document.createElement("select");
+    select.append(new Option("—", ""));
+    imageLibrary().forEach((/** @type {any} */ entry) => select.append(new Option(entry.id, entry.id)));
+    if (config.src && !imageEntry(config.src)) select.append(new Option(`${config.src} (fehlt)`, config.src));
+    select.value = config.src || "";
+    select.addEventListener("change", () => { config.src = select.value; renderMeterConfiguratorPreview(); });
+    label.append(select);
+    parent.append(label);
+    meterField(parent, "Wert", config, "value");
+    meterField(parent, "Drehpunkt X", config, "pivot_x");
+    meterField(parent, "Drehpunkt Y", config, "pivot_y");
+    meterField(parent, "Deckkraft", config, "opa", { type: "text" });
+  } else {
+    meterField(parent, "Startwert", config, "start_value");
+    meterField(parent, "Endwert", config, "end_value");
+    meterField(parent, "Breite", config, "width");
+    meterField(parent, "Startfarbe", config, "color_start", { type: "text", color: true });
+    meterField(parent, "Endfarbe", config, "color_end", { type: "text", color: true });
+    meterField(parent, "Lokaler Verlauf", config, "local", { type: "checkbox" });
+  }
+}
+
+function renderMeterIndicators(/** @type {any} */ scale) {
+  const list = $("#meter-indicator-list");
+  list.replaceChildren();
+  (scale.indicators ||= []).forEach((/** @type {any} */ entry, /** @type {number} */ index) => {
+    const [kind, config] = Object.entries(entry)[0] || ["line", {}];
+    const card = document.createElement("div");
+    card.className = "meter-indicator-card";
+    const header = document.createElement("div");
+    header.className = "meter-indicator-card-header";
+    const type = document.createElement("select");
+    [["line", "Zeiger (Linie)"], ["arc", "Bogen"], ["image", "Bildzeiger"], ["tick_style", "Tick-Farbbereich"]]
+      .forEach(([value, label]) => type.append(new Option(label, value)));
+    type.value = kind;
+    type.addEventListener("change", () => {
+      const replacement = defaultMeterIndicator(type.value);
+      const replacementConfig = Object.values(replacement)[0];
+      if (config?.id && replacementConfig && typeof replacementConfig === "object") replacementConfig.id = config.id;
+      scale.indicators[index] = replacement;
+      renderMeterConfigurator();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "button danger compact";
+    remove.textContent = "×";
+    remove.title = t("dialog.meter.removeIndicator");
+    remove.addEventListener("click", () => { scale.indicators.splice(index, 1); renderMeterConfigurator(); });
+    header.append(type, remove);
+    const fields = document.createElement("div");
+    fields.className = "meter-indicator-fields";
+    indicatorFields(fields, kind, config);
+    card.append(header, fields);
+    list.append(card);
+  });
+}
+
+function renderMeterConfigurator() {
+  const list = $("#meter-scale-list");
+  list.replaceChildren();
+  meterConfiguratorScales.forEach((_, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `button subtle meter-scale-button${index === meterConfiguratorScaleIndex ? " active" : ""}`;
+    button.textContent = t("dialog.meter.scale", { number: index + 1 });
+    button.addEventListener("click", () => { meterConfiguratorScaleIndex = index; renderMeterConfigurator(); });
+    list.append(button);
+  });
+  const scale = meterConfiguratorScales[meterConfiguratorScaleIndex];
+  renderMeterScaleEditor(scale);
+  renderMeterIndicators(scale);
+  renderMeterConfiguratorPreview();
+}
+
+function addMeterScale() {
+  meterConfiguratorScales.push(defaultMeterScale());
+  meterConfiguratorScaleIndex = meterConfiguratorScales.length - 1;
+  renderMeterConfigurator();
+}
+
+function addMeterIndicator() {
+  const scale = meterConfiguratorScales[meterConfiguratorScaleIndex];
+  scale.indicators ||= [];
+  scale.indicators.push(defaultMeterIndicator());
+  renderMeterConfigurator();
+}
+
+function applyMeterConfigurator() {
+  if (!meterConfiguratorWidget) return;
+  pushUndo();
+  meterConfiguratorWidget.properties ||= {};
+  meterConfiguratorWidget.properties.scales = JSON.parse(JSON.stringify(meterConfiguratorScales));
+  markProjectDirty();
+  $("#meter-dialog").close();
+  renderDesigner();
+}
+
 function appendPropertyControl(/** @type {any} */ label, /** @type {any} */ control, /** @type {any} */ property, /** @type {any} */ widget = state.selectedWidget) {
+  if (property.kind === "json" && widget?.widget_type === "meter" && property.key === "scales") {
+    const column = document.createElement("div");
+    column.className = "meter-json-control";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button subtle compact";
+    button.textContent = t("dynprops.openMeterConfigurator");
+    button.addEventListener("click", () => openMeterConfigurator(widget));
+    column.append(button, control);
+    label.append(column);
+    return;
+  }
   if (property.kind === "text") {
     const row = document.createElement("div");
     row.className = "text-with-icon-row";
@@ -5664,7 +6053,17 @@ async function updateDynamicProperty(/** @type {any} */ widget, /** @type {any} 
     return;
   }
 
-  const value = propertyInputValue(property, control);
+  let value;
+  try {
+    value = propertyInputValue(property, control);
+    if (property.kind === "json" && !Array.isArray(value)) {
+      throw new Error(t("dynprops.jsonArrayRequired"));
+    }
+    control.setCustomValidity("");
+  } catch (error) {
+    control.setCustomValidity(error instanceof Error ? error.message : String(error));
+    return;
+  }
 
   // An empty field means "unset", not "set to empty" - carrying blanks into
   // layout or grid placement would emit keys the source never had.

@@ -53,6 +53,7 @@ export function parseListValue(property, text) {
  * @param {{checked?: boolean, value?: string}} control */
 export function propertyInputValue(property, control) {
   if (property.kind === "bool") return control.checked;
+  if (property.kind === "json") return JSON.parse(String(control.value ?? ""));
   if (LIST_KINDS.includes(property.kind || "")) return parseListValue(property, control.value);
   if (["int", "float"].includes(property.kind || "")) return control.value === "" ? null : Number(control.value);
   return control.value;

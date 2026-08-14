@@ -428,6 +428,98 @@ def test_addon_bar_and_arc_export_and_import_without_changing_core(tmp_path: Pat
     assert widgets["temperature_arc"]["properties"]["value"] == 42
 
 
+def test_meter_all_scales_and_indicators_roundtrip(tmp_path: Path) -> None:
+    service = DesignerService(tmp_path)
+    source = """
+lvgl:
+  displays: [display_id]
+  widgets:
+    - meter:
+        id: climate_meter
+        width: 180
+        height: 180
+        scales:
+          - range_from: -10
+            range_to: 40
+            angle_range: 240
+            rotation: 150
+            ticks:
+              count: 51
+              color: 0x808080
+              major: {stride: 5, length: 13, label_gap: 6}
+            indicators:
+              - line: {id: temperature_needle, value: 3, width: 2, color: 0xFF0000, length: 90%}
+              - arc: {start_value: -10, end_value: 3, color: 0x00AAFF, width: 5}
+              - image: {id: image_needle, src: needle_asset, value: 12, pivot_x: 4, pivot_y: 8}
+              - tick_style: {start_value: -10, end_value: 40, color_start: 0x0000BD, color_end: 0xBD0000, local: true}
+          - range_from: 0
+            range_to: 60
+            angle_range: 360
+            indicators:
+              - line: {id: seconds_hand, value: 30}
+"""
+    imported = service.import_yaml(source)
+    assert imported["valid"]
+    meter = imported["project"]["widgets"][0]
+    assert meter["widget_type"] == "meter"
+    assert len(meter["properties"]["scales"]) == 2
+    assert meter["properties"]["scales"][0]["indicators"][0]["line"]["color"] == "FF0000"
+
+    exported = service.export_yaml(imported["project"])["yaml"]
+    assert "temperature_needle" in exported
+    assert "0xFF0000" in exported
+    assert "seconds_hand" in exported
+    again = service.import_yaml(f"lvgl:\n{exported.split('lvgl:', 1)[1]}")
+    assert again["valid"]
+    assert again["project"]["widgets"][0]["properties"]["scales"] == meter["properties"]["scales"]
+
+
+def test_meter_indicator_ids_share_the_global_namespace(tmp_path: Path) -> None:
+    service = DesignerService(tmp_path)
+    result = service.import_yaml("""
+lvgl:
+  widgets:
+    - label: {id: shared_id, text: conflict}
+    - meter:
+        id: meter_id
+        scales:
+          - indicators:
+              - line: {id: shared_id, value: 10}
+""")
+    assert not result["valid"]
+    assert any("Duplicate id 'shared_id'" in issue["message"] for issue in result["issues"])
+
+
+def test_slider_action_exports_meter_indicator_lambda(tmp_path: Path) -> None:
+    service = DesignerService(tmp_path)
+    project = project_with_button()
+    project["widgets"] = [
+        {
+            "id": "meter_id", "widget_type": "meter", "width": 180, "height": 180,
+            "properties": {"scales": [{
+                "range_from": 0, "range_to": 100,
+                "indicators": [{"line": {"id": "needle", "value": 0}}],
+            }]},
+            "style_tree": {}, "children": [],
+        },
+        {
+            "id": "slider_id", "widget_type": "slider", "width": 160, "height": 24,
+            "properties": {"min_value": 0, "max_value": 100},
+            "events": {"on_value": [{
+                "lvgl.indicator.update": {
+                    "id": "needle",
+                    "value": {"__esphome_lambda__": "return int(x);"},
+                },
+            }]},
+            "style_tree": {}, "children": [],
+        },
+    ]
+    exported = service.export_yaml(project)["yaml"]
+    assert "lvgl.indicator.update:" in exported
+    assert "value: !lambda" in exported
+    assert "return int(x);" in exported
+
+
 def test_project_exports_esphome_yaml(tmp_path: Path) -> None:
     result = DesignerService(tmp_path).export_yaml(project_with_button())
     assert "lvgl:" in result["yaml"]

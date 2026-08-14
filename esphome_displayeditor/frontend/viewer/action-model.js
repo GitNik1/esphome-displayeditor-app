@@ -24,6 +24,32 @@ export function findViewerWidget(project, id) {
   )) || null;
 }
 
+/** @param {any} project @param {unknown} id @returns {any | null} */
+export function findViewerIndicator(project, id) {
+  /** @type {any | null} */
+  let found = null;
+  /** @param {any[]} widgets */
+  const visit = (widgets) => {
+    for (const widget of widgets || []) {
+      if (widget.widget_type === "meter") {
+        for (const scale of widget.properties?.scales || []) {
+          for (const entry of scale?.indicators || []) {
+            const config = entry && typeof entry === "object" ? Object.values(entry)[0] : null;
+            if (config && typeof config === "object" && String(config.id || "") === String(id)) {
+              found = config;
+              return;
+            }
+          }
+        }
+      }
+      visit(widget.children || []);
+      if (found) return;
+    }
+  };
+  visit(viewerWidgetRoots(project));
+  return found;
+}
+
 /** @param {any} payload @returns {string[]} */
 export function viewerActionIds(payload) {
   if (["string", "number"].includes(typeof payload)) return [String(payload)];

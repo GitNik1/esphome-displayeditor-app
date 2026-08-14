@@ -430,6 +430,7 @@
                 <label><span data-i18n="actions.type">Aktion</span>
                   <select id="widget-action-type">
                     <option value="update" data-i18n="actions.type.update">Stil oder Inhalt ändern</option>
+                    <option value="indicator_update" data-i18n="actions.type.indicatorUpdate">Meter-Indikator ändern</option>
                     <option value="show" data-i18n="actions.type.show">Widget anzeigen</option>
                     <option value="hide" data-i18n="actions.type.hide">Widget ausblenden</option>
                     <option value="page_show" data-i18n="actions.type.pageShow">Seite öffnen</option>
@@ -459,6 +460,24 @@
                     <input id="widget-action-flow-fast-duration" type="number" min="10" value="200">
                   </label>
                   <p class="hint" data-i18n="actions.flow.hint">Der Wert (x) aus „Wert geändert“ steuert Sichtbarkeit, Richtung und Tempo. Nur mit Auslöser „Wert geändert“ nutzbar.</p>
+                </div>
+                <div id="widget-action-indicator-fields" class="hidden">
+                  <label class="checkbox-field"><input id="widget-action-indicator-trigger-value" type="checkbox">
+                    <span data-i18n="actions.indicator.triggerValue">Wert des Auslösers (x) verwenden</span>
+                  </label>
+                  <label><span data-i18n="actions.indicator.value">Wert</span>
+                    <input id="widget-action-indicator-value" type="number" step="any" data-i18n-attr="placeholder:actions.placeholder.unchanged" placeholder="unverändert">
+                  </label>
+                  <label><span data-i18n="actions.indicator.startValue">Startwert (Bogen)</span>
+                    <input id="widget-action-indicator-start-value" type="number" step="any" data-i18n-attr="placeholder:actions.placeholder.unchanged" placeholder="unverändert">
+                  </label>
+                  <label><span data-i18n="actions.indicator.endValue">Endwert (Bogen)</span>
+                    <input id="widget-action-indicator-end-value" type="number" step="any" data-i18n-attr="placeholder:actions.placeholder.unchanged" placeholder="unverändert">
+                  </label>
+                  <label><span data-i18n="actions.opacity">Deckkraft</span>
+                    <input id="widget-action-indicator-opacity" maxlength="16" data-i18n-attr="placeholder:actions.opacity.placeholder" placeholder="z. B. 50% oder COVER">
+                  </label>
+                  <p class="hint" data-i18n="actions.indicator.hint">Der dynamische Wert ist nur mit dem Auslöser „Wert geändert“ verfügbar.</p>
                 </div>
                 <div id="widget-action-update-fields">
                   <label id="widget-action-text-field"><span data-i18n="actions.text">Text</span>
@@ -838,6 +857,37 @@
       </div>
       <div class="dialog-actions glyph-dialog-actions">
         <button id="finish-glyph-dialog" type="button" class="button primary" data-i18n="dialog.glyph.finish">Fertig</button>
+      </div>
+    </dialog>
+
+    <dialog id="meter-dialog" class="meter-dialog" aria-labelledby="meter-dialog-title">
+      <div class="dialog-heading">
+        <div><h2 id="meter-dialog-title" data-i18n="dialog.meter.title">Meter konfigurieren</h2><small id="meter-dialog-widget-id"></small></div>
+        <button id="close-meter-dialog" type="button" class="icon-button" aria-label="Meter-Konfigurator schließen">×</button>
+      </div>
+      <div class="meter-dialog-body">
+        <aside class="meter-config-list">
+          <div class="meter-config-list-heading"><strong data-i18n="dialog.meter.scales">Skalen</strong><button id="meter-add-scale" type="button" class="button subtle compact">+</button></div>
+          <div id="meter-scale-list"></div>
+        </aside>
+        <section class="meter-config-editor">
+          <div id="meter-scale-editor"></div>
+          <div class="meter-indicator-heading"><strong data-i18n="dialog.meter.indicators">Indikatoren</strong><button id="meter-add-indicator" type="button" class="button subtle compact" data-i18n="dialog.meter.addIndicator">+ Indikator</button></div>
+          <div id="meter-indicator-list"></div>
+        </section>
+        <aside class="meter-config-preview">
+          <strong data-i18n="dialog.meter.preview">Vorschau</strong>
+          <div id="meter-preview"></div>
+          <div class="meter-preview-controls">
+            <label><span data-i18n="dialog.meter.previewIndicator">Test-Indikator</span><select id="meter-preview-indicator"></select></label>
+            <label><span><span data-i18n="dialog.meter.previewValue">Testwert</span>: <output id="meter-preview-value-label">0</output></span><input id="meter-preview-value" type="range" min="0" max="100" value="0"></label>
+          </div>
+          <p class="hint" data-i18n="dialog.meter.previewHint">Die Vorschau aktualisiert sich sofort. Gespeichert wird erst mit „Übernehmen“.</p>
+        </aside>
+      </div>
+      <div class="dialog-actions">
+        <button id="cancel-meter-dialog" type="button" class="button subtle" data-i18n="common.cancel">Abbrechen</button>
+        <button id="apply-meter-dialog" type="button" class="button primary" data-i18n="common.apply">Übernehmen</button>
       </div>
     </dialog>
 

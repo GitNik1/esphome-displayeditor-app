@@ -8,7 +8,7 @@ import { renderViewerWidgetContent } from "./widget-content.js";
 const SUPPORTED_WIDGETS = new Set([
   "obj", "container", "label", "button", "switch", "slider", "bar", "arc", "image", "animimg",
   "checkbox", "dropdown", "roller", "textarea", "keyboard", "tileview", "tabview",
-  "led", "spinner", "qrcode", "spinbox",
+  "led", "spinner", "qrcode", "spinbox", "meter",
 ]);
 
 /** @param {any} project @param {any} item @param {number[]} timers

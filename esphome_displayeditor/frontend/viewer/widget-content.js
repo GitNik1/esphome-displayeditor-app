@@ -2,7 +2,7 @@
 
 import { applyViewerPartStyle } from "./dom-style.js";
 import { clamp, resolveViewerColor, viewerOpacity } from "./style.js";
-import { renderViewerArc, renderViewerBar, renderViewerImage } from "./widget-primitives.js";
+import { renderViewerArc, renderViewerBar, renderViewerImage, renderViewerMeter } from "./widget-primitives.js";
 
 /** @param {any} widget */
 export function viewerWidgetText(widget) {
@@ -143,6 +143,7 @@ export function renderViewerWidgetContent(project, widget, timers, activeStates 
   }
   if (widget.widget_type === "bar") return renderViewerBar(project, widget, activeStates);
   if (widget.widget_type === "arc") return renderViewerArc(project, widget, activeStates);
+  if (widget.widget_type === "meter") return renderViewerMeter(project, widget, activeStates);
   if (widget.widget_type === "image") return renderViewerImage(project, widget, widget.properties?.src);
   if (widget.widget_type === "animimg") {
     const frames = Array.isArray(widget.properties?.src) ? widget.properties.src : [];

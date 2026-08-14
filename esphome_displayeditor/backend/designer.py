@@ -13,7 +13,7 @@ from .addon_widgets import register_addon_widgets
 from .designer_core.idgen import IdRegistry
 from .designer_core.model import PROJECT_FORMAT, PROJECT_FORMAT_VERSION, Project
 from .designer_core.widgetschema import GRID_CELL_PROPS, STATE_VALUES, WIDGET_SCHEMAS
-from .designer_core.yamlexport import ExportError, export_project
+from .designer_core.yamlexport import ESPHomeDumper, ExportError, HexColor, export_project
 from .designer_core.yamlimport import (
     LvglImportError,
     import_esphome_yaml,
@@ -23,8 +23,99 @@ from .msgbox_support import apply_msgbox_payload, materialize_msgboxes
 from .page_support import apply_surface_payload, materialize_surfaces, strip_empty_root_widgets
 
 _ID_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_HEX_COLOR_PATTERN = re.compile(r"^(?:0x|#)?([0-9A-Fa-f]{6})$")
 
 register_addon_widgets()
+
+
+class _ActionLambda(str):
+    pass
+
+
+def _represent_action_lambda(dumper, value):
+    return dumper.represent_scalar("!lambda", str(value))
+
+
+ESPHomeDumper.add_representer(_ActionLambda, _represent_action_lambda)
+
+
+def _materialize_action_lambdas(payload: dict[str, Any]) -> None:
+    def visit(value: Any) -> Any:
+        if isinstance(value, list):
+            return [visit(item) for item in value]
+        if isinstance(value, dict):
+            if set(value) == {"__esphome_lambda__"}:
+                return _ActionLambda(str(value["__esphome_lambda__"]))
+            return {key: visit(item) for key, item in value.items()}
+        return value
+
+    converted = visit(payload)
+    payload.clear()
+    payload.update(converted)
+
+
+def _normalise_meter_payload(payload: dict[str, Any], *, for_export: bool) -> None:
+    """Normalise nested meter scales without changing the shared core."""
+    def meter_value(value: Any, key: str = "") -> Any:
+        if isinstance(value, list):
+            return [meter_value(item) for item in value]
+        if isinstance(value, dict):
+            return {name: meter_value(item, name) for name, item in value.items()}
+        if key == "color" or key.endswith("_color"):
+            if for_export and isinstance(value, str):
+                match = _HEX_COLOR_PATTERN.fullmatch(value.strip())
+                return HexColor(int(match.group(1), 16)) if match else value
+            if not for_export and isinstance(value, int) and not isinstance(value, bool):
+                return f"{value & 0xFFFFFF:06X}"
+            if not for_export and isinstance(value, str):
+                match = _HEX_COLOR_PATTERN.fullmatch(value.strip())
+                return match.group(1).upper() if match else value
+        return value
+
+    def visit(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        if value.get("widget_type") == "meter" and isinstance(value.get("properties"), dict):
+            scales = value["properties"].get("scales")
+            if scales is not None:
+                value["properties"]["scales"] = meter_value(
+                    scales if isinstance(scales, list) else [scales]
+                )
+        for item in value.values():
+            visit(item)
+
+    visit(payload)
+
+
+def _claim_meter_indicator_ids(
+    properties: dict[str, Any], registry: IdRegistry, issues: list[dict], owner: str,
+) -> None:
+    scales = properties.get("scales")
+    if not isinstance(scales, list):
+        scales = [scales] if isinstance(scales, dict) else []
+    for scale_index, scale in enumerate(scales):
+        if not isinstance(scale, dict):
+            continue
+        for indicator_index, entry in enumerate(scale.get("indicators") or []):
+            if not isinstance(entry, dict) or len(entry) != 1:
+                continue
+            kind, config = next(iter(entry.items()))
+            if not isinstance(config, dict) or not config.get("id"):
+                continue
+            indicator_id = str(config["id"])
+            if not _ID_PATTERN.fullmatch(indicator_id):
+                issues.append({
+                    "severity": "error", "widget": indicator_id,
+                    "message": "Invalid ESPHome indicator id.",
+                })
+            registry.claim(
+                indicator_id,
+                f"meter indicator at {owner}.scales[{scale_index}].indicators[{indicator_index}].{kind}",
+            )
 
 
 def _normalise_button_child_text(
@@ -237,6 +328,8 @@ class DesignerService:
                 if not _ID_PATTERN.fullmatch(node.id):
                     issues.append({"severity": "error", "widget": node.id, "message": "Invalid ESPHome id."})
                 registry.claim(node.id, f"widget at {node_path}")
+                if node.widget_type == "meter":
+                    _claim_meter_indicator_ids(node.properties, registry, issues, node_path)
                 visit(node.children, depth + 1, f"{node_path}.children")
 
         visit(project.widgets)
@@ -264,6 +357,10 @@ class DesignerService:
                         "message": "Invalid ESPHome id.",
                     })
                 registry.claim(widget_id, f"widget at {node_path}")
+                if widget_type == "meter":
+                    _claim_meter_indicator_ids(
+                        node.get("properties", {}), registry, issues, node_path,
+                    )
                 visit_surface_widgets(
                     node.get("children", []), depth + 1, f"{node_path}.children")
 
@@ -393,6 +490,7 @@ class DesignerService:
 
         payload, surface_stats = materialize_surfaces(result.project, result.issues)
         payload["msgboxes"], msgbox_stats = materialize_msgboxes(result.project, result.issues)
+        _normalise_meter_payload(payload, for_export=False)
         # Run the normal validation too, so the caller gets one issue list and
         # the same failure modes as any other project.
         _project, validation_issues = self.validate(payload)
@@ -451,6 +549,8 @@ class DesignerService:
 
     def export_yaml(self, payload: dict[str, Any]) -> dict:
         normalized_payload, repaired_buttons = _normalise_button_child_text(payload)
+        _normalise_meter_payload(normalized_payload, for_export=True)
+        _materialize_action_lambdas(normalized_payload)
         project, issues = self.validate(normalized_payload)
         if any(issue["severity"] == "error" for issue in issues):
             raise ApiError("invalid_project", "Project validation failed.", 422, {"issues": issues})
