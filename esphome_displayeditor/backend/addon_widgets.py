@@ -14,6 +14,7 @@ from .designer_core.widgetschema import (
     WIDGET_SCHEMAS,
     WidgetSchema,
     _paint_style_props,
+    _text_style_props,
 )
 
 
@@ -100,3 +101,19 @@ def register_addon_widgets() -> None:
             ),
         )
 
+    if "meter" not in WIDGET_SCHEMAS:
+        WIDGET_SCHEMAS["meter"] = WidgetSchema(
+            type_key="meter",
+            label_de="Messinstrument (Meter)",
+            label_en="Meter",
+            default_size=(180, 180),
+            parts=("main", "ticks", "indicator", "items"),
+            properties=(
+                PropertyDef(
+                    "scales", "json", CONTENT, default=[],
+                    label_de="Skalen (JSON)", label_en="Scales (JSON)",
+                ),
+                *_paint_style_props(),
+                *_text_style_props("ticks"),
+            ),
+        )

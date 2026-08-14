@@ -1,6 +1,24 @@
 # Umsetzungsplan: Vollständigere ESPHome-LVGL-Unterstützung
 
-## Aktueller Stand (06.08.2026, nach `msgbox`)
+## Aktueller Stand (14.08.2026, Version 0.23.0)
+
+### Nächste Schritte
+
+1. **0.23.0 veröffentlichen**: manueller Smoke-Test in Home Assistant bzw.
+   Docker, Release Notes prüfen und Version taggen.
+2. ✅ **0.24.0: `meter` umgesetzt**: vollständige Multi-Scale-Struktur über
+   einen validierten JSON-Editor, verlustfreier Import/Export, Viewer für alle
+   vier Indikatortypen und sichere `lvgl.indicator.update`-Simulation.
+3. **Danach nach Nutzerbedarf priorisieren**: `buttonmatrix` ist der
+   wahrscheinlich nützlichste verbleibende Spezialtyp. `line` und `canvas`
+   bleiben wegen ihrer Sondermodelle zurückgestellt.
+4. **Optionale Top-Level-Konfiguration**: `touchscreens` kann als kleiner,
+   unabhängiger Ausbau nach Unterplan 3d umgesetzt werden. `encoders` und
+   `keypads` brauchen vorab eine eigene Bewertung.
+
+Die Roadmap priorisiert abgeschlossene vertikale Schnitte und konkreten Nutzen
+vor einer nominellen Unterstützung jedes LVGL-Typs. Unbekannte Typen bleiben
+weiterhin verlustfrei im YAML erhalten.
 
 - **Phase 1 vollständig abgeschlossen**: `checkbox`, `arc`, `bar`,
   `dropdown`, `roller`, `textarea` und `keyboard` haben jetzt ein
@@ -151,9 +169,11 @@
   Optionen), generische Line/Arc-Style-Keys, `anim_time`/`blend_mode`/
   `clip_corner`/`base_dir` - laut Einschätzung deutlich seltener in echten
   ESPHome-Configs gebraucht.
-- Die Aktionsliste (`widget-actions`-Sektion) existiert nur für `button` und
-  bietet nur eine feste Allowlist (`show`/`hide`/`update`/Seite öffnen), nicht
-  die volle ESPHome-LVGL-Aktionspalette.
+- Die Aktionsliste (`widget-actions`-Sektion) ist für alle Widget-Typen
+  verfügbar. Trigger und Zielaktionen bleiben absichtlich auf eine feste,
+  sicher simulierbare Allowlist begrenzt. Dazu gehören Widget-Updates,
+  Seitenwechsel, `animimg`-Steuerung und die aus GlowLine-Strokes erzeugte
+  Energiefluss-Aktion; unbekannte Aktionen bleiben als YAML erhalten.
 - Top-Level-`lvgl:`-Schlüssel `touchscreens` (Unterplan 3d geschrieben,
   Umsetzung offen), `encoders`, `keypads`,
   `rotation`, `gradients`, `animations`, `byte_order`, `buffer_size`,
@@ -208,7 +228,7 @@ die den sicheren Import fremder Konfigurationen erst ermöglicht.
 |---|---|---|
 | `tabview` | Eigene Navigationsebene, ähnlich den bereits unterstützten `pages`, aber innerhalb eines einzelnen Widgets | ✅ umgesetzt |
 | `tileview` | Analog zu `tabview`, kachelbasierte Navigation | ✅ umgesetzt |
-| `meter` | Komplexere Konfiguration (Skalen, Nadeln, Bögen) - mehr Aufwand als `arc`/`bar` | Unterplan 3c geschrieben, Umsetzung offen |
+| `meter` | Komplexere Konfiguration (Skalen, Nadeln, Bögen) - mehr Aufwand als `arc`/`bar` | ✅ umgesetzt |
 
 ## 3a. Unterplan: `tabview` und `tileview` (Stand 04.08.2026, vor Umsetzung; beide am 06.08.2026 umgesetzt - siehe "Aktueller Stand" oben)
 
@@ -527,7 +547,7 @@ Import muss dieselbe Struktur liefern.
   `+ Page`/`+ Bottom-Layer`/`+ Top-Layer`, kein eigener Reiter - fügt sich
   nahtlos in die bereits vorhandene Surface-Auswahl ein.
 
-## 3c. Unterplan: `meter` (Stand 06.08.2026, vor Umsetzung)
+## 3c. Unterplan: `meter` (Stand 06.08.2026; am 14.08.2026 umgesetzt)
 
 ### 3c.1 Warum `meter` nochmal anders ist als alles bisher Umgesetzte
 
@@ -571,7 +591,7 @@ dagegen unproblematisch: `STYLE_PARTS` in `model.py` enthält bereits
 `"indicator"`, `"ticks"`, `"items"` (aus früheren Widgets) - dieser Teil
 braucht **keine Änderung**.
 
-### 3c.2 Architekturentscheidung: Single-Scale-MVP mit einem neuen `json`-Property-Kind
+### 3c.2 Umgesetzte Architektur: vollständige Multi-Scale-Struktur mit `json`-Property-Kind
 
 Statt eines komplett neuen, bespoke "verschachtelte Listen von getaggten
 Varianten"-Editors (der im Aufwand an einen eigenen Mini-Formular-Builder
@@ -579,12 +599,8 @@ heranreicht) wird `meter` bewusst vereinfacht modelliert - dieselbe
 Denkweise wie bei `keyboard` (Platzhalter statt Tasten-Simulation) oder
 `tabview`/`tileview` im Viewer (kein echtes Wischen):
 
-- **Nur die erste Scale wird editierbar gemacht.** `range_from`,
-  `range_to`, `angle_range`, `rotation`, `draw_ticks_on_top` werden als
-  normale flache `PropertyDef`s (Kind `float`/`int`/`bool`) direkt auf dem
-  `meter`-Widget registriert - identisch zum bisherigen Muster.
-- **`indicators` und `ticks` werden als ein neues Property-Kind `json`**
-  abgebildet: ein Textfeld, das rohes JSON (Liste bzw. Dict) enthält und
+- **Die vollständige `scales`-Liste wird als neues Property-Kind `json`**
+  abgebildet: ein Textfeld, das rohes JSON enthält und
   beim Speichern mit `JSON.parse`/`JSON.stringify` validiert wird - exakt
   dieselbe Parse-/Fehlerbehandlung, die `parseSurfaceObject()`/
   `applySurfaceSettings()` in `app.js` für die Seiten-/Layer-Felder
@@ -593,11 +609,9 @@ Denkweise wie bei `keyboard` (Platzhalter statt Tasten-Simulation) oder
   Property-Kind im Eigenschaften-Panel). Farben müssen im JSON als String
   eingegeben werden (z. B. `"0xFF0000"`), es gibt in diesem MVP keinen
   Farb-Picker für Indikator-Felder.
-- **Mehrere Scales sind in diesem MVP nicht unterstützt** - eine
-  ausdrückliche, dokumentierte Grenze. Ein Import mit mehr als einer Scale
-  behält die weiteren Scales unverändert im `extra`-Passthrough (nicht
-  editierbar, aber nicht verloren), analog zu jedem anderen unmodellierten
-  Schlüssel.
+- **Mehrere Scales sind vollständig unterstützt.** Mapping-Kurzform und Liste
+  werden beim Import auf eine Liste normalisiert; alle Skalen bleiben
+  editierbar und werden wieder als gültige `scales:`-Liste exportiert.
 
 Diese Entscheidung ist bewusst **kein Kompromiss beim Datenverlust** (jedes
 Feld bleibt YAML-treu erhalten), sondern nur bei der **Editier-Bequemlichkeit**
@@ -606,7 +620,7 @@ Style-Feinschliff) - für den weit überwiegenden Fall (ein Messgerät, eine
 Scale, ein bis drei Indikatoren) ist der Aufwand für Nutzer:innen
 überschaubar (ein JSON-Textfeld statt zwölf Einzelfelder).
 
-### 3c.3 Import/Export: ein einziger Wrap-/Unwrap-Schritt
+### 3c.3 Import/Export: vollständige verschachtelte Struktur
 
 Anders als bei `checkbox`/`arc`/`bar`/`led`/`spinner`/`qrcode`/`spinbox`
 (die **keine** Änderung an `yamlimport.py`/`yamlexport.py` brauchten, weil
@@ -614,19 +628,12 @@ ihre Properties 1:1 flache Top-Level-Schlüssel sind) braucht `meter` einen
 kleinen, auf `widget_type == "meter"` beschränkten Sonderfall - kleiner als
 bei `tabview`/`tileview`, da hier kein neuer Pseudo-Widget-Typ nötig ist:
 
-- **Export** (`yamlexport.py`, `_widget_dict()` oder ein neuer Helfer
-  `_meter_scale_dict()`): die flachen Properties (`range_from`, `range_to`,
-  `angle_range`, `rotation`, `draw_ticks_on_top`) plus die geparsten
-  `indicators`/`ticks`-JSON-Werte werden zu **einem** Scale-Dict
-  zusammengebaut und als `scales: [<dict>]`-Liste mit einem Element
-  geschrieben.
-- **Import** (`yamlimport.py`, `_classify_widget_body()` oder ein
-  meter-spezifischer Vorverarbeitungsschritt): `scales[0]` (erstes Element,
-  egal ob als Liste oder einzelnes Mapping im Quell-YAML geschrieben) wird
-  in die flachen Properties plus die beiden JSON-Strings zerlegt.
-  `scales[1:]` (falls vorhanden) wandert unverändert in `node.extra` (mit
-  einer Import-Issue "C" analog zum bestehenden Muster für unmodellierte
-  Schlüssel).
+- **Export**: `properties.scales` wird vollständig rekursiv ausgegeben;
+  verschachtelte Farbfelder nutzen dieselbe Hex-/Farb-ID-Auflösung wie normale
+  Widget-Farben.
+- **Import**: Mapping-Kurzform und Liste werden zu einer vollständigen Liste
+  normalisiert. Verschachtelte Farben werden normalisiert, ohne andere Werte
+  oder zusätzliche Skalen zu verändern.
 - Indikator-`id:`-Werte (z. B. `temperature_needle` oben) werden zusätzlich
   in der `IdRegistry` registriert (Kollisionsprüfung), obwohl der Rest des
   Indikators nicht modelliert wird - sonst könnte ein Indikator-Id
@@ -649,46 +656,32 @@ Ein Meter ganz ohne visuelle Darstellung im Viewer wäre unbefriedigend -
 der Sinn des Widgets ist gerade die Visualisierung. Geplanter Umfang für
 eine erste Runde (bewusst *nicht* zurückgestellt wie bei `canvas`):
 
-- Hintergrund-Skala (Ticks): ein Kranz kleiner Linien, per Winkelberechnung
+- Hintergrund-Skalen (Ticks): ein Kranz kleiner Linien, per Winkelberechnung
   aus `angle_range`/`rotation`/`ticks.count` erzeugt - dieselbe
   Trigonometrie wie in `arcPoint()`/`describeViewerArc()` (schon für `arc`
   vorhanden), nur mehrfach statt einmal angewendet.
-  `ticks.major`-Beschriftung optional in einer ersten Runde weglassen.
+  einschließlich Major-Tick-Beschriftungen.
 - Jeder `indicators`-Eintrag wird nach Typ gerendert:
   - `arc`: wiederverwendet dieselbe SVG-Bogen-Logik wie das `arc`-Widget.
   - `line`: eine rotierte SVG-Linie vom Skalenmittelpunkt aus, Winkel aus
     `value` relativ zu `range_from`/`range_to`/`angle_range` berechnet.
   - `image`: ein rotiertes `<img>`, Pivot aus `pivot_x`/`pivot_y`.
-  - `tick_style`: in der ersten Runde ignoriert (reine Farbmodifikation der
-    Ticks in einem Wertebereich - kosmetische Verfeinerung, kein
-    eigenständig sichtbares Element).
-- **`lvgl.indicator.update` wird in dieser ersten Runde nicht simuliert**
-  (bewusster Nicht-Ziel-Eintrag, siehe unten) - der Meter zeigt im Viewer
-  nur die in `indicators[].value`/`start_value`/`end_value` hinterlegten
-  Startwerte, keine Laufzeit-Aktualisierung. Grund: die Indikatoren sind
-  nicht in der `IdRegistry`-artigen Live-Objekt-Struktur, die
-  `applyViewerAction()` für andere `lvgl.*.update`-Aktionen nutzt, sondern
-  nur JSON-Text - ihn dafür live durchsuchbar zu machen wäre ein
-  eigenständiges Stück Arbeit, das besser in einer separaten Runde bewertet
-  wird, nachdem klar ist, ob überhaupt Bedarf an Live-Metern besteht.
+  - `tick_style`: verändert Tick-Breite und Farbverlauf im angegebenen
+    Wertebereich, einschließlich `local`-Semantik.
+- **`lvgl.indicator.update` wird sicher simuliert**: `value`, `start_value`,
+  `end_value` und `opa` sind erlaubt; alle anderen Felder werden abgewiesen.
 
 ### 3c.6 Tests
 
-Analog zum bestehenden Muster: Roundtrip-Test in `test_designer.py`
-(Import → Export → Import, `scales[0]` korrekt zu flachen Properties plus
-JSON-Strings zerlegt und wieder zusammengesetzt), plus ein Fall mit
-mehreren Scales, der bestätigt, dass `scales[1:]` unangetastet in `extra`
-landet. Kein `viewer_runtime.test.mjs`-Test für `lvgl.indicator.update`,
-da diese Action bewusst nicht simuliert wird (siehe 3c.5).
+Umgesetzt sind Roundtrip- und ID-Kollisionstests im Backend sowie
+Frontend-Tests für Multi-Scale-Geometrie, Prozentlängen, Tick-Styles,
+JSON-Eingaben und `lvgl.indicator.update`.
 
 ### 3c.7 Nicht-Ziele dieser ersten `meter`-Runde
 
-- Mehrere Scales gleichzeitig editierbar.
 - Ein dediziertes Formular für einzelne Indikatoren (Hinzufügen per Klick,
   Typ-Auswahl arc/image/line/tick_style, Einzelfelder) - JSON-Textfeld nur.
-- `lvgl.indicator.update`-Simulation im Viewer.
-- `tick_style`-Indikatoren visuell im Viewer (nur Ticks selbst, keine
-  Farbverlauf-Modifikation).
+- Ein komfortabler Formular-Editor zusätzlich zum vollständigen JSON-Editor.
 
 Diese Punkte sind explizit spätere Ausbaustufen, keine endgültigen Grenzen -
 es lohnt sich, sie erneut zu bewerten, sobald echte Nutzung zeigt, welche
@@ -845,8 +838,8 @@ Für jedes neue Widget, exemplarisch am Muster der bestehenden Typen:
   sondern jeweils zusammen mit dem Widget behandelt werden, das die
   zusätzliche Property zuerst braucht (z. B. `arc`/`bar`-spezifische
   Indikator-Stile erst bei deren Umsetzung ergänzen).
-- Die Aktions-Allowlist (aktuell nur für `button`) muss pro neuem Widget um
-  dessen sinnvolle, sicher simulierbare Trigger/Aktionen erweitert werden
+- Die Aktions-Allowlist muss pro neuem Widget um dessen sinnvolle, sicher
+  simulierbare Trigger/Aktionen erweitert werden
   (z. B. `on_value` bei `dropdown`/`roller`, `on_ready` bei `textarea`) -
   jeweils mit derselben Vorsicht wie beim bestehenden Mechanismus (feste
   Allowlist, keine beliebige Aktionsausführung).
@@ -875,10 +868,11 @@ Für jedes neue Widget, exemplarisch am Muster der bestehenden Typen:
    Platzhalter (siehe Nebenbefund unten). `lvgl.textarea.update`/
    `lvgl.keyboard.update` in der Aktions-Allowlist, `text` als
    Live-Binding-Ziel für `textarea` (nutzt denselben Ziel-Namen wie `label`).
-5. Phase 1 damit vollständig abgeschlossen. Nächster Schritt: Phase 2
-   (`tabview`, `tileview`, `meter`) angehen, oder erst erneute
-   Bestandsaufnahme anhand von Nutzer-Feedback, ob sich die Prioritäten
-   verschoben haben.
+5. ✅ Phase 1 vollständig abgeschlossen.
+6. ✅ Phase 2 mit `tabview`, `tileview` und `meter` vollständig umgesetzt.
+7. ✅ Phase 3, Runde 1 (`led`, `spinner`, `qrcode`, `spinbox`) sowie
+   `msgboxes` abgeschlossen. `buttonmatrix`, `line` und `canvas` bleiben bis
+   zu konkretem Nutzerbedarf zurückgestellt.
 
 ### Nebenbefund aus Schritten 1-4
 

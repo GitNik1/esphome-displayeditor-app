@@ -2,6 +2,7 @@
 
 import {
   findViewerWidget,
+  findViewerIndicator,
   isViewerSafeLiteral,
   isViewerSafeStringList,
   viewerUpdatePayloads,
@@ -50,8 +51,47 @@ const LIST_KEYS = new Set(["options"]);
 /** @typedef {{handled: boolean, changed: boolean, warning?: boolean, message: string}} ActionResult */
 
 /** @param {any} project @param {string} name @param {any} payload @param {Translate} translate
+ * @param {any} [context]
  * @returns {ActionResult | null} */
-export function applyViewerUpdate(project, name, payload, translate) {
+export function applyViewerUpdate(project, name, payload, translate, context = {}) {
+  if (name === "lvgl.indicator.update") {
+    let changed = false;
+    const notes = [];
+    const updates = viewerUpdatePayloads(payload);
+    updates.forEach((update) => {
+      if (!isViewerSafeLiteral(update.id)) {
+        notes.push(translate("viewer.event.missingId"));
+        return;
+      }
+      const indicator = findViewerIndicator(project, update.id);
+      if (!indicator) {
+        notes.push(translate("viewer.event.updateNotFound", { id: update.id }));
+        return;
+      }
+      Object.entries(update).forEach(([key, value]) => {
+        if (key === "id") return;
+        if (key === "value" && value && typeof value === "object"
+            && value.__esphome_lambda__ === "return int(x);") {
+          value = Math.trunc(Number(context.x));
+        }
+        if (!["value", "start_value", "end_value", "opa"].includes(key) || !isViewerSafeLiteral(value)) {
+          notes.push(translate("viewer.event.notAllowed", { ref: `${update.id}.${key}` }));
+          return;
+        }
+        if (["value", "start_value", "end_value"].includes(key) && !Number.isFinite(Number(value))) {
+          notes.push(translate("viewer.event.expectedNumeric", { ref: `${update.id}.${key}` }));
+          return;
+        }
+        indicator[key] = ["value", "start_value", "end_value"].includes(key) ? Number(value) : value;
+        changed = true;
+      });
+    });
+    if (!updates.length) notes.push(translate("viewer.event.noValidUpdateData"));
+    return {
+      handled: true, changed, warning: Boolean(notes.length),
+      message: `${name}${notes.length ? ` (${notes.join("; ")})` : ""}`,
+    };
+  }
   const allowedKeys = UPDATE_KEYS[name];
   if (!allowedKeys) return null;
   let changed = false;

@@ -2,6 +2,7 @@
 
 import { viewerImageSource } from "./assets.js";
 import { arcPoint, describeViewerArc, numericWidgetRange, viewerBarGeometry } from "./geometry.js";
+import { meterLineGeometry, meterScales, meterTickGeometry, meterTickStyle, meterValueAngle } from "./meter.js";
 import { applyViewerPartStyle } from "./dom-style.js";
 import { clamp, effectiveViewerPartStyle, effectiveViewerStyle, resolveViewerColor, viewerOpacity } from "./style.js";
 
@@ -133,5 +134,131 @@ export function renderViewerArc(project, widget, activeStates) {
     control.append(input);
   }
   updateViewerArc(control, project, widget, activeStates);
+  return control;
+}
+
+/** @param {string} first @param {string} second @param {number} fraction */
+function interpolateMeterColor(first, second, fraction) {
+  /** @param {string} value */
+  const parse = (value) => /^#[0-9a-f]{6}$/i.test(value)
+    ? [1, 3, 5].map((index) => Number.parseInt(value.slice(index, index + 2), 16)) : null;
+  const a = parse(first);
+  const b = parse(second);
+  if (!a || !b) return first || second;
+  return `#${a.map((channel, index) => Math.round(channel + (b[index] - channel) * fraction)
+    .toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** @param {SVGElement} parent @param {string} name */
+function meterSvgElement(parent, name) {
+  const element = document.createElementNS(SVG_NAMESPACE, name);
+  parent.append(element);
+  return element;
+}
+
+/** @param {any} project @param {SVGElement} group @param {any} scale */
+function renderMeterTicks(project, group, scale) {
+  const ticks = scale.ticks || {};
+  meterTickGeometry(scale).forEach((tick) => {
+    const start = arcPoint(tick.angle, tick.inner);
+    const end = arcPoint(tick.angle, tick.outer);
+    const style = meterTickStyle(scale, tick.value);
+    const baseColor = tick.isMajor ? ticks.major?.color : ticks.color;
+    const first = resolveViewerColor(project, style?.color_start) || resolveViewerColor(project, baseColor) || "#808080";
+    const second = resolveViewerColor(project, style?.color_end) || first;
+    const line = meterSvgElement(group, "line");
+    line.setAttribute("x1", start.x.toFixed(3));
+    line.setAttribute("y1", start.y.toFixed(3));
+    line.setAttribute("x2", end.x.toFixed(3));
+    line.setAttribute("y2", end.y.toFixed(3));
+    line.setAttribute("stroke", interpolateMeterColor(first, second, style?.fraction ?? 0));
+    line.setAttribute("stroke-width", String(style?.width ?? tick.width));
+    if (tick.isMajor && ticks.major) {
+      const position = arcPoint(tick.angle, Math.max(4, tick.inner - tick.labelGap));
+      const label = meterSvgElement(group, "text");
+      label.setAttribute("x", position.x.toFixed(3));
+      label.setAttribute("y", position.y.toFixed(3));
+      label.setAttribute("text-anchor", "middle");
+      label.setAttribute("dominant-baseline", "middle");
+      label.setAttribute("font-size", "5");
+      label.textContent = Number.isInteger(tick.value) ? String(tick.value) : tick.value.toFixed(1);
+    }
+  });
+}
+
+/** @param {any} project @param {SVGElement} group @param {any} scale */
+function renderMeterIndicators(project, group, scale) {
+  for (const entry of scale.indicators || []) {
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.arc) {
+      const config = entry.arc;
+      const start = meterValueAngle(scale, config.start_value ?? scale.range_from ?? 0);
+      const end = meterValueAngle(scale, config.end_value ?? scale.range_to ?? 100);
+      const radius = 40 + Number(config.padding ?? config.r_mod ?? 0);
+      const path = meterSvgElement(group, "path");
+      path.setAttribute("d", describeViewerArc(start, end - start, radius));
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", resolveViewerColor(project, config.color) || "#000000");
+      path.setAttribute("stroke-width", String(config.width ?? 4));
+      path.setAttribute("stroke-linecap", config.rounded ? "round" : "butt");
+      path.setAttribute("opacity", String(arcOpacity(config.opa)));
+    } else if (entry.line) {
+      const config = entry.line;
+      const geometry = meterLineGeometry(scale, config);
+      const start = arcPoint(geometry.angle, geometry.start);
+      const end = arcPoint(geometry.angle, geometry.end);
+      const line = meterSvgElement(group, "line");
+      line.setAttribute("x1", start.x.toFixed(3));
+      line.setAttribute("y1", start.y.toFixed(3));
+      line.setAttribute("x2", end.x.toFixed(3));
+      line.setAttribute("y2", end.y.toFixed(3));
+      line.setAttribute("stroke", resolveViewerColor(project, config.color) || "#000000");
+      line.setAttribute("stroke-width", String(config.width ?? 4));
+      line.setAttribute("stroke-linecap", config.rounded ? "round" : "butt");
+      line.setAttribute("opacity", String(arcOpacity(config.opa)));
+      if (config.dash_width) line.setAttribute("stroke-dasharray", `${config.dash_width} ${config.dash_gap ?? config.dash_width}`);
+    } else if (entry.image) {
+      const config = entry.image;
+      const source = viewerImageSource(project, config.src);
+      if (!source) continue;
+      const image = meterSvgElement(group, "image");
+      const pivotX = Number(config.pivot_x ?? 0);
+      const pivotY = Number(config.pivot_y ?? 10);
+      image.setAttribute("href", source);
+      image.setAttribute("x", String(50 - pivotX));
+      image.setAttribute("y", String(50 - pivotY));
+      image.setAttribute("width", "40");
+      image.setAttribute("height", "20");
+      image.setAttribute("preserveAspectRatio", "xMinYMid meet");
+      image.setAttribute("transform", `rotate(${meterValueAngle(scale, config.value ?? 0)} 50 50)`);
+      image.setAttribute("opacity", String(arcOpacity(config.opa)));
+    }
+  }
+}
+
+/** @param {any} project @param {any} widget @param {string[]} activeStates */
+export function renderViewerMeter(project, widget, activeStates) {
+  const control = document.createElement("span");
+  control.className = "viewer-meter-control";
+  const svg = document.createElementNS(SVG_NAMESPACE, "svg");
+  svg.classList.add("viewer-meter-svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("aria-hidden", "true");
+  meterScales(widget.properties?.scales).forEach((scale) => {
+    const group = meterSvgElement(svg, "g");
+    if (scale.draw_ticks_on_top === false) renderMeterTicks(project, group, scale);
+    renderMeterIndicators(project, group, scale);
+    if (scale.draw_ticks_on_top !== false) renderMeterTicks(project, group, scale);
+  });
+  const pivot = meterSvgElement(svg, "circle");
+  pivot.setAttribute("cx", "50");
+  pivot.setAttribute("cy", "50");
+  pivot.setAttribute("r", "2.5");
+  const indicatorStyle = /** @type {Record<string, any>} */ (
+    effectiveViewerPartStyle(project, widget, "indicator", activeStates)
+  );
+  pivot.setAttribute("fill", resolveViewerColor(project, indicatorStyle.bg_color) || "#20252b");
+  pivot.setAttribute("opacity", String(arcOpacity(indicatorStyle.bg_opa)));
+  control.append(svg);
   return control;
 }

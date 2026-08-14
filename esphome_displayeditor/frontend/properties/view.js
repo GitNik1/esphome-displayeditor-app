@@ -5,9 +5,9 @@ import { LIST_KINDS } from "./model.js";
 /** @typedef {{kind: string, default?: unknown, enum_values?: string[]}} PropertySchema */
 /** @param {Pick<Document, "createElement">} document
  * @param {PropertySchema} property @param {any} value
- * @returns {HTMLInputElement | HTMLSelectElement} */
+ * @returns {HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement} */
 export function createBasicPropertyControl(document, property, value) {
-  /** @type {HTMLInputElement | HTMLSelectElement} */
+  /** @type {HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement} */
   let control;
   if (property.kind === "bool") {
     control = document.createElement("input");
@@ -22,6 +22,12 @@ export function createBasicPropertyControl(document, property, value) {
       control.append(new Option(String(value), String(value)));
     }
     control.value = String(value ?? "");
+  } else if (property.kind === "json") {
+    control = document.createElement("textarea");
+    control.className = "property-json";
+    control.rows = 12;
+    control.spellcheck = false;
+    control.value = JSON.stringify(value ?? property.default ?? null, null, 2);
   } else if (LIST_KINDS.includes(property.kind)) {
     control = document.createElement("input");
     control.type = "text";

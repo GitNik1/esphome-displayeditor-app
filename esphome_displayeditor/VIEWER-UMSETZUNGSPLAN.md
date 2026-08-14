@@ -1,16 +1,18 @@
 # Umsetzungsplan: Browser-Viewer für den ESPHome Display Editor
 
-## Aktueller Stand (31.07.2026)
+## Aktueller Stand (14.08.2026, Version 0.23.0)
 
 - V1/V2 umgesetzt: isolierter Projekt-Clone, eigener Viewer-Renderer,
   Vollbilddialog, Zoom, Einpassen, Rotation, Reset und GlowLine-Ebenen.
 - V3-Kern umgesetzt: Theme-, benannte und Inline-Stile mit Zuständen,
   Switch-/Slider-Teile, Farben, Verläufe, Deckkraft, Rahmen, Radius, Schatten,
   Schriftgröße, Ausrichtung, Padding und Abstände.
-- V4-Kern umgesetzt: interaktive Buttons, Switches und Slider sowie eine feste
-  Action-Allowlist für Widget show/hide/update, Label-/Slider-/Switch-Updates
-  und Animimg start/stop. Unbekannte oder ungültige Aktionen werden nur
-  protokolliert und niemals dynamisch ausgeführt.
+- V4 umgesetzt und erweitert: Interaktionen für die unterstützten Eingabe-
+  Widgets sowie eine feste Action-Allowlist für Widget-Updates,
+  Seiten-/Tab-/Kachelwechsel und `lvgl.animimg.start`/`.stop`/`.update`.
+  Verschachtelte Energiefluss-Aktionen werden sicher interpretiert; unbekannte
+  oder ungültige Aktionen werden nur protokolliert und niemals dynamisch
+  ausgeführt.
 - V5 umgesetzt: `pages`, `page_wrap`, `skip`, `top_layer` und `bottom_layer`
   werden durch eine Add-on-Erweiterung aus dem unveränderten Core-Passthrough
   materialisiert, bleiben beim YAML-Roundtrip erhalten und können im Viewer
@@ -24,6 +26,18 @@
   ein Browser-Abnahme-Harness prüfen Darstellung und Text-Injection. Noch
   offen bleibt der optionale RGB565-Schalter sowie Referenzbilder für alle
   übrigen Widgettypen.
+
+### Verbleibende Prioritäten
+
+1. ✅ Viewer-Unterstützung für `meter` einschließlich mehrerer Skalen, aller
+   vier Indikatortypen und `lvgl.indicator.update` umgesetzt.
+2. Visuelle Referenzabdeckung schrittweise auf alle modellierten Widget-Typen
+   erweitern und den optionalen RGB565-Vorschauschalter ergänzen.
+3. MVP-Näherungen nur bei erkennbarem Nutzen verfeinern, etwa die
+   Tab-Leistenposition oder Touch-/Swipe-Simulation für `tileview`.
+4. V7 als getrennten Forschungsprototyp behandeln. Der produktive
+   HTML-Renderer bleibt Standard, bis Nutzen, Ladezeit und Wartbarkeit eines
+   LVGL-WASM-Moduls belegt sind.
 
 ## 1. Ziel
 
@@ -221,8 +235,9 @@ Erste erlaubte Aktionen:
 - `lvgl.page.show`
 - `lvgl.page.next`
 - `lvgl.page.previous`
-- `lvgl.animation.start`
-- `lvgl.animation.stop`
+- `lvgl.animimg.start`
+- `lvgl.animimg.stop`
+- `lvgl.animimg.update`
 
 Nicht ausgeführt werden:
 
@@ -323,9 +338,10 @@ Abnahmekriterien:
 - Schlüssel und interne Verbindungsdaten erreichen den Browser nicht
 - Viewer bleibt auch ohne Gerät vollständig nutzbar
 
-### V7: LVGL-WebAssembly-Prototyp
+### V7: LVGL-WebAssembly-Prototyp (optional, noch nicht begonnen)
 
-Diese Phase beginnt erst nach erfolgreicher Abnahme von V1 bis V5.
+V1 bis V6 sind produktiv umgesetzt. V7 bleibt ein separat zu bewertender
+Forschungsprototyp und ist kein Blocker für den weiteren Editor-Ausbau.
 
 Ziele des Prototyps:
 
@@ -432,13 +448,16 @@ Antialiasing-Abweichungen werden toleriert, Geometrie und Farben nicht.
 | V6 | optionale Livezustände | mittel |
 | V7 | LVGL-WASM-Prototyp | groß, separat bewerten |
 
-Empfohlene Releases:
+Historische Release-Schnitte:
 
-- `0.11.0`: V1–V2, schreibgeschützte statische Vorschau
-- `0.12.0`: V3–V4, interaktive Browser-Simulation
-- `0.13.0`: V5, Seiten und Layer
-- `0.14.0`: optional V6, Native-API-Testwerte
-- spätere Haupt-/Minor-Version: V7 nach Prototypentscheidung
+- `0.11.0`: V1–V2, schreibgeschützte statische Vorschau.
+- `0.12.0`: V3–V4, interaktive Browser-Simulation.
+- `0.13.0`: V5, Seiten und Layer.
+- `0.14.0`: V6, Native-API-Testwerte.
+- Stand 0.23.0: zusätzliche Widgets, Aktionen, GlowLine-Baking und
+  Energiefluss-Simulation.
+- Ab 0.24.0: Viewer-Ausbau gemeinsam mit neuen Designer-Widgets; V7 bleibt
+  von regulären Releases entkoppelt.
 
 ## 8. MVP-Abnahme
 
@@ -456,8 +475,7 @@ Der Viewer-MVP ist abgeschlossen, wenn:
 
 ## 9. Empfehlung
 
-Die Umsetzung beginnt mit V1 und V2. Dadurch entsteht schnell ein nutzbarer,
-risikoarmer Viewer. V3 und V4 machen ihn anschließend interaktiv. Seiten und
-Layer werden als eigene Modelländerung umgesetzt, damit Import/Export und
-Viewer dieselbe Struktur verwenden. LVGL-WebAssembly bleibt ein separater
-Prototyp und wird nicht zur Voraussetzung für den Browser-Viewer gemacht.
+Die Umsetzung von V1 bis V6 ist abgeschlossen. Der HTML-Viewer ist die
+produktive Basis; weitere Arbeiten konzentrieren sich auf neue Widgets,
+Darstellungsgenauigkeit und Referenztests. LVGL-WebAssembly bleibt ein
+separater Prototyp und wird nicht zur Voraussetzung für den Browser-Viewer.

@@ -45,7 +45,7 @@ export function applyViewerAction(project, action, runtime = {}, context = {}) {
   }
   const controlResult = applyViewerControl(project, runtime, name, payload, t);
   if (controlResult) return controlResult;
-  const updateResult = applyViewerUpdate(project, name, payload, t);
+  const updateResult = applyViewerUpdate(project, name, payload, t, context);
   if (updateResult) return updateResult;
   return { handled: false, changed: false, message: t("viewer.event.notExecutedInBrowser", { name }) };
 }

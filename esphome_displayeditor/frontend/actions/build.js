@@ -14,6 +14,20 @@ export function buildWidgetAction({ type, targetId, targetWidget, fields = {} })
   if (["animimg_start", "animimg_stop"].includes(type)) {
     return { [`lvgl.animimg.${type === "animimg_start" ? "start" : "stop"}`]: targetId };
   }
+  if (type === "indicator_update") {
+    /** @type {Record<string, any>} */
+    const payload = { id: targetId };
+    if (fields.triggerValue) payload.value = { __esphome_lambda__: "return int(x);" };
+    for (const key of ["value", "start_value", "end_value"]) {
+      if (key === "value" && fields.triggerValue) continue;
+      const raw = String(fields[key] ?? "").trim();
+      if (raw) payload[key] = Number(raw);
+    }
+    const opa = String(fields.opa ?? "").trim();
+    if (opa) payload.opa = opa;
+    if (Object.keys(payload).length === 1) throw new Error("missing_update_fields");
+    return { "lvgl.indicator.update": payload };
+  }
   if (type !== "update") throw new Error("unsupported_action_type");
 
   /** @type {Record<string, any>} */

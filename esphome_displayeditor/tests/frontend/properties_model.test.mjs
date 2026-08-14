@@ -24,3 +24,8 @@ test("property controls convert booleans, numbers and empty values", () => {
   assert.equal(propertyValueClears([]), true);
   assert.equal(propertyValueClears(false), false);
 });
+
+test("property controls parse structured JSON values", () => {
+  assert.deepEqual(propertyInputValue({ kind: "json" }, { value: '[{"range_from":0}]' }), [{ range_from: 0 }]);
+  assert.throws(() => propertyInputValue({ kind: "json" }, { value: "[invalid" }), SyntaxError);
+});

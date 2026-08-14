@@ -28,6 +28,20 @@ test("uses widget-specific update actions and normalized fields", () => {
   });
 });
 
+test("builds fixed and trigger-driven meter indicator updates", () => {
+  assert.deepEqual(buildWidgetAction({
+    type: "indicator_update", targetId: "needle",
+    targetWidget: { widget_type: "meter_indicator" },
+    fields: { value: "25", opa: "80%" },
+  }), { "lvgl.indicator.update": { id: "needle", value: 25, opa: "80%" } });
+  assert.deepEqual(buildWidgetAction({
+    type: "indicator_update", targetId: "needle",
+    fields: { triggerValue: true },
+  }), { "lvgl.indicator.update": {
+    id: "needle", value: { __esphome_lambda__: "return int(x);" },
+  } });
+});
+
 test("ignores fields unsupported by the target widget", () => {
   assert.throws(() => buildWidgetAction({
     type: "update",
@@ -45,4 +59,3 @@ test("wraps boolean value conditions", () => {
   });
   assert.throws(() => wrapValueCondition(action, "numeric"), /invalid_value_condition/);
 });
-

@@ -23,6 +23,15 @@ test("update descriptions require an id and at least one field", () => {
   assert.match(result.text, /text/);
 });
 
+test("describes meter indicator updates as supported actions", () => {
+  const result = describeWidgetAction({
+    "lvgl.indicator.update": { id: "needle", value: 42 },
+  }, translate);
+  assert.equal(result.supported, true);
+  assert.deepEqual(result.targetIds, ["needle"]);
+  assert.match(result.text, /value/);
+});
+
 test("flow descriptions collect nested animation targets", () => {
   const action = { if: {
     condition: { lambda: "return abs((int)x) <= 2;" },
@@ -44,4 +53,3 @@ test("unknown actions remain visible as YAML-only actions", () => {
   assert.equal(result.supported, false);
   assert.deepEqual(result.targetIds, ["target"]);
 });
-

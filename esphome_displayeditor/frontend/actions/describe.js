@@ -90,6 +90,7 @@ export function describeWidgetAction(action, translate) {
     "lvgl.button.update",
     "lvgl.image.update",
     "lvgl.animimg.update",
+    "lvgl.indicator.update",
   ].includes(name) && payload && typeof payload === "object" && !Array.isArray(payload)) {
     const fields = Object.keys(payload).filter((key) => key !== "id");
     return {

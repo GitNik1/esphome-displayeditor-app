@@ -170,7 +170,7 @@ input:focus { border-color: var(--accent); }
 .viewer-slider-fill { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--accent); }
 .viewer-slider-knob { position: absolute; top: 50%; width: max(14px, 12%); aspect-ratio: 1; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px #0008; transform: translate(-50%, -50%); }
 .viewer-slider-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
-.viewer-widget[data-type="bar"], .viewer-widget[data-type="arc"] { border-color: transparent; background: transparent; }
+.viewer-widget[data-type="bar"], .viewer-widget[data-type="arc"], .viewer-widget[data-type="meter"] { border-color: transparent; background: transparent; }
 .viewer-bar-control { position: relative; display: block; width: 100%; height: 100%; }
 .viewer-bar-track { position: absolute; left: 0; top: 30%; width: 100%; height: 40%; min-height: 4px; overflow: hidden; border-radius: 999px; background: #657386; }
 .viewer-bar-fill { position: absolute; top: 0; height: 100%; border-radius: inherit; background: var(--accent); }
@@ -180,6 +180,9 @@ input:focus { border-color: var(--accent); }
 .viewer-arc-svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .viewer-arc-knob[hidden] { display: none; }
 .viewer-arc-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.viewer-meter-control, .viewer-meter-svg { display: block; width: 100%; height: 100%; }
+.viewer-meter-svg { overflow: visible; }
+.property-json { width: 100%; min-height: 12rem; resize: vertical; font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .viewer-checkbox { display: inline-flex; align-items: center; gap: 8px; width: 100%; height: 100%; }
 .viewer-checkbox-indicator { display: inline-block; flex: none; width: 18px; height: 18px; border-radius: 3px; border: 2px solid #657386; background: transparent; position: relative; }
 .viewer-checkbox-indicator.checked { background: var(--accent); border-color: var(--accent); }
@@ -387,6 +390,30 @@ input:focus { border-color: var(--accent); }
 .glyph-chip.missing { border-color: #9a3f47; color: #ff929b; }
 .glyph-chip button { width: 20px; height: 20px; border: 0; color: var(--muted); background: transparent; cursor: pointer; }
 .glyph-dialog-actions { gap: 7px; }
+.meter-dialog { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(1320px, 96vw); height: min(820px, 92vh); max-height: 92vh; overflow: hidden; }
+.meter-dialog-body { display: grid; grid-template-columns: 180px minmax(0, 1fr) minmax(280px, 380px); min-width: 0; min-height: 0; overflow: hidden; }
+.meter-config-list, .meter-config-editor, .meter-config-preview { min-width: 0; min-height: 0; padding: 16px; overflow: auto; }
+.meter-config-list { border-right: 1px solid var(--line); }
+.meter-config-preview { border-left: 1px solid var(--line); }
+.meter-config-list-heading, .meter-indicator-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
+#meter-scale-list, #meter-indicator-list { display: grid; min-width: 0; gap: 8px; }
+.meter-scale-button { width: 100%; text-align: left; }
+.meter-scale-button.active { border-color: var(--accent); color: var(--accent); }
+.meter-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.meter-form-grid label, .meter-indicator-card label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+.meter-form-grid .wide { grid-column: 1 / -1; }
+.meter-indicator-card { display: grid; min-width: 0; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-raised); }
+.meter-indicator-card-header { display: flex; align-items: center; gap: 8px; }
+.meter-indicator-card-header select { flex: 1; }
+.meter-indicator-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; gap: 8px; }
+.meter-indicator-fields label, .meter-form-grid label, .meter-indicator-fields .color-input-row { min-width: 0; }
+#meter-preview { display: grid; place-items: center; width: 100%; aspect-ratio: 1; margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; background: #18222f; }
+#meter-preview .viewer-meter-control { width: 92%; height: 92%; }
+.meter-preview-controls { display: grid; gap: 10px; margin-top: 14px; }
+.meter-preview-controls label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.meter-preview-controls input[type="range"] { width: 100%; }
+@media (max-width: 900px) { .meter-dialog-body { grid-template-columns: 130px minmax(0, 1fr); overflow: auto; } .meter-config-list, .meter-config-editor, .meter-config-preview { min-height: max-content; overflow: visible; } .meter-config-preview { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); } }
+@media (max-width: 560px) { .meter-dialog-body { grid-template-columns: 1fr; } .meter-config-list, .meter-config-preview { grid-column: 1; border: 0; border-bottom: 1px solid var(--line); } .meter-form-grid, .meter-indicator-fields { grid-template-columns: 1fr; } }
 .dialog-action-spacer { flex: 1; }
 .background-fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 0 14px 12px; }
 .background-fields label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }

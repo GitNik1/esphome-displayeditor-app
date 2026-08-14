@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Added complete editor and Viewer support for ESPHome's LVGL `meter` widget.
+  The full `scales:` structure remains editable and lossless, including any
+  number of scales, nested minor/major ticks, and `arc`, `line`, `image` and
+  `tick_style` indicators. A validated JSON control is used for the nested
+  structure instead of flattening it into a single-scale model. Nested colors
+  retain the project's normal hexadecimal handling, and indicator ids now
+  participate in the global ESPHome id-collision check. The Designer canvas
+  and read-only Viewer render tick labels, arcs, needles, image indicators and
+  tick-style gradients; the safe Viewer runtime also supports
+  `lvgl.indicator.update` for `value`, `start_value`, `end_value` and `opa`.
+  Meter indicator ids are selectable directly in the visual Actions builder;
+  updates can use fixed values or the numeric `on_value` trigger value, which
+  exports as `value: !lambda return int(x);` and is mirrored by the safe
+  browser runtime.
+  Added backend roundtrip/collision tests and frontend JSON-control,
+  multi-scale geometry, tick-style and action-runtime tests.
+
+- Added a graphical Meter configurator on top of the lossless `scales` JSON
+  model. It provides a live rendered preview, multiple-scale navigation,
+  friendly fields for range/angles/minor and major ticks, and add/remove/type-
+  specific editors for line, arc, image and tick-style indicators. Changes
+  stay in an isolated draft until "Apply" is pressed; the JSON field remains
+  available as an expert fallback.
+
 ## 0.23.0
 
 - Added: a "Hintergrundfarbe" color field (hex text input + native color
