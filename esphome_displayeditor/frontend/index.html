@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>ESPHome Display Editor</title>
-    <link rel="stylesheet" href="styles.css?v=0.23.0">
+    <link rel="stylesheet" href="styles.css?v=0.24.0">
   </head>
   <body>
     <header class="topbar">
@@ -904,6 +904,12 @@
             <button id="viewer-zoom-in" class="button subtle compact" data-i18n-attr="title:toolbar.viewerZoomIn" title="Vergrößern">+</button>
             <button id="viewer-fit" class="button subtle compact" data-i18n="dialog.viewer.fit">Einpassen</button>
             <button id="viewer-zoom-100" class="button subtle compact">1:1</button>
+            <label class="viewer-renderer"><span>Renderer</span>
+              <select id="viewer-renderer">
+                <option value="html">HTML (Standard)</option>
+                <option value="wasm">LVGL 9 / WASM (Experiment)</option>
+              </select>
+            </label>
             <label class="viewer-rotation"><span data-i18n="dialog.viewer.rotation">Rotation</span>
               <select id="viewer-rotation">
                 <option value="0">0°</option>
@@ -942,6 +948,6 @@
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js?v=0.23.0"></script>
+    <script type="module" src="app.js?v=0.24.0"></script>
   </body>
 </html>

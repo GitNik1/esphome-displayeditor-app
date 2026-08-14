@@ -140,6 +140,8 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "script-src 'self'" in response.headers["Content-Security-Policy"]
+    assert "'wasm-unsafe-eval'" in response.headers["Content-Security-Policy"]
+    assert "'unsafe-eval'" not in response.headers["Content-Security-Policy"]
     assert "font-src 'self' data: http: https:" in response.headers["Content-Security-Policy"]
     assert response.headers["Permissions-Policy"] == "camera=(), microphone=(), geolocation=()"
     assert "ESPHome Display Editor" in response.text
@@ -155,8 +157,8 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     assert 'id="merge-dialog"' in response.text
     assert 'id="image-button-section"' in response.text
     assert 'id="widget-action-image"' in response.text
-    assert 'styles.css?v=0.23.0' in response.text
-    assert 'app.js?v=0.23.0' in response.text
+    assert 'styles.css?v=0.24.0' in response.text
+    assert 'app.js?v=0.24.0' in response.text
     assert client.get("/app.js").status_code == 200
     viewer = client.get("/viewer/viewer.js")
     assert viewer.status_code == 200

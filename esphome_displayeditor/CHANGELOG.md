@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.24.0
+
 - Added complete editor and Viewer support for ESPHome's LVGL `meter` widget.
   The full `scales:` structure remains editable and lossless, including any
   number of scales, nested minor/major ticks, and `arc`, `line`, `image` and

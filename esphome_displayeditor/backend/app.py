@@ -189,7 +189,7 @@ def create_app(
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: http: https:; font-src 'self' data: http: https:; "
             # https: alongside 'self'/ws:/wss: - the CSS Font Loading API
             # (new FontFace().load(), used for the MDI icon catalog preview

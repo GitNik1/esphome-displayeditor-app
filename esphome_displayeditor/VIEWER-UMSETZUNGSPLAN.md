@@ -338,10 +338,13 @@ Abnahmekriterien:
 - Schlüssel und interne Verbindungsdaten erreichen den Browser nicht
 - Viewer bleibt auch ohne Gerät vollständig nutzbar
 
-### V7: LVGL-WebAssembly-Prototyp (optional, noch nicht begonnen)
+### V7: LVGL-WebAssembly-Viewer (vollständig und umschaltbar umgesetzt)
 
-V1 bis V6 sind produktiv umgesetzt. V7 bleibt ein separat zu bewertender
-Forschungsprototyp und ist kein Blocker für den weiteren Editor-Ausbau.
+V1 bis V6 sind produktiv umgesetzt. V7 ist als vollständiger, umschaltbarer
+Zweitrenderer für alle aktuell modellierten Widgettypen umgesetzt. Der
+HTML-Renderer bleibt Standard; LVGL/WASM kann im offenen Viewer ausgewählt
+werden. Ergebnisse, Messgrenzen und Sicherheitsregeln sind unter
+`tools/lvgl_wasm_prototype/FINDINGS.md` dokumentiert.
 
 Ziele des Prototyps:
 
@@ -351,6 +354,17 @@ Ziele des Prototyps:
 - Touchkoordinaten vom Browser an LVGL übergeben
 - gerenderten Frame in einem Browser-Canvas anzeigen
 - Ladezeit, Speicherbedarf und Ingress-Kompatibilität messen
+
+Umgesetzter Stand (14.08.2026):
+
+- echtes LVGL 9.2.2 als 288.064 Byte großes, statisches WASM-Artefakt
+- feste Bridge für alle aktuell im Editor modellierten Widgettypen
+- RGB565-Flush in ein Browser-Canvas sowie Pointer-Eingabe
+- gepinnter, reproduzierbarer Emscripten-Build mit SHA-256-Manifest
+- Browser-Abnahme für Initialisierung, Speichergrenze und sichtbare Rasterung
+- Renderer-Auswahl mit sicherem Rückfall auf HTML
+- native Eingaben über dieselbe Action-Allowlist und denselben isolierten Zustand
+- Seiten, Layer, Messageboxen, Assets, Animationen, Zustände und Live-Bindings
 
 Sicherheitsanforderungen:
 

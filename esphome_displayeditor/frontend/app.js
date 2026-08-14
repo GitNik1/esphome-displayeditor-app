@@ -676,6 +676,7 @@ function bindDesigner() {
     pageSelect: $("#viewer-page-select"),
     pagePrevious: $("#viewer-page-previous"),
     pageNext: $("#viewer-page-next"),
+    rendererControl: $("#viewer-renderer"),
   });
   $("#open-viewer").addEventListener("click", openLiveViewer);
   $("#viewer-close").addEventListener("click", closeViewer);
@@ -689,6 +690,7 @@ function bindDesigner() {
   $("#viewer-zoom-100").addEventListener("click", () => viewer.setZoom(1));
   $("#viewer-zoom-out").addEventListener("click", () => viewer.setZoom(viewer.zoom / 1.25));
   $("#viewer-zoom-in").addEventListener("click", () => viewer.setZoom(viewer.zoom * 1.25));
+  $("#viewer-renderer").addEventListener("change", (/** @type {any} */ event) => viewer.setRenderer(event.target.value));
   $("#viewer-rotation").addEventListener("change", (/** @type {any} */ event) => viewer.setRotation(event.target.value));
   $("#viewer-dialog").addEventListener("close", closeViewer);
   $("#viewer-dialog").addEventListener("cancel", (/** @type {any} */ event) => {
