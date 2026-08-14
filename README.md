@@ -7,6 +7,8 @@ exposed on the network, and lets you build LVGL display layouts for ESP32
 devices by dragging and arranging widgets on a canvas instead of hand-writing
 YAML.
 
+![Designer overview](docs/screenshots/designer-overview.png)
+
 ## Features
 
 - **Drag-and-drop LVGL designer** — place, resize, nest and reorder widgets
@@ -20,21 +22,81 @@ YAML.
   multi-pass glow and moving flow markers (arrows or dashes) that show
   direction and motion. Lines can be nested inside containers, locked,
   hidden, and quantised through an RGB565 colour wheel that shows exactly
-  what an actual display will reproduce. "Als Bilder + Widgets anlegen"
-  bakes the animation into a seamlessly looping, RGB565-quantised PNG
-  sequence and wires it up as a matching `image` + `animimg` widget pair —
-  no manual YAML required.
+  what an actual display will reproduce. On YAML generation, the animation
+  can be baked into a seamlessly looping, RGB565-quantised PNG sequence and
+  wired up as a matching `image` + `animimg` widget pair automatically — no
+  manual YAML required.
 - **Safe, controlled YAML editing** — configuration drafts are validated and
   diffed before anything is written back, so the designer never silently
   overwrites your active ESPHome files.
 - **Persistent designer projects** with per-user roles, so multiple Home
   Assistant users can work on separate or shared display projects.
+- **Live entity bindings and a read-only Viewer** — map labels, sliders,
+  bars, arcs and switches to Home Assistant/ESPHome entities and preview a
+  running dashboard, plus optional bidirectional device bindings that are
+  compiled straight into the generated YAML.
 - **Encrypted, read-only device monitoring** via the ESPHome Native API:
   device info, entities, current states and logs are visible in the
-  **Geräte** view (device commands remain intentionally disabled).
+  **Devices** view (device commands remain intentionally disabled).
 - **Security by design** — Ingress-only request enforcement and API rate
   limits, with configurable access levels ranging from fully read-only to
   full write access with an optional Device Builder integration.
+
+## See it in action
+
+Adding widgets to a small dashboard layout and generating the ESPHome YAML
+for it, end to end in the Designer:
+
+![Building a small dashboard and generating YAML](docs/screenshots/workflow-designer.gif)
+
+### The LVGL Designer
+
+Drag widgets from the palette, position and resize them numerically or on
+the canvas, and inspect the live widget tree in the hierarchy panel on the
+left.
+
+![Small dashboard layout with a label, bar, slider, switch and button](docs/screenshots/designer-dashboard.png)
+
+Every widget exposes its full ESPHome/LVGL property set — geometry, style,
+state and content — in the properties panel on the right.
+
+![Canvas close-up of the dashboard layout](docs/screenshots/designer-canvas-closeup.png)
+
+### GlowLine animated flow lines
+
+Draw a line by adding it from the palette and dragging its endpoint handles
+into place; an RGB565 colour wheel lets you tune the line, glow and flow
+colours to exactly what the target display will reproduce.
+
+![A glowing diagonal flow line drawn on the canvas](docs/screenshots/glowline-editor.png)
+
+![GlowLine colour wheel and line/glow/flow property panel](docs/screenshots/glowline-color-wheel.png)
+
+### Generating ESPHome YAML
+
+"Generate YAML" produces ready-to-include LVGL configuration, with a target
+file picker and a clear warning about which sections a merge will touch.
+
+![Generated ESPHome YAML dialog](docs/screenshots/yaml-export.png)
+
+### Safe configuration editing
+
+The Configurations view lists your active ESPHome files and opens them in a
+read-only-by-default YAML workspace with search, syntax/ESPHome validation,
+diffing, merging and a controlled draft → publish → compile → OTA install
+flow.
+
+![Configurations view showing a loaded ESPHome YAML file](docs/screenshots/configurations-view.png)
+
+### Encrypted device monitoring
+
+Add an ESPHome device with its Native API host, port and encryption key to
+get read-only live info, entities, states and logs — no plaintext or
+legacy-password fallback, and no device commands are ever sent.
+
+![Add ESPHome device dialog](docs/screenshots/add-device-dialog.png)
+
+![Devices view with a connecting device](docs/screenshots/devices-view.png)
 
 ## Install in Home Assistant
 
@@ -56,7 +118,7 @@ designer projects, per-user roles, Ingress-only request enforcement, API rate
 limits, encrypted read-only ESPHome Native API device monitoring, and a
 web-native port of the model and YAML export engine from
 `esphome-lvgl-designer`. Device information, entities, current states and logs
-are available in the Geräte view; device commands remain disabled.
+are available in the Devices view; device commands remain disabled.
 
 See [app documentation](esphome_displayeditor/DOCS.md) for configuration and
 security details.
