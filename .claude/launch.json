@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "esphome-frontend-static",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "4173", "--directory", "esphome_displayeditor/frontend"],
+      "port": 4173
+    }
+  ]
+}

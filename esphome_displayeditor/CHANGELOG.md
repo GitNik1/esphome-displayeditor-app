@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.23.0
+
 - Added: a "Hintergrundfarbe" color field (hex text input + native color
   picker, matching the widget Aktionen color fields) in the page/layer
   settings panel ("Seite/Layer bearbeiten"), so setting a page's background

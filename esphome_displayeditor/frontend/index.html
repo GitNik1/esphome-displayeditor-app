@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>ESPHome Display Editor</title>
-    <link rel="stylesheet" href="styles.css?v=0.22.0">
+    <link rel="stylesheet" href="styles.css?v=0.23.0">
   </head>
   <body>
     <header class="topbar">
@@ -236,7 +236,7 @@
                 <label id="surface-id-field"><span data-i18n="common.id">ID</span>
                   <input id="surface-id" pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="page_1">
                 </label>
-                <label><span data-i18n="surface.layoutJson">Layout (JSON)</span>
+                <label id="surface-layout-field"><span data-i18n="surface.layoutJson">Layout (JSON)</span>
                   <textarea id="surface-layout-json" rows="3" spellcheck="false">{}</textarea>
                 </label>
                 <label><span data-i18n="surface.bgColor">Hintergrundfarbe</span>
@@ -249,7 +249,7 @@
                 <label><span data-i18n="surface.styleJson">Stil (JSON)</span>
                   <textarea id="surface-style-json" rows="3" spellcheck="false">{}</textarea>
                 </label>
-                <label><span data-i18n="surface.extraJson">Zusätzliche ESPHome-Schlüssel (JSON)</span>
+                <label id="surface-extra-field"><span data-i18n="surface.extraJson">Zusätzliche ESPHome-Schlüssel (JSON)</span>
                   <textarea id="surface-extra-json" rows="3" spellcheck="false">{}</textarea>
                 </label>
                 <p id="surface-error" class="hint issue-error hidden"></p>
@@ -892,6 +892,6 @@
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js?v=0.22.0"></script>
+    <script type="module" src="app.js?v=0.23.0"></script>
   </body>
 </html>

@@ -1948,12 +1948,22 @@ function pageIdIsUsed(/** @type {any} */ id, /** @type {any} */ currentPage) {
 function applySurfaceSettings() {
   const entry = activeSurfaceEntry();
   const errorNode = $("#surface-error");
+  const isRootSurface = entry.kind === "root";
   try {
-    const layout = parseSurfaceObject($("#surface-layout-json"), t("validation.surface.fieldLayout"));
     const styleTree = parseSurfaceObject($("#surface-style-json"), t("validation.surface.fieldStyle"));
-    const extra = parseSurfaceObject($("#surface-extra-json"), t("validation.surface.fieldExtra"));
     const bgColor = $("#surface-bg-color").value.trim();
     if (bgColor) styleTree.bg_color = normalizeActionColor(bgColor);
+    if (isRootSurface) {
+      pushUndo();
+      state.project.extra_lvgl = styleTree;
+      errorNode.classList.add("hidden");
+      markProjectDirty();
+      renderDesigner();
+      toast(t("toast.surface.settingsApplied"));
+      return;
+    }
+    const layout = parseSurfaceObject($("#surface-layout-json"), t("validation.surface.fieldLayout"));
+    const extra = parseSurfaceObject($("#surface-extra-json"), t("validation.surface.fieldExtra"));
     let nextId = "";
     if (entry.kind === "page") {
       nextId = $("#surface-id").value.trim();
@@ -2056,12 +2066,24 @@ function renderSurfaceToolbar() {
   $("#page-wrap-field").classList.toggle("hidden", state.project.pages.length < 2);
   $("#page-wrap").checked = state.project.page_wrap !== false;
   $("#surface-id-field").classList.toggle("hidden", entry.kind !== "page");
-  $("#surface-settings").classList.toggle("hidden", entry.kind === "root");
+  const isRootSurface = entry.kind === "root";
+  // Root has no page-like layout/extra passthrough of its own - both live
+  // inside extra_lvgl already, which the style JSON field below edits whole.
+  $("#surface-layout-field").classList.toggle("hidden", isRootSurface);
+  $("#surface-extra-field").classList.toggle("hidden", isRootSurface);
   $("#surface-id").value = entry.kind === "page" ? entry.surface.id : "";
-  $("#surface-layout-json").value = JSON.stringify(entry.surface.layout || {}, null, 2);
-  $("#surface-bg-color").value = entry.surface.style_tree?.bg_color || "";
-  $("#surface-style-json").value = JSON.stringify(entry.surface.style_tree || {}, null, 2);
-  $("#surface-extra-json").value = JSON.stringify(entry.surface.extra || {}, null, 2);
+  if (isRootSurface) {
+    const rootStyle = state.project.extra_lvgl || {};
+    $("#surface-layout-json").value = "{}";
+    $("#surface-bg-color").value = rootStyle.bg_color || "";
+    $("#surface-style-json").value = JSON.stringify(rootStyle, null, 2);
+    $("#surface-extra-json").value = "{}";
+  } else {
+    $("#surface-layout-json").value = JSON.stringify(entry.surface.layout || {}, null, 2);
+    $("#surface-bg-color").value = entry.surface.style_tree?.bg_color || "";
+    $("#surface-style-json").value = JSON.stringify(entry.surface.style_tree || {}, null, 2);
+    $("#surface-extra-json").value = JSON.stringify(entry.surface.extra || {}, null, 2);
+  }
   syncLinkedColorPickers();
   $("#surface-error").classList.add("hidden");
   $("#line-tool-group").classList.toggle("hidden", state.canvasMode !== "lines" || entry.kind !== "root");
