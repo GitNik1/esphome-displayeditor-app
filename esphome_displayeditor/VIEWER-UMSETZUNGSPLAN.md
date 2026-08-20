@@ -1,6 +1,26 @@
 # Umsetzungsplan: Browser-Viewer für den ESPHome Display Editor
 
-## Aktueller Stand (14.08.2026, Version 0.23.0)
+## Aktueller Stand (20.08.2026, Version 0.27.0)
+
+Seit dem letzten Planstand (14.08.2026, 0.23.0) wurden `meter` (0.24.0,
+siehe V1-Widgetliste/"Verbleibende Prioritäten" unten - bereits ✅), ein
+eigener LVGL-Viewer-Dialog-Ausbau (`feature/lvglviewer`) sowie ein großer
+Ausbau der V6-Live-Bindings released (`feature/bindings`,
+`feature/custombindings`, siehe `CHANGELOG.md` 0.25.0): typisierte
+End-to-End-Bindings für zahlreiche ESPHome-Domänen (Sensoren, Switches,
+Lichter, Climate, Media Player, Alarm, Skripte u. a.) statt nur der zuvor
+in V6 skizzierten Basisfelder, plus Import unbekannter Entity→LVGL-
+Automationen als editierbares "Custom YAML"-Binding mit serverseitig
+validiertem Editor. Das geht über den ursprünglich in V6 beschriebenen
+Umfang hinaus und sollte bei einer nächsten Plan-Überarbeitung als eigener
+Abschnitt (V6 Erweiterung oder V6.1) nachgezogen werden - aktuell nur hier
+als Hinweis vermerkt.
+
+Ein unversionierter Arbeitsstand liegt vor: Debounce (120 ms) für die
+Meter-Konfigurator-Live-Vorschau sowie eine 0-200-Begrenzung für die
+Tick-Anzahl (`frontend/app.js`, `frontend/viewer/meter.js`) - betrifft die
+V1-Rendering-Pipeline des Meter-Widgets, ist aber weder committet noch im
+CHANGELOG vermerkt.
 
 - V1/V2 umgesetzt: isolierter Projekt-Clone, eigener Viewer-Renderer,
   Vollbilddialog, Zoom, Einpassen, Rotation, Reset und GlowLine-Ebenen.

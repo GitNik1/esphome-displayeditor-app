@@ -1,20 +1,49 @@
 # Umsetzungsplan: Vollständigere ESPHome-LVGL-Unterstützung
 
-## Aktueller Stand (14.08.2026, Version 0.23.0)
+## Aktueller Stand (20.08.2026, Version 0.27.0)
+
+Seit dem letzten Planstand (14.08.2026, 0.23.0) sind mehrere Releases
+gelandet, die **außerhalb** dieses Plans lagen (siehe `CHANGELOG.md`
+0.24.0-0.27.0 sowie Git-Historie): `meter` (0.24.0, siehe unten - bereits als
+✅ vermerkt), ein eigener LVGL-Viewer-Dialog (`feature/lvglviewer`) und ein
+großer Ausbau der Geräte-Bindungen (`feature/bindings`,
+`feature/custombindings`: End-to-End-Bindings für zahlreiche ESPHome-
+Domänen sowie Import unbekannter Entity→LVGL-Automationen als editierbares
+"Custom YAML"). Für den Widget-Vollständigkeitsplan hier bleibt der
+inhaltliche Stand gegenüber dem 14.08. unverändert - **`touchscreens`
+(Unterplan 3d) ist weiterhin nicht umgesetzt**, es existiert noch kein
+`backend/touchscreen_support.py`.
+
+Zusätzlich liegt aktuell ein **unversionierter Arbeitsstand** vor
+(`git status`): eine kleine Verbesserung am Meter-Konfigurator in
+`frontend/app.js`/`frontend/viewer/meter.js` - Debounce für die Live-Vorschau
+(`scheduleMeterConfiguratorPreview()`, 120 ms) statt Neurendern bei jedem
+Tastendruck, sowie eine `min`/`max`-Begrenzung (0-200) für das Tick-Anzahl-
+Feld, die auch in `meterTickGeometry()` als Obergrenze durchgesetzt wird.
+Das ist noch nicht committet und nicht im CHANGELOG vermerkt.
 
 ### Nächste Schritte
 
-1. **0.23.0 veröffentlichen**: manueller Smoke-Test in Home Assistant bzw.
-   Docker, Release Notes prüfen und Version taggen.
-2. ✅ **0.24.0: `meter` umgesetzt**: vollständige Multi-Scale-Struktur über
+1. **Unversionierten Arbeitsstand abschließen**: den Meter-Konfigurator-Fix
+   (Debounce + Tick-Anzahl-Clamp) testen, committen und einen CHANGELOG-
+   Eintrag ergänzen.
+2. **CHANGELOG-Lücke schließen**: die Abschnitte `## 0.26.0` und `## 0.27.0`
+   in `CHANGELOG.md` sind aktuell leer, obwohl seitdem der LVGL-Viewer und
+   die Bindings-Features gelandet sind - nachtragen oder mit den
+   tatsächlichen Release-Inhalten zusammenführen.
+3. ✅ **0.24.0: `meter` umgesetzt**: vollständige Multi-Scale-Struktur über
    einen validierten JSON-Editor, verlustfreier Import/Export, Viewer für alle
    vier Indikatortypen und sichere `lvgl.indicator.update`-Simulation.
-3. **Danach nach Nutzerbedarf priorisieren**: `buttonmatrix` ist der
+4. **`touchscreens` umsetzen** (Unterplan 3d ist bereits fertig ausgearbeitet,
+   nur die Implementierung fehlt noch): kleiner, unabhängiger Ausbau -
+   `backend/touchscreen_support.py` nach dem Muster von `msgbox_support.py`,
+   kompakte Zeilenliste im Frontend, kein Viewer-Änderungsbedarf. Das ist der
+   naheliegendste nächste Schritt in diesem Plan, da er bereits vollständig
+   spezifiziert, aber noch offen ist.
+5. **Danach weiter nach Nutzerbedarf priorisieren**: `buttonmatrix` ist der
    wahrscheinlich nützlichste verbleibende Spezialtyp. `line` und `canvas`
-   bleiben wegen ihrer Sondermodelle zurückgestellt.
-4. **Optionale Top-Level-Konfiguration**: `touchscreens` kann als kleiner,
-   unabhängiger Ausbau nach Unterplan 3d umgesetzt werden. `encoders` und
-   `keypads` brauchen vorab eine eigene Bewertung.
+   bleiben wegen ihrer Sondermodelle zurückgestellt. `encoders`/`keypads`
+   brauchen vorab eine eigene Bewertung (siehe Abgrenzung 3d.2).
 
 Die Roadmap priorisiert abgeschlossene vertikale Schnitte und konkreten Nutzen
 vor einer nominellen Unterstützung jedes LVGL-Typs. Unbekannte Typen bleiben

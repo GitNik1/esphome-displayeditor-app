@@ -18,6 +18,11 @@ export function createInitialState() {
     capabilities: {},
     schemas: [],
     selectedWidget: null,
+    // Additional widgets in the current multi-selection, beyond
+    // selectedWidget (the "primary" - the one the properties panel shows).
+    // Never persisted, never touches undo history: purely a canvas
+    // interaction concept, the same status as collapsedTreeNodes/treeQuery.
+    selectedWidgets: new Set(),
     activeConfig: null,
     activeRevision: null,
     configurations: [],

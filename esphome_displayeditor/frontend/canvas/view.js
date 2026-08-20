@@ -22,7 +22,31 @@ export function createCanvasLayers(document) {
   const handles = document.createElement("div");
   handles.id = "glow-handles";
   handles.className = "glow-handles";
-  return { back, front, handles };
+  // renderCanvas() rebuilds the whole #canvas subtree from scratch on every
+  // call via replaceChildren() - anything not recreated here and re-appended
+  // there (like the resize/glow layers above) is permanently gone after the
+  // very first render, which is exactly what happened to these three before
+  // they were added to this factory.
+  const alignGuideX = document.createElement("div");
+  alignGuideX.id = "align-guide-x";
+  alignGuideX.className = "align-guide align-guide-x hidden";
+  const alignGuideY = document.createElement("div");
+  alignGuideY.id = "align-guide-y";
+  alignGuideY.className = "align-guide align-guide-y hidden";
+  const marquee = document.createElement("div");
+  marquee.id = "marquee-select";
+  marquee.className = "marquee-select hidden";
+  // One small "12px"-style readout per side, shown next to the nearest
+  // neighbour even when nothing is close enough to actually snap.
+  /** @type {Record<string, any>} */
+  const gapLabels = {};
+  ["left", "right", "top", "bottom"].forEach((side) => {
+    const label = document.createElement("span");
+    label.id = `gap-label-${side}`;
+    label.className = `gap-label gap-label-${side} hidden`;
+    gapLabels[side] = label;
+  });
+  return { back, front, handles, alignGuideX, alignGuideY, marquee, gapLabels };
 }
 
 /** @param {HTMLElement} canvas

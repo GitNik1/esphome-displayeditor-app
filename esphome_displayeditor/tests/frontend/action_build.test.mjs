@@ -51,6 +51,21 @@ test("ignores fields unsupported by the target widget", () => {
   }), /missing_update_fields/);
 });
 
+test("passes through a validated custom action unchanged", () => {
+  const customAction = { "modbus_controller.send": { address: 10, value: 1 } };
+  assert.deepEqual(buildWidgetAction({
+    type: "custom", targetId: "", fields: { customAction },
+  }), customAction);
+});
+
+test("rejects a missing or malformed custom action", () => {
+  assert.throws(() => buildWidgetAction({ type: "custom", targetId: "", fields: {} }),
+    /missing_custom_action/);
+  assert.throws(() => buildWidgetAction({
+    type: "custom", targetId: "", fields: { customAction: { a: 1, b: 2 } },
+  }), /missing_custom_action/);
+});
+
 test("wraps boolean value conditions", () => {
   const action = { "lvgl.widget.show": "panel" };
   assert.equal(wrapValueCondition(action, "always"), action);
