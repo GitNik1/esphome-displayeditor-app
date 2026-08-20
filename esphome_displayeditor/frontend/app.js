@@ -105,7 +105,10 @@ import {
 } from "./builder/model.js";
 import { pointFromClient, snapAngle } from "./canvas/geometry.js";
 import { applyWidgetLayout, configureCanvas, createCanvasLayers } from "./canvas/view.js";
-import { dragPosition, resizeDimensions, translatePoints } from "./canvas/interactions.js";
+import {
+  alignBoxes, alignmentSnap, canvasAlignmentBox, distributeBoxes, dragPosition,
+  nearestGaps, resizeDimensions, translatePoints,
+} from "./canvas/interactions.js";
 import {
   LIST_KINDS,
   parseListValue,
@@ -242,19 +245,55 @@ let toastTimer;
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
-/** @param {unknown} message @param {boolean} [error] */
-function toast(message, error = false) {
+function dismissToast() {
+  $("#toast").className = "";
+  clearTimeout(toastTimer);
+}
+
+// Errors stay until dismissed (a validation or compile error is often longer
+// than 3.5s worth of reading), the text is selectable so it can be copied
+// into a search or bug report, and error.details - already attached by the
+// api() client whenever the backend sends it - gets a place to show up
+// instead of being silently dropped at the call site.
+function toast(/** @type {any} */ message, error = false, /** @type {any} */ details = undefined) {
   const node = $("#toast");
-  node.textContent = String(message);
+  node.replaceChildren();
+  const text = document.createElement("span");
+  text.className = "toast-message";
+  text.textContent = String(message);
+  node.append(text);
+  if (error && details !== undefined && details !== null) {
+    const block = document.createElement("details");
+    block.className = "toast-details";
+    const summary = document.createElement("summary");
+    summary.textContent = t("toast.detailsToggle");
+    const pre = document.createElement("pre");
+    pre.textContent = typeof details === "string" ? details : JSON.stringify(details, null, 2);
+    block.append(summary, pre);
+    node.append(block);
+  }
+  if (error) {
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "toast-dismiss";
+    close.textContent = "×";
+    close.setAttribute("aria-label", t("toast.close"));
+    close.addEventListener("click", dismissToast);
+    node.append(close);
+  }
   node.className = error ? "show error" : "show";
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { node.className = ""; }, 3500);
+  if (!error) toastTimer = setTimeout(() => { node.className = ""; }, 3500);
 }
 
 function bindLanguageSwitch() {
   const select = $("#language-select");
   select.value = getLanguage();
   select.addEventListener("change", () => {
+    if (state.projectDirty && !confirm(t("confirm.discardUnsaved"))) {
+      select.value = getLanguage();
+      return;
+    }
     setLanguage(select.value);
     // Widget/property labels come from the backend (?language=), and most of
     // the app's own dynamic text is built once at render time - a full
@@ -264,13 +303,27 @@ function bindLanguageSwitch() {
   });
 }
 
+// A reload or closed tab bypasses every in-app discard-unsaved confirm
+// (new/open/import), so this is the only guard against silently losing an
+// undownloaded, unpublished designer project.
+function bindUnloadGuard() {
+  window.addEventListener("beforeunload", (/** @type {any} */ event) => {
+    if (!state.projectDirty) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
+}
+
 async function initialize() {
   applyStaticTranslations();
   bindLanguageSwitch();
+  bindUnloadGuard();
   bindTabs();
   bindDesigner();
   bindConfigurations();
   bindDevices();
+  offerAutosaveRecovery();
+  startAutosaveLoop();
   try {
     const [health, system, capabilityData, schemaData] = await Promise.all([
       api("health"), api("system"), api("capabilities"), api(`designer/schemas?language=${getLanguage()}`),
@@ -286,6 +339,8 @@ async function initialize() {
     $("#health").classList.toggle("ok", health.status === "ok");
     $("#profile").textContent = `${system.access_level} · ${system.user.role} · ${system.user.display_name || system.user.name || "Ingress"}`;
     $("#system-json").textContent = JSON.stringify({ system, ...capabilityData }, null, 2);
+    updateDraftActionButtons();
+    updateBuilderButtons();
     renderPalette();
     const initialLoads = [loadServerProjects(), loadDevices(), loadViewerRuntimeSources()];
     if (state.capabilities["configuration.list"]) initialLoads.push(loadConfigurations());
@@ -301,7 +356,7 @@ async function initialize() {
     }
   } catch (/** @type {any} */ error) {
     $("#profile").textContent = t("app.tagline.unreachable");
-    toast(error.message, true);
+    toast(error.message, true, error.details);
   }
   renderDesigner();
 }
@@ -374,6 +429,7 @@ function renderDeviceList() {
   const list = $("#device-list");
   list.replaceChildren();
   list.className = "device-list";
+  $(".devices-view").classList.toggle("no-devices", !state.devices.length);
   if (!state.devices.length) {
     list.classList.add("empty");
     list.textContent = t("devices.empty");
@@ -436,7 +492,7 @@ async function loadDeviceDetails(/** @type {any} */ deviceId) {
     renderDeviceTable($("#device-states"), state.deviceStates, ["type", "key", "available", "state"]);
     $("#device-logs pre").textContent = formatDeviceLogs(logs);
   } catch (/** @type {any} */ error) {
-    toast(error.message, true);
+    toast(error.message, true, error.details);
   }
 }
 
@@ -508,7 +564,7 @@ async function saveDevice(/** @type {any} */ event) {
     await loadDevices();
     toast(editing ? t("toast.device.updated") : t("toast.device.added"));
   } catch (/** @type {any} */ error) {
-    toast(error.message, true);
+    toast(error.message, true, error.details);
   }
 }
 
@@ -518,7 +574,7 @@ async function reconnectSelectedDevice() {
     await devicesController.reconnect(state.selectedDevice);
     toast(t("toast.device.reconnectStarted"));
     await loadDevices();
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
 }
 
 async function removeSelectedDevice() {
@@ -529,7 +585,7 @@ async function removeSelectedDevice() {
     state.selectedDevice = null;
     await loadDevices();
     toast(t("toast.device.removed"));
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
 }
 
 function connectDeviceEvents() {
@@ -595,7 +651,7 @@ async function loadViewerBindings(/** @type {any} */ name) {
     state.viewerBindings = result.bindings || [];
     state.viewerBindingsRevision = result.revision || null;
   } catch (/** @type {any} */ error) {
-    toast(t("toast.binding.loadFailed", { error: error.message }), true);
+    toast(t("toast.binding.loadFailed", { error: error.message }), true, error.details);
   }
 }
 
@@ -682,6 +738,14 @@ function bindDesigner() {
   bindThemeEditor();
   bindColorLibrary();
   bindFontLibrary();
+  $("#palette-search").addEventListener("input", (/** @type {any} */ event) => {
+    paletteQuery = event.target.value;
+    applyPaletteFilter();
+  });
+  $("#hierarchy-search").addEventListener("input", (/** @type {any} */ event) => {
+    treeQuery = event.target.value;
+    renderTree();
+  });
   viewer = new ViewerController({
     dialog: $("#viewer-dialog"),
     stage: $("#viewer-stage"),
@@ -732,33 +796,48 @@ function bindDesigner() {
   $("#save-server-project").addEventListener("click", saveServerProject);
   $("#delete-server-project").addEventListener("click", deleteServerProject);
   $("#delete-widget").addEventListener("click", deleteSelectedWidget);
+  // Committed on change (blur/Enter), not on every keystroke: typing into a
+  // cleared field used to set 0/1 mid-edit and visibly snap the widget on
+  // every keystroke, and committed an obviously-incomplete id on every
+  // letter typed. change fires exactly once the edit is actually done, and
+  // still reaches updateSelectedWidget() with the same final event.target.
   ["id", "x", "y", "width", "height"].forEach((key) => {
     const control = $(`#prop-${key}`);
     control.addEventListener("focus", pushUndo);
-    control.addEventListener("input", updateSelectedWidget);
+    control.addEventListener("change", updateSelectedWidget);
+    // These fields live in a <form> with no submit handler - Enter would
+    // otherwise submit it and reload the page, discarding the edit instead
+    // of committing it. Blurring both commits (via the change event above)
+    // and matches the everyday expectation that Enter "confirms" a field.
+    control.addEventListener("keydown", (/** @type {any} */ event) => {
+      if (event.key === "Enter") { event.preventDefault(); control.blur(); }
+    });
   });
-  // Checked on blur rather than every keystroke, so an in-progress edit
-  // isn't reverted mid-type. Catches the same class of bug as the reserved
-  // ids in uniqueWidgetId(): typing an id a hardware entity (or another
-  // widget/style/font/image/color) already uses would otherwise silently
-  // produce a config ESPHome can't compile. The "input" handler above
-  // already committed each keystroke to widget.id, so this checks for
-  // *other* owners of the current id rather than reusing projectIdIsUsed()
-  // (which would always find the widget's own just-committed id).
+  // Catches the same class of bug as the reserved ids in uniqueWidgetId():
+  // an id a hardware entity (or another widget/style/font/image/color)
+  // already uses would otherwise silently produce a config ESPHome can't
+  // compile. Flagged live via the field's own validity state while typing
+  // (a red border, no rewrite of anything yet) instead of only finding out
+  // after commit; the collision-or-revert check below still runs once the
+  // edit is done, since the live check alone doesn't stop a collision that
+  // slips through on blur.
   /** @type {any} */
   let widgetIdBeforeEdit = null;
   $("#prop-id").addEventListener("focus", (/** @type {any} */ event) => {
     widgetIdBeforeEdit = event.target.value;
   });
+  $("#prop-id").addEventListener("input", (/** @type {any} */ event) => {
+    const widget = state.selectedWidget;
+    if (!widget) return;
+    event.target.setCustomValidity(
+      widgetIdCollides(event.target.value, widget) ? t("toast.id.alreadyUsed", { id: event.target.value }) : "",
+    );
+  });
   $("#prop-id").addEventListener("blur", (/** @type {any} */ event) => {
     const widget = state.selectedWidget;
     if (!widget) return;
     const currentId = widget.id;
-    const collides = projectWidgetEntries().some((entry) => entry !== widget && entry.id === currentId)
-      || (state.project.reserved_ids || []).includes(currentId)
-      || [state.project.styles, state.project.fonts, state.project.images, colorLibrary()]
-        .some((entries) => (entries || []).some((/** @type {any} */ entry) => entry.id === currentId));
-    if (collides) {
+    if (widgetIdCollides(currentId, widget)) {
       const previousId = widgetIdBeforeEdit || currentId;
       toast(t("toast.id.alreadyUsed", { id: currentId }), true);
       replaceProjectWidgetReferences(currentId, previousId);
@@ -767,6 +846,7 @@ function bindDesigner() {
       markProjectDirty();
       renderCanvas();
     }
+    event.target.setCustomValidity("");
   });
   $("#prop-locked").addEventListener("change", () => toggleWidgetFlag("locked"));
   $("#prop-hidden").addEventListener("change", () => toggleWidgetFlag("hidden"));
@@ -912,11 +992,29 @@ function bindDesigner() {
   $("#zoom-100").addEventListener("click", () => setZoom(1));
   $("#zoom-fit").addEventListener("click", fitCanvasToView);
 
+  $("#grid-snap-toggle").addEventListener("change", () => {
+    gridSnapEnabled = $("#grid-snap-toggle").checked;
+    $("#grid-snap-size").disabled = !gridSnapEnabled;
+  });
+  $("#grid-snap-size").addEventListener("input", () => {
+    gridSnapSize = clamp(Number($("#grid-snap-size").value) || 8, 2, 64);
+  });
+
+  $("#align-left").addEventListener("click", () => applyAlignCommand("left"));
+  $("#align-center-x").addEventListener("click", () => applyAlignCommand("centerX"));
+  $("#align-right").addEventListener("click", () => applyAlignCommand("right"));
+  $("#align-top").addEventListener("click", () => applyAlignCommand("top"));
+  $("#align-center-y").addEventListener("click", () => applyAlignCommand("centerY"));
+  $("#align-bottom").addEventListener("click", () => applyAlignCommand("bottom"));
+  $("#distribute-horizontal").addEventListener("click", () => applyDistributeCommand("horizontal"));
+  $("#distribute-vertical").addEventListener("click", () => applyDistributeCommand("vertical"));
+
   $("#bg-path").addEventListener("focus", pushUndo);
   $("#bg-path").addEventListener("input", updateBackgroundFields);
   $("#bg-image-id").addEventListener("focus", pushUndo);
   $("#bg-image-id").addEventListener("input", updateBackgroundFields);
-  $("#bg-export").addEventListener("change", updateBackgroundFields);
+  $("#bg-export").addEventListener("change", () => { pushUndo(); updateBackgroundFields(); });
+  $("#bg-opacity").addEventListener("focus", pushUndo);
   $("#bg-opacity").addEventListener("input", updateBackgroundFields);
   $("#bg-preview-pick").addEventListener("click", () => $("#bg-preview-file").click());
   $("#bg-preview-file").addEventListener("change", loadBackgroundPreview);
@@ -994,6 +1092,24 @@ function bindDesigner() {
       deleteSelectedWidget();
       return;
     }
+    // Clicking empty canvas already clears the selection - Escape is the
+    // keyboard-only equivalent of that same click, for widget mode too.
+    if (event.key === "Escape" && !typing && state.canvasMode === "widgets" && state.selectedWidget) {
+      event.preventDefault();
+      deselectWidget();
+      return;
+    }
+    // Arrow-key nudge: the only way to set an exact position was the X/Y
+    // number fields, forcing a mouse round-trip even for a 1px correction
+    // (drag rounds to whole pixels but offers no way to type just one).
+    // Shift steps 10px, matching drag's existing pixel-rounding rather than
+    // adding a second unit.
+    if (!typing && !event.ctrlKey && state.canvasMode === "widgets" && state.selectedWidget
+      && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+      event.preventDefault();
+      nudgeSelectedWidget(event.key, event.shiftKey ? 10 : 1);
+      return;
+    }
     if (!event.ctrlKey) return;
 
     const key = event.key.toLowerCase();
@@ -1005,6 +1121,7 @@ function bindDesigner() {
       o: () => $("#project-file").click(),
       s: downloadDesignerProject,
       e: exportDesignerYaml,
+      d: () => { if (state.canvasMode === "widgets" && state.selectedWidget) duplicateSelectedWidgets(); },
       0: fitCanvasToView,
       1: () => setZoom(1),
       "+": () => setZoom(state.zoom * 1.25),
@@ -1016,6 +1133,20 @@ function bindDesigner() {
     }
   });
 }
+
+// A session preference, not project data - opt-in, off by default so
+// existing free-pixel dragging behaviour is unchanged until switched on.
+let gridSnapEnabled = false;
+let gridSnapSize = 8;
+
+function activeGridSnapSize() {
+  return gridSnapEnabled ? gridSnapSize : 0;
+}
+
+// A real marquee drag still ends with a native "click" on the canvas -
+// without this, the existing "click on empty canvas deselects" handler
+// would immediately wipe out the selection the drag just made.
+let justFinishedMarquee = false;
 
 function setZoom(/** @type {any} */ value) {
   state.zoom = clamp(Number(value) || 1, MIN_ZOOM, MAX_ZOOM);
@@ -1054,7 +1185,7 @@ function newDesignerProject() {
   state.projectName = null;
   clearViewerBindings();
   state.projectRevision = null;
-  state.projectDirty = false;
+  markProjectClean();
   state.selectedWidget = null;
   state.selectedStroke = null;
   state.drawingStroke = null;
@@ -1085,7 +1216,7 @@ async function openDesignerProject(/** @type {any} */ event) {
     state.projectName = null;
     clearViewerBindings();
     state.projectRevision = null;
-    state.projectDirty = false;
+    markProjectClean();
     state.selectedWidget = null;
     state.selectedStroke = null;
     state.drawingStroke = null;
@@ -1094,7 +1225,7 @@ async function openDesignerProject(/** @type {any} */ event) {
     renderDesigner();
     toast(t("toast.project.loaded"));
   } catch (/** @type {any} */ error) {
-    toast(t("toast.project.loadFailed", { error: error.message }), true);
+    toast(t("toast.project.loadFailed", { error: error.message }), true, error.details);
   }
 }
 
@@ -1113,7 +1244,7 @@ async function downloadDesignerProject() {
     URL.revokeObjectURL(url);
     toast(t("toast.project.downloaded"));
   } catch (/** @type {any} */ error) {
-    toast(t("toast.project.downloadFailed", { error: error.message }), true);
+    toast(t("toast.project.downloadFailed", { error: error.message }), true, error.details);
   }
 }
 
@@ -1253,7 +1384,7 @@ async function runImport() {
     toast(t("toast.import.summary", { count: result.stats.widget_count })
       + (warnings ? t("toast.import.warningsSuffix", { count: warnings }) : ""));
   } catch (/** @type {any} */ error) {
-    toast(error.message, true);
+    toast(error.message, true, error.details);
   } finally {
     $("#do-import").disabled = false;
   }
@@ -1273,7 +1404,7 @@ async function loadServerProjects() {
     select.value = projects.some((/** @type {any} */ project) => project.name === selected) ? selected : "";
     updateServerProjectButtons();
   } catch (/** @type {any} */ error) {
-    toast(error.message, true);
+    toast(error.message, true, error.details);
   }
 }
 
@@ -1300,7 +1431,7 @@ async function loadSelectedServerProject() {
     state.projectName = result.name;
     state.projectRevision = result.revision;
     await loadViewerBindings(result.name);
-    state.projectDirty = false;
+    markProjectClean();
     state.selectedWidget = null;
     state.selectedStroke = null;
     state.drawingStroke = null;
@@ -1309,7 +1440,7 @@ async function loadSelectedServerProject() {
     renderDesigner();
     toast(t("toast.project.loadedFromStorage"));
   } catch (/** @type {any} */ error) {
-    toast(error.message, true);
+    toast(error.message, true, error.details);
   }
 }
 
@@ -1321,7 +1452,7 @@ async function saveServerProject() {
     const result = await projectsController.save(name, state.project, expectedRevision);
     state.projectName = name;
     state.projectRevision = result.revision;
-    state.projectDirty = false;
+    markProjectClean();
     renderDesignerStatus();
     renderProperties();
     await loadServerProjects();
@@ -1350,7 +1481,7 @@ async function deleteServerProject() {
     renderDesignerStatus();
     toast(t("toast.project.deletedFromStorage"));
   } catch (/** @type {any} */ error) {
-    toast(error.message, true);
+    toast(error.message, true, error.details);
   }
 }
 
@@ -1408,6 +1539,80 @@ function markProjectDirty() {
   actions.set("projectDirty", true);
 }
 
+// The autosave safety net only matters while there is something not yet
+// safely persisted anywhere else - once a save/download/fresh-load makes
+// that true again, the last autosave would otherwise linger and wrongly
+// offer to restore already-superseded content on the next page load.
+function markProjectClean() {
+  actions.set("projectDirty", false);
+  clearAutosave();
+}
+
+// Local-only safety net against a crashed tab or closed-without-saving
+// browser, on top of (not instead of) the beforeunload warning: that warning
+// only helps if the tab is still open to see it. Never touches the server -
+// this is strictly a same-browser recovery copy.
+const AUTOSAVE_KEY = "designer.autosave.v1";
+const AUTOSAVE_INTERVAL_MS = 15000;
+
+function loadAutosave() {
+  try {
+    const raw = window.localStorage.getItem(AUTOSAVE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveAutosave() {
+  try {
+    window.localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({
+      project: state.project,
+      projectName: state.projectName,
+      savedAt: Date.now(),
+    }));
+  } catch {
+    // Best-effort only - a full or unavailable localStorage (private
+    // browsing) just means this safety net is unavailable this session.
+  }
+}
+
+function clearAutosave() {
+  try {
+    window.localStorage.removeItem(AUTOSAVE_KEY);
+  } catch {
+    // Nothing to do if localStorage itself is unavailable.
+  }
+}
+
+function startAutosaveLoop() {
+  setInterval(() => {
+    if (state.projectDirty) saveAutosave();
+  }, AUTOSAVE_INTERVAL_MS);
+}
+
+// Runs once at startup, before the user has touched anything, so a crash or
+// closed tab from an earlier session gets one clear chance to be noticed
+// and recovered instead of silently overwritten by a fresh project.
+function offerAutosaveRecovery() {
+  const saved = loadAutosave();
+  if (!saved?.project) return;
+  const savedAt = new Date(saved.savedAt || 0);
+  const when = Number.isNaN(savedAt.getTime()) ? "" : savedAt.toLocaleString(getLanguage());
+  if (!confirm(t("confirm.autosave.restore", { when }))) return;
+  stopFlowPreview();
+  state.project = saved.project;
+  state.activeSurface = "root";
+  state.projectName = saved.projectName || null;
+  state.projectRevision = null;
+  state.projectDirty = true;
+  state.selectedWidget = null;
+  state.selectedStroke = null;
+  state.drawingStroke = null;
+  clearViewerBindings();
+  resetHistory();
+}
+
 function updateCanvasSize() {
   pushUndo();
   state.project.canvas.width = clamp(Number($("#canvas-width").value), 1, 4096);
@@ -1424,7 +1629,8 @@ function renderPalette() {
     obj: "▣", container: "▤", label: "T", button: "▰",
     switch: "◉", slider: "━", bar: "▮", arc: "◔", image: "▧", animimg: "▩",
     checkbox: "☑", dropdown: "▾", roller: "≡", textarea: "⌨︎", keyboard: "⌨",
-    tileview: "▦", tabview: "▭", led: "●", spinner: "◌", qrcode: "▥", spinbox: "🔢",
+    tileview: "▦", tabview: "▭", led: "●", spinner: "◌", qrcode: "▥", spinbox: "↕",
+    meter: "◎",
   };
 
   const appendWidgetButton = (/** @type {any} */ schema) => {
@@ -1476,6 +1682,37 @@ function renderPalette() {
   glowButton.title = t("palette.glowLineTitle");
   glowButton.addEventListener("click", startNewLine);
   palette.append(glowButton);
+  applyPaletteFilter();
+}
+
+// Re-applied after every renderPalette() (surface switches rebuild the
+// whole palette), so the typed query survives a rebuild without needing to
+// touch the still-focused search input itself.
+let paletteQuery = "";
+
+function applyPaletteFilter() {
+  const query = paletteQuery.trim().toLowerCase();
+  const palette = $("#palette");
+  let anyVisible = false;
+  [...palette.children].forEach((/** @type {any} */ child) => {
+    if (child.classList.contains("palette-group-heading")) return;
+    const matches = !query || child.textContent.toLowerCase().includes(query);
+    child.classList.toggle("hidden", !matches);
+    if (matches) anyVisible = true;
+  });
+  [...palette.children].forEach((/** @type {any} */ child, /** @type {any} */ index, /** @type {any} */ all) => {
+    if (!child.classList.contains("palette-group-heading")) return;
+    let sibling = all[index + 1];
+    let siblingIndex = index + 1;
+    let hasVisibleMember = false;
+    while (sibling && !sibling.classList.contains("palette-group-heading")) {
+      if (!sibling.classList.contains("hidden")) hasVisibleMember = true;
+      siblingIndex += 1;
+      sibling = all[siblingIndex];
+    }
+    child.classList.toggle("hidden", !hasVisibleMember);
+  });
+  $("#palette-search-empty").classList.toggle("hidden", !query || anyVisible);
 }
 
 function allWidgets(nodes = activeWidgetRoots()) {
@@ -2086,8 +2323,15 @@ function applySurfaceSettings() {
 function bindSurfaceTools() {
   $("#surface-select").addEventListener("change", (/** @type {any} */ event) => selectSurface(event.target.value));
   $("#add-page").addEventListener("click", addPage);
-  $("#add-bottom-layer").addEventListener("click", () => addLayer("bottom"));
-  $("#add-top-layer").addEventListener("click", () => addLayer("top"));
+  const layerMenu = $("#add-layer-menu");
+  $("#add-bottom-layer").addEventListener("click", () => { addLayer("bottom"); layerMenu.open = false; });
+  $("#add-top-layer").addEventListener("click", () => { addLayer("top"); layerMenu.open = false; });
+  // Native <details> has no built-in "close on outside click" - without
+  // this the menu stays open until the summary is clicked again, unlike
+  // every other menu/dropdown in the app.
+  document.addEventListener("click", (/** @type {any} */ event) => {
+    if (layerMenu.open && !layerMenu.contains(event.target)) layerMenu.open = false;
+  });
   $("#surface-up").addEventListener("click", () => moveActivePage(-1));
   $("#surface-down").addEventListener("click", () => moveActivePage(1));
   $("#delete-surface").addEventListener("click", deleteActiveSurface);
@@ -2208,7 +2452,9 @@ function renderCanvas() {
   // widgets are flat DOM siblings here, not actually nested, so a container's
   // "children" only render on top of it if something puts them there), then
   // the edit handles on top of everything so they stay grabbable.
-  const { back: glowCanvasBack, front: glowCanvasFront, handles } = createCanvasLayers(document);
+  const {
+    back: glowCanvasBack, front: glowCanvasFront, handles, alignGuideX, alignGuideY, marquee, gapLabels,
+  } = createCanvasLayers(document);
   canvas.replaceChildren(renderCanvasBackground(), glowCanvasBack);
   canvasNodeByWidget.clear();
   visualWidgets().forEach((/** @type {any} */ item) => {
@@ -2216,7 +2462,7 @@ function renderCanvas() {
     canvasNodeByWidget.set(item.widget, node);
     canvas.append(node);
   });
-  canvas.append(glowCanvasFront, handles);
+  canvas.append(glowCanvasFront, handles, alignGuideX, alignGuideY, marquee, ...Object.values(gapLabels));
 
   fontLibrary().forEach((/** @type {any} */ font) => ensureFontLoaded(font.id));
 
@@ -2329,19 +2575,21 @@ function bindGlowTools() {
 
   const canvas = $("#canvas");
   canvas.addEventListener("pointerdown", onGlowPointerDown);
+  canvas.addEventListener("pointerdown", (/** @type {any} */ event) => {
+    if (state.canvasMode !== "widgets") return;
+    if (event.target.closest(".canvas-widget, .resize-handle")) return;
+    beginMarqueeSelect(event);
+  });
   canvas.addEventListener("dblclick", onGlowDoubleClick);
   canvas.addEventListener("contextmenu", onGlowContextMenu);
   // Clicking empty canvas space (not a widget, not a resize/glow handle)
   // deselects the current widget - `beginDrag()` only ever sets a selection,
   // it never had a matching way to clear one.
   canvas.addEventListener("click", (/** @type {any} */ event) => {
+    if (justFinishedMarquee) { justFinishedMarquee = false; return; }
     if (state.canvasMode !== "widgets") return;
     if (event.target.closest(".canvas-widget, .resize-handle")) return;
-    if (!state.selectedWidget) return;
-    state.selectedWidget = null;
-    renderProperties();
-    renderTree();
-    $$(".canvas-widget.selected").forEach((item) => item.classList.remove("selected"));
+    deselectWidget();
   });
 
   $$(".colorwheel-target .button").forEach((btn) => {
@@ -2739,7 +2987,7 @@ function glowFlowBinding(/** @type {any} */ stroke) {
 function renderGlowFlowBinding(/** @type {any} */ stroke) {
   const binding = glowFlowBinding(stroke);
   const select = $("#flow-binding-entity");
-  select.replaceChildren(new Option("— Sensor wählen —", ""));
+  select.replaceChildren(new Option(t("glow.sensorBinding.pickSensor"), ""));
   (state.project.entities || [])
     .filter((/** @type {any} */ entity) => entity.readable && entity.data_type === "number")
     .forEach((/** @type {any} */ entity) => select.append(
@@ -2767,11 +3015,11 @@ function saveGlowFlowBinding() {
     error.classList.remove("hidden");
   };
   if (!stroke?.flow?.enabled || !stroke.flow.bidirectional) {
-    fail("Für diese Bindung müssen Fluss und bidirektionaler Modus aktiviert sein.");
+    fail(t("validation.flowBinding.needsFlow"));
     return;
   }
   if (!entity) {
-    fail("Bitte einen numerischen ESPHome-Sensor auswählen.");
+    fail(t("validation.flowBinding.needsNumericSensor"));
     return;
   }
   const off = Math.max(0, Number($("#flow-binding-off").value) || 0);
@@ -2779,7 +3027,7 @@ function saveGlowFlowBinding() {
   const normalDuration = Math.max(10, Number($("#flow-binding-normal").value) || 0);
   const fastDuration = Math.max(10, Number($("#flow-binding-fast-duration").value) || 0);
   if (fast <= off) {
-    fail("Der Schnell-Schwellwert muss größer als die Totzone sein.");
+    fail(t("validation.flowBinding.fastMustExceedDeadzone"));
     return;
   }
   const baseName = strokeBaseName(stroke);
@@ -2968,7 +3216,7 @@ function renderStrokeFrame(/** @type {any} */ doc, /** @type {any} */ rect, /** 
     canvas.height = height;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) {
-      reject(new Error("Canvas-Rendering-Kontext ist nicht verfügbar."));
+      reject(new Error(t("validation.glow.canvasContextUnavailable")));
       return;
     }
     ctx.translate(-rect.left, -rect.top);
@@ -3046,7 +3294,7 @@ async function bakeAllStrokes() {
     renderDesigner();
     return true;
   } catch (/** @type {any} */ error) {
-    toast(t("toast.glow.bakeFailed", { error: error.message }), true);
+    toast(t("toast.glow.bakeFailed", { error: error.message }), true, error.details);
     return false;
   }
 }
@@ -3054,7 +3302,8 @@ async function bakeAllStrokes() {
 function renderWidget(/** @type {any} */ item) {
   const { widget, left, top, width, height, managed, effectivelyHidden } = item;
   const node = document.createElement("div");
-  node.className = `canvas-widget${state.selectedWidget === widget ? " selected" : ""}`;
+  node.className = `canvas-widget${widgetIsSelected(widget) ? " selected" : ""}`;
+  node.dataset.id = widget.id;
   node.dataset.type = widget.widget_type;
   if (managed) node.classList.add("managed");
   node.style.left = `${left}px`;
@@ -3228,12 +3477,87 @@ function effectiveStyleTree(/** @type {any} */ widget) {
   return { ...theme, ...ownTree };
 }
 
+function showAlignmentGuides(/** @type {any} */ guideX, /** @type {any} */ guideY) {
+  const xGuide = $("#align-guide-x");
+  const hasX = guideX !== null && guideX !== undefined;
+  xGuide.classList.toggle("hidden", !hasX);
+  if (hasX) xGuide.style.left = `${guideX}px`;
+  const yGuide = $("#align-guide-y");
+  const hasY = guideY !== null && guideY !== undefined;
+  yGuide.classList.toggle("hidden", !hasY);
+  if (hasY) yGuide.style.top = `${guideY}px`;
+}
+
+function clearAlignmentGuides() {
+  $("#align-guide-x").classList.add("hidden");
+  $("#align-guide-y").classList.add("hidden");
+}
+
+// The "12px" spacing readout: shown whenever a reasonably close neighbour
+// exists on a side, independent of whether anything is close enough to
+// actually snap - purely informational, so (unlike alignment guides) it
+// stays on even while grid-snap is active.
+function showGapLabels(/** @type {any} */ box, /** @type {any} */ gaps) {
+  const centerX = box.left + box.width / 2;
+  const centerY = box.top + box.height / 2;
+  /** @type {Record<string, any>} */
+  const placement = {
+    left: gaps.left && { x: (gaps.left.from + gaps.left.to) / 2, y: centerY, gap: gaps.left.gap },
+    right: gaps.right && { x: (gaps.right.from + gaps.right.to) / 2, y: centerY, gap: gaps.right.gap },
+    top: gaps.top && { x: centerX, y: (gaps.top.from + gaps.top.to) / 2, gap: gaps.top.gap },
+    bottom: gaps.bottom && { x: centerX, y: (gaps.bottom.from + gaps.bottom.to) / 2, gap: gaps.bottom.gap },
+  };
+  ["left", "right", "top", "bottom"].forEach((side) => {
+    const label = $(`#gap-label-${side}`);
+    const info = placement[side];
+    label.classList.toggle("hidden", !info);
+    if (info) {
+      label.textContent = `${Math.round(info.gap)}px`;
+      label.style.left = `${info.x}px`;
+      label.style.top = `${info.y}px`;
+    }
+  });
+}
+
+function clearGapLabels() {
+  ["left", "right", "top", "bottom"].forEach((side) => $(`#gap-label-${side}`).classList.add("hidden"));
+}
+
+/** @param {any[]} boxes @returns {any} the smallest box containing all of them */
+function boundingBoxOf(boxes) {
+  const left = Math.min(...boxes.map((box) => box.left));
+  const top = Math.min(...boxes.map((box) => box.top));
+  const right = Math.max(...boxes.map((box) => box.left + box.width));
+  const bottom = Math.max(...boxes.map((box) => box.top + box.height));
+  return { left, top, width: right - left, height: bottom - top };
+}
+
 function beginDrag(/** @type {any} */ event, /** @type {any} */ widget, /** @type {any} */ node, /** @type {any} */ box) {
   if (event.target.classList.contains("resize-handle")) return;
-  state.selectedWidget = widget;
+  if (event.shiftKey || event.ctrlKey) {
+    toggleWidgetSelection(widget);
+    renderProperties();
+    renderTree();
+    renderCanvasSelectionClasses();
+    return;
+  }
+  if (!widgetIsSelected(widget) || selectedWidgetGroup().length <= 1) {
+    // Plain click outside the current multi-selection replaces it, same as
+    // every other editor - shift/ctrl-click (above) is the only way in.
+    state.selectedWidget = widget;
+    state.selectedWidgets.clear();
+  } else if (state.selectedWidget !== widget) {
+    // Plain click on a widget that is already part of the group makes it
+    // the primary (so the properties panel reflects what was actually
+    // clicked) without dropping the rest of the group, so the drag below
+    // still moves everyone together.
+    state.selectedWidgets.add(state.selectedWidget);
+    state.selectedWidgets.delete(widget);
+    state.selectedWidget = widget;
+  }
   renderProperties();
   renderTree();
-  $$(".canvas-widget").forEach((item) => item.classList.toggle("selected", item === node));
+  renderCanvasSelectionClasses();
   if (widget.locked) return;
   if (box.managed) {
     // A parent grid or flex arrangement owns this position. Writing an x/y
@@ -3243,35 +3567,107 @@ function beginDrag(/** @type {any} */ event, /** @type {any} */ widget, /** @typ
     return;
   }
   pushUndo();
+  const canvasSize = { width: state.project.canvas.width, height: state.project.canvas.height };
+  const group = selectedWidgetGroup();
+  const groupSet = new Set(group);
+  const allBoxes = visualWidgets();
+  const boxByWidget = new Map(allBoxes.map((/** @type {any} */ item) => [item.widget, item]));
+  // Alignment guides only ever consider widgets outside the dragged group -
+  // a multi-selection aligning against its own members would just snap to
+  // wherever it already is. The canvas's own edges/center count as one more
+  // candidate, the same way any sibling widget would.
+  const others = allBoxes
+    .filter((/** @type {any} */ item) => !groupSet.has(item.widget))
+    .map((/** @type {any} */ item) => ({ left: item.left, top: item.top, width: item.width, height: item.height }));
+  others.push(canvasAlignmentBox(canvasSize.width, canvasSize.height));
   const origin = {
     clientX: event.clientX, clientY: event.clientY,
     x: Number(widget.x) || 0, y: Number(widget.y) || 0,
   };
-  // Glow lines nested under this widget aren't part of the layout tree (their
-  // points are always absolute canvas coordinates, not a child x/y offset),
-  // so they need their own translation to follow the drag.
+  // Other selected widgets move by the same delta as the dragged one, each
+  // clamped to its own bounds - a locked or layout-managed member just sits
+  // still instead of blocking the rest of the group's move.
+  /** @type {any[]} */
+  const followers = group
+    .filter((/** @type {any} */ member) => member !== widget)
+    .map((/** @type {any} */ member) => ({
+      widget: member, x: Number(member.x) || 0, y: Number(member.y) || 0, box: boxByWidget.get(member),
+    }))
+    .filter((/** @type {any} */ follower) => !follower.widget.locked && !follower.box?.managed);
+  // Alignment guides and the gap readout react to the selection's overall
+  // bounding box, not just the widget actually grabbed - a 3-widget group
+  // dragged by its rightmost member still snaps by its left edge if that is
+  // what lines up, exactly like a single widget would.
+  const groupBoxAtOrigin = boundingBoxOf([
+    { left: origin.x, top: origin.y, width: box.width, height: box.height },
+    ...followers.map((/** @type {any} */ follower) => ({
+      left: follower.x, top: follower.y, width: follower.box?.width ?? 0, height: follower.box?.height ?? 0,
+    })),
+  ]);
+  // Glow lines nested under this widget - or any other dragged group member
+  // - aren't part of the layout tree (their points are always absolute
+  // canvas coordinates, not a child x/y offset), so they need their own
+  // translation to follow the drag.
+  const strokeOwnerIds = new Set([widget.id, ...followers.map((/** @type {any} */ follower) => follower.widget.id)]);
   /** @type {any[]} */
   const childStrokes = (state.project.glow_strokes || [])
-    .filter((/** @type {any} */ stroke) => stroke.parent_id === widget.id)
+    .filter((/** @type {any} */ stroke) => strokeOwnerIds.has(stroke.parent_id))
     .map((/** @type {any} */ stroke) => ({ stroke, points: stroke.points.map((/** @type {any} */ p) => [...p]) }));
   node.setPointerCapture(event.pointerId);
   node.addEventListener("pointermove", move);
   node.addEventListener("pointerup", end, { once: true });
   function move(/** @type {any} */ moveEvent) {
+    const gridSize = activeGridSnapSize();
     const position = dragPosition(origin, moveEvent, state.zoom, {
-      width: state.project.canvas.width,
-      height: state.project.canvas.height,
+      width: canvasSize.width,
+      height: canvasSize.height,
       itemWidth: box.width,
       itemHeight: box.height,
+    }, gridSize);
+    let totalDeltaX = position.x - origin.x;
+    let totalDeltaY = position.y - origin.y;
+    const groupBoxNow = {
+      left: groupBoxAtOrigin.left + totalDeltaX,
+      top: groupBoxAtOrigin.top + totalDeltaY,
+      width: groupBoxAtOrigin.width,
+      height: groupBoxAtOrigin.height,
+    };
+    // Grid-snap and alignment guides are mutually exclusive - snapping to
+    // both a fixed grid and a sibling's edge at once would fight itself.
+    // The gap readout is purely informational, so it stays on regardless.
+    if (!gridSize && others.length) {
+      const snap = alignmentSnap(groupBoxNow, others);
+      totalDeltaX += snap.dx;
+      totalDeltaY += snap.dy;
+      showAlignmentGuides(snap.guideX, snap.guideY);
+    } else {
+      clearAlignmentGuides();
+    }
+    if (others.length) {
+      const settledGroupBox = {
+        left: groupBoxAtOrigin.left + totalDeltaX,
+        top: groupBoxAtOrigin.top + totalDeltaY,
+        width: groupBoxAtOrigin.width,
+        height: groupBoxAtOrigin.height,
+      };
+      showGapLabels(settledGroupBox, nearestGaps(settledGroupBox, others));
+    } else {
+      clearGapLabels();
+    }
+    widget.x = clamp(Math.round(origin.x + totalDeltaX), 0, canvasSize.width - box.width);
+    widget.y = clamp(Math.round(origin.y + totalDeltaY), 0, canvasSize.height - box.height);
+    totalDeltaX = widget.x - origin.x;
+    totalDeltaY = widget.y - origin.y;
+    followers.forEach((/** @type {any} */ follower) => {
+      const followerWidth = follower.box?.width ?? 0;
+      const followerHeight = follower.box?.height ?? 0;
+      follower.widget.x = clamp(Math.round(follower.x + totalDeltaX), 0, canvasSize.width - followerWidth);
+      follower.widget.y = clamp(Math.round(follower.y + totalDeltaY), 0, canvasSize.height - followerHeight);
     });
-    widget.x = position.x;
-    widget.y = position.y;
     // Re-running the layout (rather than just offsetting this node) keeps any
     // children - and siblings anchored to this widget - moving along with it.
     syncCanvasLayout();
     if (childStrokes.length) {
-      const totalDeltaX = widget.x - origin.x;
-      const totalDeltaY = widget.y - origin.y;
       childStrokes.forEach(({ stroke, points }) => {
         stroke.points = translatePoints(points, totalDeltaX, totalDeltaY);
       });
@@ -3281,7 +3677,71 @@ function beginDrag(/** @type {any} */ event, /** @type {any} */ widget, /** @typ
     $("#prop-y").value = widget.y;
     markProjectDirty();
   }
-  function end() { node.removeEventListener("pointermove", move); }
+  function end() {
+    node.removeEventListener("pointermove", move);
+    clearAlignmentGuides();
+    clearGapLabels();
+  }
+}
+
+// Rubber-band selection: dragging on empty canvas space selects every
+// widget the rectangle touches. Shift/Ctrl held at the start adds to
+// whatever was already selected instead of replacing it.
+function beginMarqueeSelect(/** @type {any} */ event) {
+  const canvas = $("#canvas");
+  const rect = canvas.getBoundingClientRect();
+  const startX = (event.clientX - rect.left) / state.zoom;
+  const startY = (event.clientY - rect.top) / state.zoom;
+  const additive = event.shiftKey || event.ctrlKey;
+  const baseSelection = additive ? selectedWidgetGroup() : [];
+  const marquee = $("#marquee-select");
+  let moved = false;
+  /** @type {any[]} */
+  let liveSelection = baseSelection;
+  canvas.setPointerCapture(event.pointerId);
+  canvas.addEventListener("pointermove", move);
+  canvas.addEventListener("pointerup", end, { once: true });
+
+  function move(/** @type {any} */ moveEvent) {
+    const currentX = (moveEvent.clientX - rect.left) / state.zoom;
+    const currentY = (moveEvent.clientY - rect.top) / state.zoom;
+    const left = Math.min(startX, currentX);
+    const top = Math.min(startY, currentY);
+    const width = Math.abs(currentX - startX);
+    const height = Math.abs(currentY - startY);
+    if (width > 2 || height > 2) moved = true;
+    if (!moved) return;
+    marquee.classList.remove("hidden");
+    marquee.style.left = `${left}px`;
+    marquee.style.top = `${top}px`;
+    marquee.style.width = `${width}px`;
+    marquee.style.height = `${height}px`;
+
+    const hits = visualWidgets()
+      .filter((/** @type {any} */ item) => (
+        item.left < left + width && item.left + item.width > left
+        && item.top < top + height && item.top + item.height > top
+      ))
+      .map((/** @type {any} */ item) => item.widget);
+    liveSelection = additive ? [...new Set([...baseSelection, ...hits])] : hits;
+    // Live highlight only, while the rectangle is still being dragged - the
+    // properties panel and tree only need to catch up once on release,
+    // not on every pointermove tick.
+    const idSet = new Set(liveSelection.map((/** @type {any} */ item) => item.id));
+    $$(".canvas-widget").forEach((/** @type {any} */ item) => item.classList.toggle("selected", idSet.has(item.dataset.id)));
+  }
+  function end() {
+    canvas.removeEventListener("pointermove", move);
+    marquee.classList.add("hidden");
+    if (!moved) return;
+    justFinishedMarquee = true;
+    state.selectedWidget = liveSelection[0] || null;
+    state.selectedWidgets.clear();
+    liveSelection.slice(1).forEach((/** @type {any} */ item) => state.selectedWidgets.add(item));
+    renderProperties();
+    renderTree();
+    renderCanvasSelectionClasses();
+  }
 }
 
 function beginResize(/** @type {any} */ event, /** @type {any} */ widget) {
@@ -3293,13 +3753,40 @@ function beginResize(/** @type {any} */ event, /** @type {any} */ widget) {
     width: Number(widget.width),
     height: Number(widget.height),
   };
+  const left = Number(widget.x) || 0;
+  const top = Number(widget.y) || 0;
+  const canvasSize = { width: state.project.canvas.width, height: state.project.canvas.height };
+  // The resize handle sits at the box's bottom-right corner (see the
+  // `.resize-handle` positioning in styles.css) - the left/top edge never
+  // moves, so only the right/bottom edges are candidates to snap.
+  const others = visualWidgets()
+    .filter((/** @type {any} */ item) => item.widget !== widget)
+    .map((/** @type {any} */ item) => ({ left: item.left, top: item.top, width: item.width, height: item.height }));
+  others.push(canvasAlignmentBox(canvasSize.width, canvasSize.height));
   event.target.setPointerCapture(event.pointerId);
   event.target.addEventListener("pointermove", resize);
   event.target.addEventListener("pointerup", end, { once: true });
   function resize(/** @type {any} */ moveEvent) {
-    const dimensions = resizeDimensions(origin, moveEvent, state.zoom);
-    widget.width = dimensions.width;
-    widget.height = dimensions.height;
+    const gridSize = activeGridSnapSize();
+    const dimensions = resizeDimensions(origin, moveEvent, state.zoom, { gridSize });
+    let { width, height } = dimensions;
+    // Grid-snap and alignment guides are mutually exclusive, same as during
+    // a drag - snapping to both a fixed grid and a sibling's edge at once
+    // would fight itself.
+    if (!gridSize && others.length) {
+      const snap = alignmentSnap({ left, top, width, height }, others, 4, { xEdges: ["right"], yEdges: ["bottom"] });
+      width = clamp(Math.round(width + snap.dx), 8, canvasSize.width - left);
+      height = clamp(Math.round(height + snap.dy), 8, canvasSize.height - top);
+      showAlignmentGuides(snap.guideX, snap.guideY);
+    } else {
+      clearAlignmentGuides();
+    }
+    widget.width = width;
+    widget.height = height;
+    if (others.length) {
+      const box = { left, top, width, height };
+      showGapLabels(box, nearestGaps(box, others));
+    }
     // A container's children can depend on its size (grid tracks, flex
     // stretch), so re-run the layout instead of only resizing this node.
     syncCanvasLayout();
@@ -3307,7 +3794,11 @@ function beginResize(/** @type {any} */ event, /** @type {any} */ widget) {
     $("#prop-height").value = widget.height;
     markProjectDirty();
   }
-  function end() { event.target.removeEventListener("pointermove", resize); }
+  function end() {
+    event.target.removeEventListener("pointermove", resize);
+    clearAlignmentGuides();
+    clearGapLabels();
+  }
 }
 
 function renderProperties() {
@@ -3320,6 +3811,7 @@ function renderProperties() {
   if (!widget) $("#widget-links-section").classList.add("hidden");
   if (!widget) return;
   $("#prop-id").value = widget.id;
+  $("#prop-id").setCustomValidity("");
   $("#prop-x").value = widget.x;
   $("#prop-y").value = widget.y;
   $("#prop-width").value = widget.width;
@@ -4048,7 +4540,7 @@ function renderDeviceBindings(/** @type {any} */ widget, /** @type {any} */ sele
   );
   const existing = $("#device-binding-existing");
   const selectedId = selectedBinding?.id || existing.value;
-  existing.replaceChildren(new Option("— Neue Bindung —", ""));
+  existing.replaceChildren(new Option(t("deviceBinding.new"), ""));
   own.forEach((/** @type {any} */ binding) => existing.append(new Option(
     ["opaque_yaml", "custom_yaml"].includes(binding.kind)
       ? `${binding.id} · ${t("deviceBinding.importedOnly")}`
@@ -4074,7 +4566,7 @@ function renderDeviceBindings(/** @type {any} */ widget, /** @type {any} */ sele
   const previousCommand = $("#device-binding-command").value;
 
   const entitySelect = $("#device-binding-entity");
-  entitySelect.replaceChildren(new Option("— Entität wählen —", ""));
+  entitySelect.replaceChildren(new Option(t("deviceBinding.entityPlaceholder"), ""));
   compatibleEntities(state.project.entities, direction).forEach((/** @type {any} */ item) => {
     entitySelect.append(new Option(`${item.domain}.${item.id}${item.unit ? ` · ${item.unit}` : ""}`, item.id));
   });
@@ -4101,6 +4593,7 @@ function renderDeviceBindings(/** @type {any} */ widget, /** @type {any} */ sele
   $("#device-binding-transform").value = JSON.stringify(binding?.transform || {}, null, 2);
   $("#device-binding-conditions").value = JSON.stringify(binding?.conditions || [], null, 2);
   $("#remove-device-binding").disabled = !binding;
+  $("#remove-device-binding").title = binding ? "" : t("deviceBinding.hint.noneToRemove");
   ["device-binding-direction", "device-binding-entity", "device-binding-property",
     "device-binding-event", "device-binding-indicator", "device-binding-command",
     "device-binding-transform", "device-binding-conditions", "save-device-binding"]
@@ -4131,6 +4624,7 @@ function renderDeviceBindings(/** @type {any} */ widget, /** @type {any} */ sele
     row.title = edge.id;
     graphElement.append(row);
   });
+  $("#device-binding-graph-section").classList.toggle("hidden", graph.edges.length === 0);
 }
 
 function loadSelectedDeviceBinding() {
@@ -4150,17 +4644,17 @@ function saveDeviceBinding() {
   const entityId = $("#device-binding-entity").value;
   const entity = (state.project.entities || []).find((/** @type {any} */ item) => item.id === entityId);
   if (!entity) {
-    error.textContent = "Bitte eine kompatible ESPHome-Entität auswählen.";
+    error.textContent = t("validation.deviceBinding.needsCompatibleEntity");
     error.classList.remove("hidden"); return;
   }
   let transform, conditions;
   try {
     transform = JSON.parse($("#device-binding-transform").value || "{}");
     conditions = JSON.parse($("#device-binding-conditions").value || "[]");
-    if (!Array.isArray(conditions)) throw new Error("Bedingungen müssen eine Liste sein.");
+    if (!Array.isArray(conditions)) throw new Error(t("validation.deviceBinding.conditionsMustBeList"));
   }
   catch (/** @type {any} */ parseError) {
-    error.textContent = `Transformation ist kein gültiges JSON: ${parseError.message}`;
+    error.textContent = t("validation.deviceBinding.invalidTransformJson", { error: parseError.message });
     error.classList.remove("hidden"); return;
   }
   const property = $("#device-binding-property").value;
@@ -4237,6 +4731,16 @@ function restoreCustomDeviceBinding() {
 
 function projectWidgetEntries() {
   return collectActionTargets(state.project);
+}
+
+// Reserved ids are hardware entities elsewhere in an imported source config
+// (binary_sensor:, button:, ...) - never modeled here, but sharing ESPHome's
+// one flat id() namespace with everything created here.
+function widgetIdCollides(/** @type {any} */ candidateId, /** @type {any} */ widget) {
+  return projectWidgetEntries().some((entry) => entry !== widget && entry.id === candidateId)
+    || (state.project.reserved_ids || []).includes(candidateId)
+    || [state.project.styles, state.project.fonts, state.project.images, colorLibrary()]
+      .some((entries) => (entries || []).some((/** @type {any} */ entry) => entry.id === candidateId));
 }
 
 function bindingIsOrphan(/** @type {any} */ binding) {
@@ -4425,7 +4929,7 @@ async function persistRuntimeBindings(/** @type {any} */ bindings) {
     if (error.code === "revision_conflict") await loadViewerBindings(state.projectName);
     renderRuntimeBinding(state.selectedWidget);
     renderRuntimeBindingOrphans();
-    toast(t("toast.binding.saveFailed", { error: error.message }), true);
+    toast(t("toast.binding.saveFailed", { error: error.message }), true, error.details);
     return false;
   }
 }
@@ -4984,7 +5488,15 @@ async function insertMdiGlyphs(/** @type {any} */ glyphs) {
   if (mdiFont) {
     const fauxProperty = { part: "main", category: "style" };
     const styleTarget = propertyTarget(widget, fauxProperty, true, "style");
-    if (styleTarget.text_font !== mdiFont.id) styleTarget.text_font = mdiFont.id;
+    if (styleTarget.text_font !== mdiFont.id) {
+      // A previously chosen font for this field is about to be silently
+      // overridden - the field can only render one font, and the icon glyph
+      // only exists in the MDI font, so this isn't optional - but replacing
+      // a deliberate choice without any signal is exactly what surprises
+      // someone who picked a font for this label earlier.
+      if (styleTarget.text_font) toast(t("toast.mdi.fontReplaced", { font: styleTarget.text_font }));
+      styleTarget.text_font = mdiFont.id;
+    }
   }
   const start = control.selectionStart ?? control.value.length;
   const end = control.selectionEnd ?? control.value.length;
@@ -5235,7 +5747,7 @@ async function checkFontSource(/** @type {any} */ entry, manual = false) {
     if (manual) toast(changed ? t("toast.font.updateAvailableFor", { id: entry.id }) : t("toast.font.upToDate", { id: entry.id }));
   } catch (/** @type {any} */ error) {
     fontSourceStatuses.set(entry.id, { state: "error", label: t("fontlib.status.checkFailed"), url: webFontUrl(entry) });
-    if (manual) toast(t("toast.font.checkFailed", { error: error.message }), true);
+    if (manual) toast(t("toast.font.checkFailed", { error: error.message }), true, error.details);
   }
   renderFontLibrary();
 }
@@ -5298,7 +5810,7 @@ async function updateFontSource(/** @type {any} */ entry) {
   } catch (/** @type {any} */ error) {
     fontSourceStatuses.set(entry.id, { state: "error", label: t("fontlib.status.updateFailed"), url: webFontUrl(entry) });
     renderFontLibrary();
-    toast(t("toast.font.updateFailed", { error: error.message }), true);
+    toast(t("toast.font.updateFailed", { error: error.message }), true, error.details);
   }
 }
 
@@ -5489,7 +6001,7 @@ function bindFontLibrary() {
       $("#font-library-file-path").value = path;
       toast(t("toast.font.fileUploaded", { name: file.name }));
     } catch (/** @type {any} */ error) {
-      toast(t("toast.font.uploadFailed", { error: error.message }), true);
+      toast(t("toast.font.uploadFailed", { error: error.message }), true, error.details);
     } finally {
       $("#font-library-file-input").value = "";
     }
@@ -5593,11 +6105,30 @@ const PROPERTY_GROUP_LABELS = {
   spacing: "dynprops.group.spacing",
   border: "dynprops.group.border",
   shadow: "dynprops.group.shadow",
+  text: "dynprops.group.text",
+  background: "dynprops.group.background",
+};
+// Every widget's "Stil · main" section opens with these two clusters before
+// border/spacing/shadow - text_color/font/align/opacity and
+// bg_color/bg_opa/bg_grad_color/bg_grad_dir are always contiguous in the
+// backend schema (never carrying their own `group`), so a frontend-only key
+// lookup folds them the same way without touching the shared schema file.
+/** @type {Record<string, string>} */
+const FRONTEND_STYLE_GROUPS = {
+  text_color: "text", text_font: "text", text_align: "text", text_opa: "text",
+  bg_color: "background", bg_opa: "background",
+  bg_grad_color: "background", bg_grad_dir: "background",
 };
 const COLLAPSED_GROUPS_KEY = "designer.collapsedPropertyGroups";
 
 function loadCollapsedGroups() {
-  const defaults = { spacing: true, border: true, shadow: true, actions: true };
+  // Unlike spacing/border/shadow (rarely tweaked, collapsed by default), text
+  // and background are the fields most widgets are actually styled through -
+  // folding them by default would just hide the panel's main job.
+  const defaults = {
+    spacing: true, border: true, shadow: true, actions: true, widgetLinks: true,
+    text: false, background: false,
+  };
   try {
     const stored = JSON.parse(window.localStorage.getItem(COLLAPSED_GROUPS_KEY) || "{}");
     return { ...defaults, ...stored };
@@ -5656,7 +6187,9 @@ function renderDynamicProperties(/** @type {any} */ widget) {
       openGroup = null;
       openGroupKey = "";
     }
-    const groupKey = property.category === "style" ? property.group || "" : "";
+    const groupKey = property.category === "style"
+      ? property.group || FRONTEND_STYLE_GROUPS[property.key] || ""
+      : "";
     if (groupKey) {
       if (groupKey !== openGroupKey) {
         openGroup = appendPropertyGroup(container, groupKey);
@@ -5701,6 +6234,7 @@ function propertyField(/** @type {any} */ widget, /** @type {any} */ property, /
   control.addEventListener("change", () => updateDynamicProperty(widget, property, control, targetKind));
   control.addEventListener("input", () => updateDynamicProperty(widget, property, control, targetKind));
   if (property.kind === "bool") label.className = "checkbox-field";
+  else label.className = "dynfield";
   appendPropertyControl(label, control, property, widget);
   return label;
 }
@@ -5926,63 +6460,63 @@ function renderMeterScaleEditor(/** @type {any} */ scale) {
   root.append(heading);
   const grid = document.createElement("div");
   grid.className = "meter-form-grid";
-  meterField(grid, "Minimum", scale, "range_from");
-  meterField(grid, "Maximum", scale, "range_to");
-  meterField(grid, "Winkelbereich (°)", scale, "angle_range");
-  meterField(grid, "Startdrehung (°)", scale, "rotation");
-  meterField(grid, "Ticks über Indikatoren", scale, "draw_ticks_on_top", { type: "checkbox", wide: true });
+  meterField(grid, t("meter.field.minimum"), scale, "range_from");
+  meterField(grid, t("meter.field.maximum"), scale, "range_to");
+  meterField(grid, t("meter.field.angleRange"), scale, "angle_range");
+  meterField(grid, t("meter.field.rotation"), scale, "rotation");
+  meterField(grid, t("meter.field.ticksOnTop"), scale, "draw_ticks_on_top", { type: "checkbox", wide: true });
   const ticks = scale.ticks ||= {};
-  meterField(grid, "Tick-Anzahl", ticks, "count", { min: "0", max: "200" });
-  meterField(grid, "Tick-Breite", ticks, "width");
-  meterField(grid, "Tick-Länge", ticks, "length", { type: "text" });
-  meterField(grid, "Tick-Farbe", ticks, "color", { type: "text", color: true });
+  meterField(grid, t("meter.field.tickCount"), ticks, "count", { min: "0", max: "200" });
+  meterField(grid, t("meter.field.tickWidth"), ticks, "width");
+  meterField(grid, t("meter.field.tickLength"), ticks, "length", { type: "text" });
+  meterField(grid, t("meter.field.tickColor"), ticks, "color", { type: "text", color: true });
   const major = ticks.major ||= {};
-  meterField(grid, "Major-Abstand", major, "stride");
-  meterField(grid, "Major-Breite", major, "width");
-  meterField(grid, "Major-Länge", major, "length", { type: "text" });
-  meterField(grid, "Major-Farbe", major, "color", { type: "text", color: true });
-  meterField(grid, "Beschriftungsabstand", major, "label_gap");
+  meterField(grid, t("meter.field.majorStride"), major, "stride");
+  meterField(grid, t("meter.field.majorWidth"), major, "width");
+  meterField(grid, t("meter.field.majorLength"), major, "length", { type: "text" });
+  meterField(grid, t("meter.field.majorColor"), major, "color", { type: "text", color: true });
+  meterField(grid, t("meter.field.labelGap"), major, "label_gap");
   root.append(grid);
 }
 
 function indicatorFields(/** @type {HTMLElement} */ parent, /** @type {string} */ kind, /** @type {any} */ config) {
-  if (kind !== "tick_style") meterField(parent, "ID", config, "id", { type: "text", wide: true });
+  if (kind !== "tick_style") meterField(parent, t("common.id"), config, "id", { type: "text", wide: true });
   if (kind === "line") {
-    meterField(parent, "Wert", config, "value");
-    meterField(parent, "Breite", config, "width");
-    meterField(parent, "Länge", config, "length", { type: "text" });
-    meterField(parent, "Radialer Versatz", config, "radial_offset", { type: "text" });
-    meterField(parent, "Farbe", config, "color", { type: "text", color: true });
-    meterField(parent, "Gerundet", config, "rounded", { type: "checkbox" });
+    meterField(parent, t("meter.field.value"), config, "value");
+    meterField(parent, t("props.width"), config, "width");
+    meterField(parent, t("meter.field.length"), config, "length", { type: "text" });
+    meterField(parent, t("meter.field.radialOffset"), config, "radial_offset", { type: "text" });
+    meterField(parent, t("meter.field.color"), config, "color", { type: "text", color: true });
+    meterField(parent, t("meter.field.rounded"), config, "rounded", { type: "checkbox" });
   } else if (kind === "arc") {
-    meterField(parent, "Startwert", config, "start_value");
-    meterField(parent, "Endwert", config, "end_value");
-    meterField(parent, "Breite", config, "width");
-    meterField(parent, "Abstand zur Skala", config, "padding");
-    meterField(parent, "Farbe", config, "color", { type: "text", color: true });
-    meterField(parent, "Gerundet", config, "rounded", { type: "checkbox" });
+    meterField(parent, t("meter.field.startValue"), config, "start_value");
+    meterField(parent, t("meter.field.endValue"), config, "end_value");
+    meterField(parent, t("props.width"), config, "width");
+    meterField(parent, t("meter.field.paddingToScale"), config, "padding");
+    meterField(parent, t("meter.field.color"), config, "color", { type: "text", color: true });
+    meterField(parent, t("meter.field.rounded"), config, "rounded", { type: "checkbox" });
   } else if (kind === "image") {
     const label = document.createElement("label");
-    label.textContent = "Bildquelle";
+    label.textContent = t("actions.imageSource");
     const select = document.createElement("select");
     select.append(new Option("—", ""));
     imageLibrary().forEach((/** @type {any} */ entry) => select.append(new Option(entry.id, entry.id)));
-    if (config.src && !imageEntry(config.src)) select.append(new Option(`${config.src} (fehlt)`, config.src));
+    if (config.src && !imageEntry(config.src)) select.append(new Option(t("dynprops.widgetRefMissing", { id: config.src }), config.src));
     select.value = config.src || "";
     select.addEventListener("change", () => { config.src = select.value; renderMeterConfiguratorPreview(); });
     label.append(select);
     parent.append(label);
-    meterField(parent, "Wert", config, "value");
-    meterField(parent, "Drehpunkt X", config, "pivot_x");
-    meterField(parent, "Drehpunkt Y", config, "pivot_y");
-    meterField(parent, "Deckkraft", config, "opa", { type: "text" });
+    meterField(parent, t("meter.field.value"), config, "value");
+    meterField(parent, t("meter.field.pivotX"), config, "pivot_x");
+    meterField(parent, t("meter.field.pivotY"), config, "pivot_y");
+    meterField(parent, t("actions.opacity"), config, "opa", { type: "text" });
   } else {
-    meterField(parent, "Startwert", config, "start_value");
-    meterField(parent, "Endwert", config, "end_value");
-    meterField(parent, "Breite", config, "width");
-    meterField(parent, "Startfarbe", config, "color_start", { type: "text", color: true });
-    meterField(parent, "Endfarbe", config, "color_end", { type: "text", color: true });
-    meterField(parent, "Lokaler Verlauf", config, "local", { type: "checkbox" });
+    meterField(parent, t("meter.field.startValue"), config, "start_value");
+    meterField(parent, t("meter.field.endValue"), config, "end_value");
+    meterField(parent, t("props.width"), config, "width");
+    meterField(parent, t("meter.field.startColor"), config, "color_start", { type: "text", color: true });
+    meterField(parent, t("meter.field.endColor"), config, "color_end", { type: "text", color: true });
+    meterField(parent, t("meter.field.localGradient"), config, "local", { type: "checkbox" });
   }
 }
 
@@ -6777,18 +7311,207 @@ function replaceProjectWidgetReferences(/** @type {any} */ previousId, /** @type
   replaceWidgetReferences(state.project, state.viewerBindings, previousId, nextId);
 }
 
+function deselectWidget() {
+  if (!state.selectedWidget && !state.selectedWidgets.size) return;
+  state.selectedWidget = null;
+  state.selectedWidgets.clear();
+  renderProperties();
+  renderTree();
+  renderCanvasSelectionClasses();
+}
+
+// The primary (selectedWidget, whose properties the panel shows) plus
+// every widget added to the selection afterward, deduplicated - reading
+// this instead of state.selectedWidget directly is what makes delete/
+// duplicate/nudge/drag act on the whole selection rather than just the one
+// the properties panel happens to be showing.
+function selectedWidgetGroup() {
+  /** @type {any[]} */
+  const group = [];
+  if (state.selectedWidget) group.push(state.selectedWidget);
+  state.selectedWidgets.forEach((/** @type {any} */ widget) => {
+    if (!group.includes(widget)) group.push(widget);
+  });
+  return group;
+}
+
+function widgetIsSelected(/** @type {any} */ widget) {
+  return state.selectedWidget === widget || state.selectedWidgets.has(widget);
+}
+
+// Cheaper than a full renderCanvas() rebuild for the common case of a
+// selection change with nothing else about the canvas to update - nodes
+// carry their widget's id (set in renderWidget()) precisely so this can
+// restyle them in place instead of recreating every node on every click.
+function renderCanvasSelectionClasses() {
+  const selectedIds = new Set(selectedWidgetGroup().map((/** @type {any} */ widget) => widget.id));
+  $$(".canvas-widget").forEach((/** @type {any} */ item) => {
+    item.classList.toggle("selected", selectedIds.has(item.dataset.id));
+  });
+  renderAlignDistributeToolbar();
+}
+
+// Explicit align/distribute commands are an alternative to dragging into the
+// snap guides - useful once a group is already roughly placed and just needs
+// tidying. The whole group only appears once there is something to align;
+// distribute needs a third widget to have any gap left to even out.
+function renderAlignDistributeToolbar() {
+  const count = selectedWidgetGroup().length;
+  $("#align-distribute-group").classList.toggle("hidden", count < 2);
+  ["distribute-horizontal", "distribute-vertical"].forEach((id) => {
+    $(`#${id}`).disabled = count < 3;
+  });
+}
+
+// Shift/Ctrl-click toggles a widget into or out of the multi-selection
+// instead of replacing it outright. Toggling the current primary promotes
+// the next member (if any) to primary, so the properties panel keeps
+// showing a real selected widget rather than going blank mid-multi-select.
+function toggleWidgetSelection(/** @type {any} */ widget) {
+  if (state.selectedWidget === widget) {
+    state.selectedWidgets.delete(widget);
+    const next = state.selectedWidgets.values().next();
+    state.selectedWidget = next.done ? null : next.value;
+    if (state.selectedWidget) state.selectedWidgets.delete(state.selectedWidget);
+    return;
+  }
+  if (state.selectedWidgets.has(widget)) {
+    state.selectedWidgets.delete(widget);
+    return;
+  }
+  if (state.selectedWidget) state.selectedWidgets.add(state.selectedWidget);
+  state.selectedWidget = widget;
+}
+
+function nudgeSelectedWidget(/** @type {any} */ arrowKey, /** @type {any} */ step) {
+  const widget = state.selectedWidget;
+  if (!widget || widget.locked) return;
+  // Same rule as dragging: a layout-managed widget's position comes from its
+  // parent grid/flex arrangement, not its own x/y.
+  const allBoxes = visualWidgets();
+  const box = allBoxes.find((/** @type {any} */ item) => item.widget === widget);
+  if (box?.managed) {
+    toast(t("toast.widget.positionManagedByParent"));
+    return;
+  }
+  const axis = arrowKey === "ArrowLeft" || arrowKey === "ArrowRight" ? "x" : "y";
+  const sign = arrowKey === "ArrowLeft" || arrowKey === "ArrowUp" ? -1 : 1;
+  const canvas = state.project.canvas;
+  const sizeKey = axis === "x" ? "width" : "height";
+  const maxValue = Math.max(0, (axis === "x" ? canvas.width : canvas.height) - (Number(widget[sizeKey]) || 0));
+  const previous = Number(widget[axis]) || 0;
+  const next = clamp(previous + sign * step, 0, maxValue);
+  const delta = next - previous;
+  if (!delta) return;
+  pushUndo();
+  widget[axis] = next;
+  // Other selected widgets move by the same delta, each independently
+  // clamped to its own bounds - same convention as a group drag.
+  const group = selectedWidgetGroup();
+  const boxByWidget = new Map(allBoxes.map((/** @type {any} */ item) => [item.widget, item]));
+  group.forEach((/** @type {any} */ member) => {
+    if (member === widget || member.locked) return;
+    const memberBox = boxByWidget.get(member);
+    if (memberBox?.managed) return;
+    const memberMax = Math.max(0, (axis === "x" ? canvas.width : canvas.height) - (Number(member[sizeKey]) || 0));
+    member[axis] = clamp((Number(member[axis]) || 0) + delta, 0, memberMax);
+  });
+  // Same as typing a new value into the X/Y field - nested glow lines need
+  // the same delta applied to their (always-absolute) points.
+  const strokeOwnerIds = new Set(group.map((/** @type {any} */ member) => member.id));
+  (state.project.glow_strokes || [])
+    .filter((/** @type {any} */ stroke) => strokeOwnerIds.has(stroke.parent_id))
+    .forEach((/** @type {any} */ stroke) => {
+      stroke.points = stroke.points.map((/** @type {any} */ [px, py]) => (
+        axis === "x" ? [px + delta, py] : [px, py + delta]
+      ));
+    });
+  markProjectDirty();
+  renderCanvas();
+  $("#prop-x").value = widget.x;
+  $("#prop-y").value = widget.y;
+}
+
+// Shared by both align and distribute commands - locked or layout-managed
+// members sit out, same as they do during a drag or nudge.
+function eligibleAlignmentTargets() {
+  const boxByWidget = new Map(visualWidgets().map((/** @type {any} */ item) => [item.widget, item]));
+  return selectedWidgetGroup()
+    .map((/** @type {any} */ widget) => ({ widget, box: boxByWidget.get(widget) }))
+    .filter((/** @type {any} */ entry) => entry.box && !entry.widget.locked && !entry.box.managed);
+}
+
+// Applies the boxes an align/distribute helper computed back onto the real
+// widgets, translating each widget's own glow-line points by whatever delta
+// it individually moved (unlike a drag, align/distribute can move group
+// members by different amounts, so this can't reuse one shared delta).
+function applyAlignmentPositions(/** @type {any[]} */ targets, /** @type {any[]} */ positions) {
+  pushUndo();
+  const canvasSize = { width: state.project.canvas.width, height: state.project.canvas.height };
+  const strokesByParent = new Map();
+  (state.project.glow_strokes || []).forEach((/** @type {any} */ stroke) => {
+    if (!strokesByParent.has(stroke.parent_id)) strokesByParent.set(stroke.parent_id, []);
+    strokesByParent.get(stroke.parent_id).push(stroke);
+  });
+  let moved = false;
+  targets.forEach((/** @type {any} */ entry, /** @type {number} */ index) => {
+    const nextX = clamp(Math.round(positions[index].left), 0, canvasSize.width - entry.box.width);
+    const nextY = clamp(Math.round(positions[index].top), 0, canvasSize.height - entry.box.height);
+    const deltaX = nextX - (Number(entry.widget.x) || 0);
+    const deltaY = nextY - (Number(entry.widget.y) || 0);
+    if (!deltaX && !deltaY) return;
+    moved = true;
+    entry.widget.x = nextX;
+    entry.widget.y = nextY;
+    (strokesByParent.get(entry.widget.id) || []).forEach((/** @type {any} */ stroke) => {
+      stroke.points = translatePoints(stroke.points, deltaX, deltaY);
+    });
+  });
+  if (!moved) return;
+  syncCanvasLayout();
+  renderGlowCanvas();
+  renderProperties();
+  markProjectDirty();
+}
+
+function applyAlignCommand(/** @type {any} */ edge) {
+  const targets = eligibleAlignmentTargets();
+  if (targets.length < 2) return;
+  const boxes = targets.map((/** @type {any} */ entry) => (
+    { left: entry.box.left, top: entry.box.top, width: entry.box.width, height: entry.box.height }
+  ));
+  applyAlignmentPositions(targets, alignBoxes(boxes, edge));
+}
+
+function applyDistributeCommand(/** @type {any} */ axis) {
+  const targets = eligibleAlignmentTargets();
+  if (targets.length < 3) return;
+  const boxes = targets.map((/** @type {any} */ entry) => (
+    { left: entry.box.left, top: entry.box.top, width: entry.box.width, height: entry.box.height }
+  ));
+  applyAlignmentPositions(targets, distributeBoxes(boxes, axis));
+}
+
 function deleteSelectedWidget() {
-  if (!state.selectedWidget) return;
+  const group = selectedWidgetGroup();
+  if (!group.length) return;
   pushUndo();
   // Glow lines aren't part of the widget tree, so removing a container would
   // otherwise leave its child lines pointing at a parent_id that no longer
   // exists anywhere - orphan them back to top-level instead.
-  const removedIds = new Set(allWidgets([state.selectedWidget]).map((/** @type {any} */ widget) => widget.id));
+  const removedIds = new Set();
+  group.forEach((/** @type {any} */ widget) => {
+    allWidgets([widget]).forEach((/** @type {any} */ descendant) => removedIds.add(descendant.id));
+  });
   (state.project.glow_strokes || []).forEach((/** @type {any} */ stroke) => {
     if (removedIds.has(stroke.parent_id)) stroke.parent_id = "";
   });
-  removeWidget(activeWidgetRoots(), state.selectedWidget);
+  // A widget whose ancestor is also selected is already gone by the time its
+  // own turn comes up - removeWidget() no-ops safely when the target can no
+  // longer be found anywhere in the tree.
+  group.forEach((/** @type {any} */ widget) => removeWidget(activeWidgetRoots(), widget));
   state.selectedWidget = null;
+  state.selectedWidgets.clear();
   markProjectDirty();
   renderDesigner();
 }
@@ -6802,14 +7525,38 @@ function cloneWidgetSubtree(/** @type {any} */ widget) {
   return cloneProjectWidgetSubtree(state.project, widget);
 }
 
-function duplicateWidget(/** @type {any} */ widget) {
-  pushUndo();
+function cloneWidgetInPlace(/** @type {any} */ widget) {
   const location = findWidgetLocation(activeWidgetRoots(), widget);
-  if (!location) return;
+  if (!location) return null;
   const clone = cloneWidgetSubtree(widget);
   location.array.splice(location.index + 1, 0, clone);
+  return clone;
+}
+
+// Used directly by the Hierarchy tree's per-row duplicate icon, which always
+// means "duplicate this one row" regardless of whatever else is selected -
+// Ctrl+D (duplicateSelectedWidgets(), below) is the group-aware equivalent.
+function duplicateWidget(/** @type {any} */ widget) {
+  pushUndo();
+  const clone = cloneWidgetInPlace(widget);
+  if (!clone) return;
   if (state.canvasMode !== "widgets") setCanvasMode("widgets");
   state.selectedWidget = clone;
+  state.selectedWidgets.clear();
+  markProjectDirty();
+  renderDesigner();
+}
+
+function duplicateSelectedWidgets() {
+  const group = selectedWidgetGroup();
+  if (!group.length) return;
+  pushUndo();
+  const clones = group.map((/** @type {any} */ widget) => cloneWidgetInPlace(widget)).filter(Boolean);
+  if (!clones.length) return;
+  if (state.canvasMode !== "widgets") setCanvasMode("widgets");
+  state.selectedWidget = clones[0];
+  state.selectedWidgets.clear();
+  clones.slice(1).forEach((/** @type {any} */ clone) => state.selectedWidgets.add(clone));
   markProjectDirty();
   renderDesigner();
 }
@@ -6952,6 +7699,26 @@ const ICON_EYE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" st
 const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.6 18.6 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
 const ICON_DUPLICATE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
 
+// In-memory only (not persisted) - collapsing is a within-session navigation
+// aid, not project state. Ignored entirely while a search query is active,
+// so a match several levels deep is never hidden behind a collapsed parent.
+let treeQuery = "";
+const collapsedTreeNodes = new Set();
+
+function strokeMatchesTreeQuery(/** @type {any} */ stroke, /** @type {string} */ query) {
+  if (!query) return true;
+  return `${stroke.name || ""} ${stroke.id}`.toLowerCase().includes(query);
+}
+
+function widgetSubtreeMatchesTreeQuery(/** @type {any} */ widget, /** @type {string} */ query, /** @type {any} */ strokes) {
+  if (!query) return true;
+  if (`${widget.id} ${widget.widget_type}`.toLowerCase().includes(query)) return true;
+  if (strokes.some((/** @type {any} */ stroke) => stroke.parent_id === widget.id && strokeMatchesTreeQuery(stroke, query))) return true;
+  return (widget.children || []).some(
+    (/** @type {any} */ child) => widgetSubtreeMatchesTreeQuery(child, query, strokes),
+  );
+}
+
 function renderTree() {
   const tree = $("#widget-tree");
   tree.replaceChildren();
@@ -6979,10 +7746,14 @@ function renderTree() {
 
   if (!widgets.length && !strokes.length && !hasSurfaces) {
     tree.textContent = t("hierarchy.empty");
+    $("#hierarchy-search-empty").classList.add("hidden");
     return;
   }
 
+  const query = treeQuery.trim().toLowerCase();
+
   const appendStroke = (/** @type {any} */ stroke, /** @type {any} */ depth) => {
+    if (!strokeMatchesTreeQuery(stroke, query)) return;
     const item = document.createElement("div");
     item.className = `tree-item${state.canvasMode === "lines" && state.selectedStroke === stroke ? " selected" : ""}`;
     item.style.paddingLeft = `${9 + depth * 16}px`;
@@ -7006,22 +7777,28 @@ function renderTree() {
       treeActionGlyph(ICON_DUPLICATE, t("tree.duplicate"), () => duplicateStroke(stroke)),
     );
 
-    item.append(label, glyphs);
+    item.append(treeToggle(null, false), label, glyphs);
     tree.append(item);
     bindTreeItemDrag(item, { kind: "stroke", stroke }, { allowInto: false });
   };
 
   const appendNodes = (/** @type {any} */ nodes, depth = 0) => nodes.forEach((/** @type {any} */ widget) => {
+    if (!widgetSubtreeMatchesTreeQuery(widget, query, strokes)) return;
+    const hasNested = Boolean((widget.children || []).length)
+      || strokes.some((/** @type {any} */ stroke) => stroke.parent_id === widget.id);
+    const collapsed = !query && hasNested && collapsedTreeNodes.has(widget.id);
+
     const item = document.createElement("div");
-    item.className = `tree-item${state.canvasMode === "widgets" && state.selectedWidget === widget ? " selected" : ""}`;
+    item.className = `tree-item${state.canvasMode === "widgets" && widgetIsSelected(widget) ? " selected" : ""}`;
     item.style.paddingLeft = `${9 + depth * 16}px`;
 
     const label = document.createElement("span");
     label.className = "tree-label";
     label.textContent = `${widget.id} · ${directImageButtonParts(widget) ? t("tree.imageButtonLabel") : widget.widget_type}`;
-    label.addEventListener("click", () => {
+    label.addEventListener("click", (/** @type {any} */ event) => {
       if (state.canvasMode !== "widgets") setCanvasMode("widgets");
-      state.selectedWidget = widget;
+      if (event.shiftKey || event.ctrlKey) toggleWidgetSelection(widget);
+      else { state.selectedWidget = widget; state.selectedWidgets.clear(); }
       renderDesigner();
     });
 
@@ -7033,11 +7810,13 @@ function renderTree() {
       treeActionGlyph(ICON_DUPLICATE, t("tree.duplicate"), () => duplicateWidget(widget)),
     );
 
-    item.append(label, glyphs);
+    item.append(treeToggle(widget, hasNested && !query), label, glyphs);
     tree.append(item);
     bindTreeItemDrag(item, { kind: "widget", widget }, { allowInto: widgetAllowsChildren(widget) });
-    appendNodes(widget.children || [], depth + 1);
-    strokes.filter((/** @type {any} */ stroke) => stroke.parent_id === widget.id).forEach((/** @type {any} */ stroke) => appendStroke(stroke, depth + 1));
+    if (!collapsed) {
+      appendNodes(widget.children || [], depth + 1);
+      strokes.filter((/** @type {any} */ stroke) => stroke.parent_id === widget.id).forEach((/** @type {any} */ stroke) => appendStroke(stroke, depth + 1));
+    }
   });
   const appendReadOnlyNodes = (/** @type {any} */ nodes, depth = 1) => (nodes || []).forEach((/** @type {any} */ widget) => {
     const item = document.createElement("div");
@@ -7052,6 +7831,8 @@ function renderTree() {
     appendReadOnlyNodes(widget.children, depth + 1);
   });
   const appendSurface = (/** @type {any} */ key, /** @type {any} */ title, /** @type {any} */ surface, { skipped = false } = {}) => {
+    const surfaceWidgets = surface?.widgets || [];
+    if (query && !surfaceWidgets.some((/** @type {any} */ widget) => widgetSubtreeMatchesTreeQuery(widget, query, strokes))) return;
     const header = document.createElement("div");
     const active = state.activeSurface === key;
     header.className = `tree-item tree-surface${active ? " active" : ""}`;
@@ -7062,8 +7843,8 @@ function renderTree() {
     label.addEventListener("click", () => selectSurface(key));
     header.append(label);
     tree.append(header);
-    if (active) appendNodes(surface?.widgets || [], 1);
-    else appendReadOnlyNodes(surface?.widgets || []);
+    if (active) appendNodes(surfaceWidgets, 1);
+    else appendReadOnlyNodes(surfaceWidgets);
   };
   if (!hasSurfaces) {
     appendNodes(state.project.widgets);
@@ -7079,6 +7860,29 @@ function renderTree() {
   if (activeSurfaceEntry().kind === "root") {
     strokes.filter((/** @type {any} */ stroke) => !stroke.parent_id).forEach((/** @type {any} */ stroke) => appendStroke(stroke, 0));
   }
+
+  $("#hierarchy-search-empty").classList.toggle("hidden", !query || tree.children.length > 0);
+}
+
+function treeToggle(/** @type {any} */ widget, /** @type {any} */ hasNested) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "tree-toggle";
+  if (!hasNested) {
+    button.disabled = true;
+    button.tabIndex = -1;
+    return button;
+  }
+  const collapsed = collapsedTreeNodes.has(widget.id);
+  button.textContent = collapsed ? "▸" : "▾";
+  button.title = collapsed ? t("tree.expand") : t("tree.collapse");
+  button.addEventListener("click", (/** @type {any} */ event) => {
+    event.stopPropagation();
+    if (collapsedTreeNodes.has(widget.id)) collapsedTreeNodes.delete(widget.id);
+    else collapsedTreeNodes.add(widget.id);
+    renderTree();
+  });
+  return button;
 }
 
 function treeGlyph(/** @type {any} */ widget, /** @type {any} */ flag, /** @type {any} */ iconHtml, /** @type {any} */ title) {
@@ -7130,7 +7934,7 @@ async function exportDesignerYaml() {
   } catch (/** @type {any} */ error) {
     $("#designer-status").textContent = t("designer.status.exportFailed");
     renderExportIssues(error.details?.issues || []);
-    toast(error.message, true);
+    toast(error.message, true, error.details);
   }
 }
 
@@ -7182,7 +7986,7 @@ async function saveMergeDraft() {
     const entry = state.configurations.find((/** @type {any} */ item) => item.name === target);
     if (entry) await loadConfiguration(entry);
   } catch (/** @type {any} */ error) {
-    toast(error.message, true);
+    toast(error.message, true, error.details);
   } finally {
     button.disabled = !$("#merge-draft-target").value;
   }
@@ -7228,7 +8032,7 @@ async function downloadProjectZip() {
       toast(t("toast.zip.downloaded"));
     }
   } catch (/** @type {any} */ error) {
-    toast(t("toast.zip.downloadFailed", { error: error.message }), true);
+    toast(t("toast.zip.downloadFailed", { error: error.message }), true, error.details);
   } finally {
     button.disabled = false;
   }
@@ -7338,6 +8142,11 @@ function updateYamlEditorUi() {
     : state.yamlDirty
       ? t("configs.unsavedChanges")
       : state.hasDraft ? t("configs.savedDraft") : t("configs.activeState");
+  const badge = $("#yaml-state-badge");
+  badge.classList.toggle("hidden", !state.activeConfig);
+  badge.classList.toggle("active-state", Boolean(state.activeConfig) && !state.hasDraft);
+  badge.classList.toggle("draft-state", Boolean(state.activeConfig) && state.hasDraft);
+  badge.textContent = state.hasDraft ? t("configs.savedDraft") : t("configs.activeState");
   updateYamlCursorStatus();
 }
 
@@ -7359,12 +8168,12 @@ function findYamlMatch(/** @type {any} */ direction) {
   }
   const match = findMatch(editor.value, query, editor.selectionStart, direction);
   if (!match.count) {
-    result.textContent = "Kein Treffer";
+    result.textContent = t("configs.searchNoMatch");
     return;
   }
   editor.focus();
   editor.setSelectionRange(match.index, match.index + query.length);
-  result.textContent = `${match.selected + 1} von ${match.count}`;
+  result.textContent = t("configs.searchMatchCount", { selected: match.selected + 1, count: match.count });
   updateYamlCursorStatus();
 }
 
@@ -7385,7 +8194,7 @@ async function loadConfigurations() {
       const name = document.createElement("span");
       name.textContent = configuration.name;
       const meta = document.createElement("small");
-      meta.textContent = `${Math.ceil(configuration.size / 1024)} KiB${configuration.has_draft ? " · Entwurf" : ""}`;
+      meta.textContent = `${Math.ceil(configuration.size / 1024)} KiB${configuration.has_draft ? t("configs.listDraftSuffix") : ""}`;
       if (configuration.has_draft) meta.className = "draft-dot";
       button.append(name, meta);
       button.addEventListener("click", () => {
@@ -7394,7 +8203,7 @@ async function loadConfigurations() {
       });
       list.append(button);
     });
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
 }
 
 async function loadConfiguration(/** @type {any} */ configuration) {
@@ -7415,7 +8224,7 @@ async function loadConfiguration(/** @type {any} */ configuration) {
       content = draft.content;
     }
     $("#config-title").textContent = configuration.name;
-    $("#revision").textContent = active.revision;
+    setRevisionDisplay(active.revision);
     $("#yaml-editor").value = content;
     state.yamlLoadedContent = content;
     state.yamlDirty = false;
@@ -7423,16 +8232,14 @@ async function loadConfiguration(/** @type {any} */ configuration) {
     $("#yaml-search").disabled = false;
     $("#yaml-search-previous").disabled = false;
     $("#yaml-search-next").disabled = false;
-    $("#save-draft").disabled = !state.capabilities["configuration.write_draft"];
     $("#check-yaml").disabled = false;
-    $("#show-diff").disabled = !state.hasDraft;
-    $("#merge-draft").disabled = !state.hasDraft || !state.capabilities["configuration.write_draft"];
-    $("#publish").disabled = !state.hasDraft || !state.capabilities["configuration.publish"];
+    $("#check-yaml").title = "";
+    updateDraftActionButtons();
     updateBuilderButtons();
     $("#config-output").classList.add("hidden");
     updateYamlEditorUi();
     await loadConfigurations();
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
 }
 
 async function saveDraft() {
@@ -7444,14 +8251,24 @@ async function saveDraft() {
     state.hasDraft = true;
     state.yamlLoadedContent = $("#yaml-editor").value;
     state.yamlDirty = false;
-    $("#show-diff").disabled = false;
-    $("#merge-draft").disabled = !state.capabilities["configuration.write_draft"];
-    $("#publish").disabled = !state.capabilities["configuration.publish"];
+    updateDraftActionButtons();
     updateBuilderButtons();
     updateYamlEditorUi();
     toast(t("toast.draft.saved"));
     await loadConfigurations();
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
+}
+
+// (line, column) are both 1-based, matching the YAML parser's own
+// convention and what the error message already tells the user to look for.
+function yamlOffsetForLineColumn(/** @type {any} */ text, /** @type {any} */ line, /** @type {any} */ column) {
+  const lines = text.split("\n");
+  let offset = 0;
+  for (let index = 0; index < Math.min(Math.max(line, 1) - 1, lines.length); index += 1) {
+    offset += lines[index].length + 1;
+  }
+  offset += Math.max(0, (Number(column) || 1) - 1);
+  return Math.min(offset, text.length);
 }
 
 async function checkYaml() {
@@ -7465,7 +8282,14 @@ async function checkYaml() {
       ? t("config.output.yamlValid", { revision: result.revision })
       : t("config.output.yamlError", { line: result.line, column: result.column, error: result.error });
     output.classList.remove("hidden");
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+    if (!result.valid) {
+      const editor = $("#yaml-editor");
+      const offset = yamlOffsetForLineColumn(editor.value, result.line, result.column);
+      editor.focus();
+      editor.setSelectionRange(offset, offset);
+      updateYamlCursorStatus();
+    }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
 }
 
 async function showDiff() {
@@ -7479,7 +8303,7 @@ async function showDiff() {
       output.textContent = t("config.output.noDifferences");
     }
     output.classList.remove("hidden");
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
 }
 
 async function openMergeDialog() {
@@ -7491,13 +8315,13 @@ async function openMergeDialog() {
       api(`configurations/${encoded}/draft`),
     ]);
     state.activeRevision = active.revision;
-    $("#revision").textContent = active.revision;
+    setRevisionDisplay(active.revision);
     $("#merge-config-name").textContent = state.activeConfig;
     $("#merge-active").value = active.content;
     $("#merge-draft-source").value = draft.content;
     $("#merge-result").value = draft.content;
     $("#merge-dialog").showModal();
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
 }
 
 async function saveMergedDraft() {
@@ -7511,15 +8335,13 @@ async function saveMergedDraft() {
     state.yamlLoadedContent = content;
     state.yamlDirty = false;
     $("#yaml-editor").value = content;
-    $("#show-diff").disabled = false;
-    $("#merge-draft").disabled = false;
-    $("#publish").disabled = !state.capabilities["configuration.publish"];
     $("#merge-dialog").close();
+    updateDraftActionButtons();
     updateBuilderButtons();
     updateYamlEditorUi();
     await loadConfigurations();
     toast(t("toast.draft.mergedSaved"));
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
 }
 
 async function publishDraft() {
@@ -7533,22 +8355,90 @@ async function publishDraft() {
     state.hasDraft = false;
     state.yamlLoadedContent = $("#yaml-editor").value;
     state.yamlDirty = false;
-    $("#revision").textContent = result.revision;
-    $("#show-diff").disabled = true;
-    $("#merge-draft").disabled = true;
-    $("#publish").disabled = true;
+    setRevisionDisplay(result.revision);
+    updateDraftActionButtons();
     updateBuilderButtons();
     updateYamlEditorUi();
     toast(t("toast.config.published"));
     await loadConfigurations();
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
+}
+
+// A full "sha256:<64 hex chars>" is diagnostic detail, not something anyone
+// reads at a glance next to the filename - short like a git commit, full
+// value still one hover away.
+function setRevisionDisplay(/** @type {any} */ revision) {
+  const node = $("#revision");
+  const short = String(revision || "").replace(/^sha256:/, "").slice(0, 7);
+  node.textContent = short;
+  node.title = revision || "";
+}
+
+// The pipeline toolbar has eight buttons whose disabled state depends on
+// three independent things - whether a config/draft exists, whether the
+// role has the capability, and (for builder jobs) whether one is already
+// running - none of which is visible from a plain greyed-out button. Every
+// disabled button gets a title naming the specific missing precondition.
+function updateDraftActionButtons() {
+  const hasConfig = Boolean(state.activeConfig);
+
+  const saveDraftButton = $("#save-draft");
+  const canWriteDraftAtAll = Boolean(state.capabilities["configuration.write_draft"]);
+  saveDraftButton.disabled = !hasConfig || !canWriteDraftAtAll;
+  saveDraftButton.title = !hasConfig ? t("configs.hint.noConfig")
+    : !canWriteDraftAtAll ? t("configs.hint.noPermission")
+    : "";
+
+  const showDiff = $("#show-diff");
+  showDiff.disabled = !state.hasDraft;
+  showDiff.title = !hasConfig ? t("configs.hint.noConfig")
+    : !state.hasDraft ? t("configs.hint.noDraft")
+    : "";
+
+  const mergeDraft = $("#merge-draft");
+  const canWriteDraft = Boolean(state.capabilities["configuration.write_draft"]);
+  mergeDraft.disabled = !state.hasDraft || !canWriteDraft;
+  mergeDraft.title = !hasConfig ? t("configs.hint.noConfig")
+    : !state.hasDraft ? t("configs.hint.noDraft")
+    : !canWriteDraft ? t("configs.hint.noPermission")
+    : "";
+
+  const publish = $("#publish");
+  const canPublish = Boolean(state.capabilities["configuration.publish"]);
+  publish.disabled = !state.hasDraft || !canPublish;
+  publish.title = !hasConfig ? t("configs.hint.noConfig")
+    : !state.hasDraft ? t("configs.hint.noDraft")
+    : !canPublish ? t("configs.hint.noPermission")
+    : "";
 }
 
 function updateBuilderButtons() {
   const available = builderAvailability(state);
-  $("#validate-esphome").disabled = !available.validate;
-  $("#compile-config").disabled = !available.compile;
-  $("#install-config").disabled = !available.install;
+  const hasConfig = Boolean(state.activeConfig);
+  const published = hasConfig && !state.hasDraft;
+
+  const validate = $("#validate-esphome");
+  validate.disabled = !available.validate;
+  validate.title = !hasConfig ? t("configs.hint.noConfig")
+    : !published ? t("configs.hint.publishFirst")
+    : !state.capabilities["configuration.validate_esphome"] ? t("configs.hint.noPermission")
+    : "";
+
+  const compile = $("#compile-config");
+  compile.disabled = !available.compile;
+  compile.title = !hasConfig ? t("configs.hint.noConfig")
+    : !published ? t("configs.hint.publishFirst")
+    : !state.capabilities["firmware.compile"] ? t("configs.hint.noPermission")
+    : state.builderRequestsRunning.has("compile") ? t("configs.hint.alreadyRunning")
+    : "";
+
+  const install = $("#install-config");
+  install.disabled = !available.install;
+  install.title = !hasConfig ? t("configs.hint.noConfig")
+    : !published ? t("configs.hint.publishFirst")
+    : !state.capabilities["firmware.upload"] ? t("configs.hint.noPermission")
+    : state.builderRequestsRunning.has("install") ? t("configs.hint.alreadyRunning")
+    : "";
 }
 
 async function validateEspHome() {
@@ -7564,7 +8454,7 @@ async function validateEspHome() {
     output.textContent = `${result.valid ? t("config.output.espValid") : t("config.output.espInvalid")}\nRevision: ${result.revision}${validity}\n\n${lines}`.trim();
   } catch (/** @type {any} */ error) {
     output.textContent = `${error.code || t("config.output.errorFallback")}: ${error.message}`;
-    toast(error.message, true);
+    toast(error.message, true, error.details);
   }
 }
 
@@ -7586,7 +8476,7 @@ async function compileConfiguration() {
     toast(result.idempotent_replay
       ? t("toast.builder.jobRestored", { id: result.job.job_id })
       : t("toast.builder.jobStarted", { id: result.job.job_id }));
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
   finally {
     state.builderRequestsRunning.delete("compile");
     updateBuilderButtons();
@@ -7605,7 +8495,7 @@ async function installConfiguration() {
     state.builderJobs[result.job.job_id] = result.job;
     renderBuilderJobs();
     toast(result.idempotent_replay ? `OTA-Job ${result.job.job_id} wiederhergestellt.` : `OTA-Job ${result.job.job_id} gestartet.`);
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
   finally {
     state.builderRequestsRunning.delete("install");
     updateBuilderButtons();
@@ -7617,7 +8507,7 @@ async function loadBuilderJobs() {
   try {
     state.builderJobs = replaceBuilderJobs(await builderController.jobs());
     renderBuilderJobs();
-  } catch (/** @type {any} */ error) { toast(error.message, true); }
+  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
 }
 
 function renderBuilderJobs() {
@@ -7654,7 +8544,7 @@ function renderBuilderJobs() {
         try {
           await builderController.cancel(job.job_id);
           await loadBuilderJobs();
-        } catch (/** @type {any} */ error) { toast(error.message, true); }
+        } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
       });
       row.append(cancel);
     }

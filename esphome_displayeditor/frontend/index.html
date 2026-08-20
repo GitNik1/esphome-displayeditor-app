@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>ESPHome Display Editor</title>
-    <link rel="stylesheet" href="styles.css?v=0.27.0">
+    <link rel="stylesheet" href="styles.css?v=0.278.0">
   </head>
   <body>
     <header class="topbar">
@@ -36,12 +36,16 @@
         <aside class="panel palette-panel">
           <details class="designer-sidebar-details palette-details" open>
             <summary data-i18n="palette.heading">Bausteine (Widgets)</summary>
+            <input id="palette-search" type="search" class="sidebar-search" data-i18n-attr="placeholder:palette.searchPlaceholder" placeholder="Suchen …">
             <div id="palette" class="palette"></div>
+            <p id="palette-search-empty" class="hint hidden" data-i18n="palette.searchEmpty">Kein Baustein passt zur Suche.</p>
           </details>
 
           <details class="designer-sidebar-details hierarchy-details" open>
             <summary data-i18n="hierarchy.heading">Hierarchie</summary>
+            <input id="hierarchy-search" type="search" class="sidebar-search" data-i18n-attr="placeholder:hierarchy.searchPlaceholder" placeholder="Suchen …">
             <div id="widget-tree" class="widget-tree empty" data-i18n="hierarchy.empty">Noch keine Widgets</div>
+            <p id="hierarchy-search-empty" class="hint hidden" data-i18n="hierarchy.searchEmpty">Kein Eintrag passt zur Suche.</p>
           </details>
 
           <details class="theme-editor-details">
@@ -164,6 +168,50 @@
               <p id="font-library-export-hint" class="hint hidden"><span data-i18n="fontlib.exportHint.prefix">Importiertes Projekt: Neue Font-IDs zusätzlich im </span><code>font:</code><span data-i18n="fontlib.exportHint.suffix">-Block der Quellkonfiguration definieren.</span></p>
             </div>
           </details>
+
+          <details class="project-management-bar">
+            <summary data-i18n="project.management">Projektverwaltung</summary>
+            <div class="project-toolbar">
+              <label><span data-i18n="project.name">Projektname</span>
+                <input id="project-name" value="display.lvgldesign">
+              </label>
+              <label><span data-i18n="project.appStorage">App-Speicher</span>
+                <select id="server-projects" data-i18n-attr="aria-label:project.savedProjectsAria" aria-label="Gespeicherte Projekte"><option value="" data-i18n="project.savedProjects">Gespeicherte Projekte …</option></select>
+              </label>
+              <button id="load-server-project" class="button subtle" data-i18n="project.load" disabled>Laden</button>
+              <button id="save-server-project" class="button primary" data-i18n="project.saveToApp">In App speichern</button>
+              <button id="delete-server-project" class="button danger compact" data-i18n="project.delete" disabled>Löschen</button>
+            </div>
+          </details>
+
+          <details class="msgbox-bar">
+            <summary data-i18n="surface.msgboxSectionHeading">Message boxes</summary>
+            <div id="msgbox-list" class="msgbox-list"></div>
+            <button id="add-msgbox" type="button" class="button subtle compact" data-i18n="surface.addMsgbox">+ Message box</button>
+          </details>
+
+          <details class="background-bar">
+            <summary data-i18n="background.heading">Referenzbild</summary>
+            <div class="background-fields">
+              <label class="grow"><span data-i18n="background.sourceUrl">Bildquelle (URL)</span>
+                <input id="bg-path" placeholder="https://…/mockup.png">
+              </label>
+              <label><span data-i18n="background.opacity">Deckkraft</span>
+                <input id="bg-opacity" type="range" min="0" max="100" value="40">
+              </label>
+              <label><span data-i18n="background.imageId">Bild-ID</span> <input id="bg-image-id" value="bg_image"></label>
+              <label class="checkbox-field" data-i18n-attr="title:background.exportTooltip" title="Nur mit http(s)-URL als Quelle exportierbar"><span data-i18n="background.exportAsLvgl">Als LVGL-Bild exportieren</span>
+                <input id="bg-export" type="checkbox">
+              </label>
+              <div class="background-preview-actions">
+                <button id="bg-preview-pick" type="button" class="button subtle compact" data-i18n="background.pickPreview">Vorschaubild wählen …</button>
+                <button id="bg-preview-clear" type="button" class="button subtle compact" disabled data-i18n="background.clearPreview">Vorschau entfernen</button>
+                <input id="bg-preview-file" class="hidden" type="file" accept="image/*">
+              </div>
+              <p class="hint" data-i18n="background.previewHint">Die Vorschau dient nur der Ausrichtung im Editor und wird nicht mit dem Projekt gespeichert.</p>
+              <p class="hint warning-hint"><span data-i18n="background.exportHint.prefix">Für den Export muss die Quelle eine </span><code>http(s)</code><span data-i18n="background.exportHint.suffix">-URL sein — lokale Dateien vom Host werden bewusst nicht eingelesen.</span></p>
+            </div>
+          </details>
         </aside>
 
         <section class="workspace">
@@ -178,6 +226,23 @@
               <button id="zoom-in" class="button subtle compact" data-i18n-attr="title:toolbar.zoomIn" title="Vergrößern (Strg++)">+</button>
               <button id="zoom-fit" class="button subtle compact" data-i18n-attr="title:toolbar.zoomFit" title="Einpassen (Strg+0)"><span data-i18n="toolbar.zoomFitLabel">Einpassen</span></button>
               <button id="zoom-100" class="button subtle compact" data-i18n-attr="title:toolbar.zoom100" title="Originalgröße (Strg+1)">1:1</button>
+            </div>
+            <div class="toolbar-group grid-snap-group">
+              <label class="checkbox-field compact" data-i18n-attr="title:toolbar.gridSnapTitle" title="Ziehen und Größe ändern auf ein Raster einrasten">
+                <input id="grid-snap-toggle" type="checkbox">
+                <span data-i18n="toolbar.gridSnap">Raster</span>
+              </label>
+              <input id="grid-snap-size" type="number" min="2" max="64" step="1" value="8" data-i18n-attr="aria-label:toolbar.gridSnapSizeAria" aria-label="Rastergröße in Pixeln" disabled>
+            </div>
+            <div id="align-distribute-group" class="toolbar-group align-distribute-group hidden">
+              <button id="align-left" class="button subtle compact" data-i18n-attr="title:toolbar.alignLeft" title="Links ausrichten" data-i18n="toolbar.alignLeftLabel">Links</button>
+              <button id="align-center-x" class="button subtle compact" data-i18n-attr="title:toolbar.alignCenterX" title="Horizontal zentrieren" data-i18n="toolbar.alignCenterXLabel">Mitte</button>
+              <button id="align-right" class="button subtle compact" data-i18n-attr="title:toolbar.alignRight" title="Rechts ausrichten" data-i18n="toolbar.alignRightLabel">Rechts</button>
+              <button id="align-top" class="button subtle compact" data-i18n-attr="title:toolbar.alignTop" title="Oben ausrichten" data-i18n="toolbar.alignTopLabel">Oben</button>
+              <button id="align-center-y" class="button subtle compact" data-i18n-attr="title:toolbar.alignCenterY" title="Vertikal zentrieren" data-i18n="toolbar.alignCenterYLabel">Mitte</button>
+              <button id="align-bottom" class="button subtle compact" data-i18n-attr="title:toolbar.alignBottom" title="Unten ausrichten" data-i18n="toolbar.alignBottomLabel">Unten</button>
+              <button id="distribute-horizontal" class="button subtle compact" data-i18n-attr="title:toolbar.distributeHorizontal" title="Waagerecht gleichmäßig verteilen" data-i18n="toolbar.distributeHorizontalLabel">↔ Verteilen</button>
+              <button id="distribute-vertical" class="button subtle compact" data-i18n-attr="title:toolbar.distributeVertical" title="Senkrecht gleichmäßig verteilen" data-i18n="toolbar.distributeVerticalLabel">↕ Verteilen</button>
             </div>
             <div id="line-tool-group" class="toolbar-group hidden">
               <button id="tool-select" class="button subtle compact active" data-i18n-attr="title:glow.toolSelect" title="Auswahl (V)" data-i18n="glow.toolSelectLabel">Auswahl</button>
@@ -198,28 +263,19 @@
             <input id="project-file" class="hidden" type="file" accept=".lvgldesign,application/json">
             </div>
           </div>
-          <details class="project-management-bar">
-            <summary data-i18n="project.management">Projektverwaltung</summary>
-            <div class="project-toolbar">
-              <label><span data-i18n="project.name">Projektname</span>
-                <input id="project-name" value="display.lvgldesign">
-              </label>
-              <label><span data-i18n="project.appStorage">App-Speicher</span>
-                <select id="server-projects" data-i18n-attr="aria-label:project.savedProjectsAria" aria-label="Gespeicherte Projekte"><option value="" data-i18n="project.savedProjects">Gespeicherte Projekte …</option></select>
-              </label>
-              <button id="load-server-project" class="button subtle" data-i18n="project.load" disabled>Laden</button>
-              <button id="save-server-project" class="button primary" data-i18n="project.saveToApp">In App speichern</button>
-              <button id="delete-server-project" class="button danger compact" data-i18n="project.delete" disabled>Löschen</button>
-            </div>
-          </details>
           <div class="surface-toolbar">
             <label class="surface-picker"><span data-i18n="surface.workspace">Arbeitsfläche</span>
               <select id="surface-select" data-i18n-attr="aria-label:surface.selectAria" aria-label="Aktive Seite oder Layer"></select>
             </label>
             <div class="surface-actions">
               <button id="add-page" type="button" class="button subtle compact" data-i18n="surface.addPage">+ Seite</button>
-              <button id="add-bottom-layer" type="button" class="button subtle compact" data-i18n="surface.addBottomLayer">+ Bottom-Layer</button>
-              <button id="add-top-layer" type="button" class="button subtle compact" data-i18n="surface.addTopLayer">+ Top-Layer</button>
+              <details id="add-layer-menu" class="add-layer-menu">
+                <summary class="button subtle compact" data-i18n-attr="title:surface.addLayerMenuTitle" title="Bottom- oder Top-Layer hinzufügen">+ Layer ▾</summary>
+                <div class="add-layer-menu-panel">
+                  <button id="add-bottom-layer" type="button" class="button subtle compact" data-i18n="surface.addBottomLayer">+ Bottom-Layer</button>
+                  <button id="add-top-layer" type="button" class="button subtle compact" data-i18n="surface.addTopLayer">+ Top-Layer</button>
+                </div>
+              </details>
               <button id="surface-up" type="button" class="button subtle compact" data-i18n-attr="title:surface.moveUp" title="Seite nach oben verschieben">↑</button>
               <button id="surface-down" type="button" class="button subtle compact" data-i18n-attr="title:surface.moveDown" title="Seite nach unten verschieben">↓</button>
               <button id="delete-surface" type="button" class="button danger compact" data-i18n="surface.remove">Entfernen</button>
@@ -257,33 +313,6 @@
               </div>
             </details>
           </div>
-          <details class="msgbox-bar">
-            <summary data-i18n="surface.msgboxSectionHeading">Message boxes</summary>
-            <div id="msgbox-list" class="msgbox-list"></div>
-            <button id="add-msgbox" type="button" class="button subtle compact" data-i18n="surface.addMsgbox">+ Message box</button>
-          </details>
-          <details class="background-bar">
-            <summary data-i18n="background.heading">Referenzbild</summary>
-            <div class="background-fields">
-              <label class="grow"><span data-i18n="background.sourceUrl">Bildquelle (URL)</span>
-                <input id="bg-path" placeholder="https://…/mockup.png">
-              </label>
-              <label><span data-i18n="background.opacity">Deckkraft</span>
-                <input id="bg-opacity" type="range" min="0" max="100" value="40">
-              </label>
-              <label><span data-i18n="background.imageId">Bild-ID</span> <input id="bg-image-id" value="bg_image"></label>
-              <label class="checkbox-field" data-i18n-attr="title:background.exportTooltip" title="Nur mit http(s)-URL als Quelle exportierbar"><span data-i18n="background.exportAsLvgl">Als LVGL-Bild exportieren</span>
-                <input id="bg-export" type="checkbox">
-              </label>
-              <div class="background-preview-actions">
-                <button id="bg-preview-pick" type="button" class="button subtle compact" data-i18n="background.pickPreview">Vorschaubild wählen …</button>
-                <button id="bg-preview-clear" type="button" class="button subtle compact" disabled data-i18n="background.clearPreview">Vorschau entfernen</button>
-                <input id="bg-preview-file" class="hidden" type="file" accept="image/*">
-              </div>
-              <p class="hint" data-i18n="background.previewHint">Die Vorschau dient nur der Ausrichtung im Editor und wird nicht mit dem Projekt gespeichert.</p>
-              <p class="hint warning-hint"><span data-i18n="background.exportHint.prefix">Für den Export muss die Quelle eine </span><code>http(s)</code><span data-i18n="background.exportHint.suffix">-URL sein — lokale Dateien vom Host werden bewusst nicht eingelesen.</span></p>
-            </div>
-          </details>
           <div class="canvas-stage">
             <div id="canvas-scaler" class="canvas-scaler">
               <div id="canvas" class="canvas" data-i18n-attr="aria-label:canvas.ariaLabel" aria-label="LVGL-Zeichenfläche">
@@ -291,6 +320,9 @@
                 <canvas id="glow-canvas-back" class="glow-canvas"></canvas>
                 <canvas id="glow-canvas-front" class="glow-canvas"></canvas>
                 <div id="glow-handles" class="glow-handles"></div>
+                <!-- align-guide-x/y and marquee-select are created by
+                     createCanvasLayers() (canvas/view.js) and re-appended on
+                     every renderCanvas() rebuild, same as the layers above. -->
               </div>
             </div>
           </div>
@@ -413,7 +445,7 @@
               <div id="widget-links-list" class="widget-action-list"></div>
             </div>
 
-            <details id="widget-link-builder-section" class="hidden property-group" open>
+            <details id="widget-link-builder-section" class="hidden property-group">
               <summary data-i18n="widgetLinks.newSection">Neue Verknüpfung</summary>
               <p class="hint" data-i18n="widgetLinks.newHint">Lege fest, wann etwas passieren soll (Auslöser) und was dabei passiert (Wirkung). Die passenden Felder erscheinen automatisch.</p>
               <div class="widget-action-builder">
@@ -605,8 +637,10 @@
                 </label>
                 <button id="save-device-binding" type="button" class="button hidden-field" data-i18n="deviceBinding.save">Binding übernehmen</button>
                 <button id="remove-device-binding" type="button" class="button subtle compact" data-i18n="deviceBinding.remove">Entfernen</button>
-                <div class="property-section" data-i18n="deviceBinding.graph">Binding-Graph des Projekts</div>
-                <div id="device-binding-graph" class="device-binding-graph"></div>
+                <div id="device-binding-graph-section" class="hidden">
+                  <div class="property-section" data-i18n="deviceBinding.graph">Binding-Graph des Projekts</div>
+                  <div id="device-binding-graph" class="device-binding-graph"></div>
+                </div>
               </div>
             </details>
 
@@ -775,6 +809,7 @@
           <div id="device-entities" class="device-panel"><div class="empty" data-i18n="devices.noEntities">Keine Entitäten.</div></div>
           <div id="device-states" class="device-panel"><div class="empty" data-i18n="devices.noStates">Keine Zustände.</div></div>
           <div id="device-logs" class="device-panel"><pre data-i18n="devices.noLogs">Keine Logs.</pre></div>
+          <div id="device-detail-empty" class="device-detail-empty" data-i18n="devices.detailEmptyHint">Noch kein Gerät konfiguriert. Über „Gerät hinzufügen“ links eines anlegen, um Live-Infos, Entitäten, Zustände und Logs zu sehen.</div>
         </section>
       </section>
 
@@ -791,14 +826,22 @@
             <button id="back-to-configs" class="button subtle compact back-to-list" data-i18n="configs.backToList" data-i18n-attr="title:backToListTitle" title="Zurück zur Liste">← Konfigurationen</button>
             <div><strong id="config-title" data-i18n="configs.noneSelected">Keine Datei gewählt</strong><small id="revision"></small></div>
             <div class="actions">
-              <button id="check-yaml" class="button subtle" data-i18n="configs.checkYaml" disabled>Syntax prüfen</button>
-              <button id="validate-esphome" class="button subtle" data-i18n="configs.validateEsphome" disabled>ESPHome prüfen</button>
-              <button id="show-diff" class="button subtle" data-i18n="configs.diff" disabled>Diff</button>
-              <button id="merge-draft" class="button subtle" data-i18n="configs.merge" disabled>Zusammenführen</button>
-              <button id="save-draft" class="button primary" data-i18n="configs.saveDraft" disabled>Entwurf speichern</button>
-              <button id="publish" class="button warning" data-i18n="configs.publish" disabled>Veröffentlichen</button>
-              <button id="compile-config" class="button subtle" data-i18n="configs.compile" disabled>Kompilieren</button>
-              <button id="install-config" class="button warning" data-i18n="configs.install" disabled>OTA installieren</button>
+              <div class="toolbar-stage" data-i18n-attr="aria-label:configs.stage.check" aria-label="Prüfen">
+                <button id="check-yaml" class="button subtle" data-i18n="configs.checkYaml" data-i18n-attr="title:configs.hint.noConfig" title="Erst eine Konfigurationsdatei öffnen." disabled>Syntax prüfen</button>
+                <button id="validate-esphome" class="button subtle" data-i18n="configs.validateEsphome" disabled>ESPHome prüfen</button>
+                <button id="show-diff" class="button subtle" data-i18n="configs.diff" disabled>Diff</button>
+              </div>
+              <div class="toolbar-stage-divider" aria-hidden="true"></div>
+              <div class="toolbar-stage" data-i18n-attr="aria-label:configs.stage.draft" aria-label="Entwurf">
+                <button id="merge-draft" class="button subtle" data-i18n="configs.merge" disabled>Zusammenführen</button>
+                <button id="save-draft" class="button primary" data-i18n="configs.saveDraft" disabled>Entwurf speichern</button>
+              </div>
+              <div class="toolbar-stage-divider" aria-hidden="true"></div>
+              <div class="toolbar-stage" data-i18n-attr="aria-label:configs.stage.device" aria-label="Auf das Gerät">
+                <button id="publish" class="button warning" data-i18n="configs.publish" disabled>Veröffentlichen</button>
+                <button id="compile-config" class="button subtle" data-i18n="configs.compile" disabled>Kompilieren</button>
+                <button id="install-config" class="button warning" data-i18n="configs.install" disabled>OTA installieren</button>
+              </div>
             </div>
           </div>
           <div class="yaml-editor-area">
@@ -810,6 +853,7 @@
               <span id="yaml-search-result" class="yaml-search-result" aria-live="polite"></span>
             </div>
             <div class="yaml-editor-shell">
+              <span id="yaml-state-badge" class="yaml-state-badge hidden"></span>
               <pre id="yaml-line-numbers" aria-hidden="true">1</pre>
               <textarea id="yaml-editor" spellcheck="false" disabled data-i18n-attr="aria-label:configs.yamlEditorAria" aria-label="YAML-Editor"></textarea>
             </div>
@@ -963,6 +1007,7 @@
           <input id="glyph-size" type="number" min="1" max="255" value="24">
         </label>
         <p class="hint" data-i18n="dialog.glyph.sizeHint">Jede Größe bekommt automatisch einen eigenen, lokal fixierten Font-Bibliothekseintrag - beim Export werden dort nur die tatsächlich eingefügten Icons mitgebacken.</p>
+        <p class="hint warning-hint" data-i18n="dialog.glyph.fontSwapHint">Setzt die Schrift des Textfelds auf diese Icon-Schrift - eine zuvor gewählte Schrift für dieses Feld wird dabei ersetzt.</p>
         <label><span data-i18n="dialog.glyph.searchLabel">MDI-Katalog durchsuchen</span>
           <input id="glyph-search" type="search" data-i18n-attr="placeholder:dialog.glyph.searchPlaceholder" placeholder="z. B. home, light, F02DC">
         </label>
@@ -1062,6 +1107,6 @@
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js?v=0.27.0"></script>
+    <script type="module" src="app.js?v=0.278.0"></script>
   </body>
 </html>

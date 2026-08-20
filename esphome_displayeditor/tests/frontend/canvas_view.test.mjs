@@ -6,7 +6,15 @@ function element(tag) { return { tag, style: {}, className: "", classList: { val
 
 test("canvas view creates stable layer identities", () => {
   const layers = createCanvasLayers({ createElement: element });
-  assert.deepEqual([layers.back.id, layers.front.id, layers.handles.id], ["glow-canvas-back", "glow-canvas-front", "glow-handles"]);
+  assert.deepEqual(
+    [layers.back.id, layers.front.id, layers.handles.id, layers.alignGuideX.id, layers.alignGuideY.id, layers.marquee.id],
+    ["glow-canvas-back", "glow-canvas-front", "glow-handles", "align-guide-x", "align-guide-y", "marquee-select"],
+  );
+  assert.deepEqual(
+    Object.keys(layers.gapLabels).sort(),
+    ["bottom", "left", "right", "top"],
+  );
+  assert.equal(layers.gapLabels.left.id, "gap-label-left");
 });
 
 test("canvas view configures dimensions, modes and widget boxes", () => {
