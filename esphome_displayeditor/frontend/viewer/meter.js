@@ -27,7 +27,7 @@ export function meterLength(value, radius) {
 /** @param {any} scale @param {number} [radius] */
 export function meterTickGeometry(scale, radius = 44) {
   const ticks = scale.ticks && typeof scale.ticks === "object" ? scale.ticks : {};
-  const count = Math.max(0, Math.floor(Number(ticks.count ?? 12)));
+  const count = Math.min(200, Math.max(0, Math.floor(Number(ticks.count ?? 12))));
   if (count < 2) return [];
   const major = ticks.major && typeof ticks.major === "object" ? ticks.major : {};
   const stride = Math.max(1, Math.floor(Number(major.stride ?? 3)));

@@ -28,6 +28,13 @@ export function buildWidgetAction({ type, targetId, targetWidget, fields = {} })
     if (Object.keys(payload).length === 1) throw new Error("missing_update_fields");
     return { "lvgl.indicator.update": payload };
   }
+  if (type === "custom") {
+    const action = fields.customAction;
+    if (!action || typeof action !== "object" || Array.isArray(action) || Object.keys(action).length !== 1) {
+      throw new Error("missing_custom_action");
+    }
+    return /** @type {Action} */ (action);
+  }
   if (type !== "update") throw new Error("unsupported_action_type");
 
   /** @type {Record<string, any>} */

@@ -231,10 +231,6 @@ input:focus { border-color: var(--accent); }
   .viewer-statusline span { display: block; }
 }
 
-.device-binding-section { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
-.device-binding-section > summary { cursor: pointer; font-weight: 650; color: var(--text); }
-.device-binding-section[open] { display: grid; gap: 8px; }
-.device-binding-section label { display: grid; gap: 4px; }
 .device-binding-list { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 .device-binding-list > div { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; overflow-wrap: anywhere; }
 .device-binding-graph { display: grid; gap: 5px; }
@@ -242,6 +238,9 @@ input:focus { border-color: var(--accent); }
 
 .empty { color: var(--muted); padding: 20px 16px; font-size: 13px; line-height: 1.5; }
 .hidden { display: none !important; }
+/* Legacy driver-only fields kept in the DOM for the unified widget-link
+   builder (Phase 2) - functionally still read/written by JS, never shown. */
+.hidden-field { display: none !important; }
 .properties { padding: 16px; }
 .properties label { display: block; margin-bottom: 13px; color: var(--muted); font-size: 12px; }
 .properties input { margin-top: 5px; }
@@ -451,10 +450,16 @@ input:focus { border-color: var(--accent); }
 .widget-action-empty { margin: 0; color: var(--muted); font-size: 11px; }
 .widget-action-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 8px 9px; border: 1px solid var(--line); border-radius: 7px; background: #0c1420; }
 .widget-action-item.invalid { border-color: #ad7d20; }
+.widget-link-actions { display: flex; gap: 6px; }
 .widget-action-item span { min-width: 0; overflow-wrap: anywhere; color: var(--muted); font-size: 11px; line-height: 1.4; }
 .widget-action-builder { padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #101a28; }
 .widget-action-builder > .button { width: 100%; margin-top: 4px; }
 .widget-action-error { margin: 0 0 8px; color: #ff9cab; font-size: 11px; line-height: 1.4; }
+.widget-action-custom-params { display: grid; gap: 6px; margin-bottom: 6px; }
+.widget-action-custom-param { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; align-items: center; }
+.widget-action-custom-preview { margin: 6px 0 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #0c1420; color: var(--muted); font-family: monospace; font-size: 11px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; min-height: 14px; }
+.runtime-preview-only { margin: 10px 0; padding: 10px; border: 1px dashed #d8a730; border-radius: 8px; background: #241d0c; }
+.runtime-preview-only .property-section { color: #e0b64a; }
 .canvas-widget.runtime-preview { outline: 1px dashed #8ef1e7; outline-offset: -3px; }
 .canvas-value-visual { position: relative; display: block; width: 100%; height: 100%; pointer-events: none; }
 .canvas-bar { overflow: hidden; border-radius: 999px; background: #657386; }

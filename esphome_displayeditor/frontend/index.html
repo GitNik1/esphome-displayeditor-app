@@ -407,12 +407,23 @@
               <button id="apply-image-button" type="button" class="button primary compact" data-i18n="imgbtn.apply">Bild-Button übernehmen</button>
             </div>
 
-            <details id="widget-actions-section" class="hidden property-group">
-              <summary data-i18n="actions.section">Aktionen</summary>
-              <p class="hint" data-i18n="actions.hint">Ändert andere Widgets beim Klicken, Drücken, Loslassen oder bei Wertänderung dieses Widgets.</p>
-              <div id="widget-action-list" class="widget-action-list"></div>
+            <div id="widget-links-section" class="hidden">
+              <div class="property-section" data-i18n="widgetLinks.section">Verknüpfungen dieses Widgets</div>
+              <p class="hint" data-i18n="widgetLinks.hint">Alles, was beim Export in dieses Widget oder eine verknüpfte ESPHome-Entität geschrieben wird - Aktionen und Gerätebindungen zusammen.</p>
+              <div id="widget-links-list" class="widget-action-list"></div>
+            </div>
+
+            <details id="widget-link-builder-section" class="hidden property-group" open>
+              <summary data-i18n="widgetLinks.newSection">Neue Verknüpfung</summary>
+              <p class="hint" data-i18n="widgetLinks.newHint">Lege fest, wann etwas passieren soll (Auslöser) und was dabei passiert (Wirkung). Die passenden Felder erscheinen automatisch.</p>
               <div class="widget-action-builder">
-                <label><span data-i18n="actions.trigger">Auslöser</span>
+                <label><span data-i18n="widgetLinks.triggerKind">Auslöser</span>
+                  <select id="link-trigger-kind">
+                    <option value="widget_event" data-i18n="widgetLinks.triggerKind.widgetEvent">Widget-Ereignis</option>
+                    <option value="device_state" data-i18n="widgetLinks.triggerKind.deviceState">Geräte-Zustand ändert sich</option>
+                  </select>
+                </label>
+                <label id="widget-action-trigger-field"><span data-i18n="actions.trigger">Auslöser-Ereignis</span>
                   <select id="widget-action-trigger">
                     <option value="on_click" data-i18n="actions.trigger.click">Klick</option>
                     <option value="on_press" data-i18n="actions.trigger.press">Drücken</option>
@@ -427,7 +438,15 @@
                     <option value="unchecked" data-i18n="actions.condition.unchecked">Wenn ausgeschaltet</option>
                   </select>
                 </label>
-                <label><span data-i18n="actions.type">Aktion</span>
+                <label id="device-binding-entity-field" class="hidden"><span data-i18n="deviceBinding.entity">ESPHome-Entität</span><select id="device-binding-entity"></select></label>
+                <label><span data-i18n="widgetLinks.effectKind">Wirkung</span>
+                  <select id="link-effect-kind"></select>
+                </label>
+                <label id="link-bidirectional-field" class="checkbox-field hidden"><input id="link-bidirectional" type="checkbox">
+                  <span id="link-bidirectional-label"></span>
+                </label>
+                <p id="widget-link-target-hint" class="hint"></p>
+                <label id="widget-action-type-field"><span data-i18n="actions.type">Aktion</span>
                   <select id="widget-action-type">
                     <option value="update" data-i18n="actions.type.update">Stil oder Inhalt ändern</option>
                     <option value="indicator_update" data-i18n="actions.type.indicatorUpdate">Meter-Indikator ändern</option>
@@ -437,11 +456,37 @@
                     <option value="animimg_start" data-i18n="actions.type.animimgStart">Animation starten</option>
                     <option value="animimg_stop" data-i18n="actions.type.animimgStop">Animation stoppen</option>
                     <option value="flow" data-i18n="actions.type.flow">Energiefluss (Glow-Line)</option>
+                    <option value="custom" data-i18n="actions.type.custom" class="hidden-option" hidden>Custom-Aktion (z. B. Modbus)</option>
                   </select>
                 </label>
                 <label id="widget-action-target-field"><span data-i18n="actions.target">Ziel</span>
                   <select id="widget-action-target"></select>
                 </label>
+                <div id="widget-action-custom-fields" class="hidden">
+                  <label id="widget-action-custom-name-field"><span data-i18n="actions.custom.name">Aktionsname</span>
+                    <input id="widget-action-custom-name" list="widget-action-custom-name-options" maxlength="128" placeholder="z. B. modbus_controller.send">
+                    <datalist id="widget-action-custom-name-options">
+                      <option value="modbus_controller.send">
+                      <option value="switch.turn_on">
+                      <option value="switch.turn_off">
+                      <option value="light.turn_on">
+                      <option value="light.turn_off">
+                      <option value="number.set">
+                      <option value="script.execute">
+                    </datalist>
+                  </label>
+                  <div id="widget-action-custom-params" class="widget-action-custom-params"></div>
+                  <button id="widget-action-custom-add-param" type="button" class="button compact" data-i18n="actions.custom.addParam">+ Parameter</button>
+                  <label class="checkbox-field"><input id="widget-action-custom-raw-toggle" type="checkbox">
+                    <span data-i18n="actions.custom.rawToggle">Roh-YAML statt Parameterliste</span>
+                  </label>
+                  <label id="widget-action-custom-yaml-field" class="hidden"><span data-i18n="actions.custom.rawYaml">Roh-YAML</span>
+                    <textarea id="widget-action-custom-yaml" rows="6" spellcheck="false"></textarea>
+                  </label>
+                  <p class="hint" data-i18n="actions.custom.hint">Genau eine ESPHome-Aktion. Wird vor dem Hinzufügen serverseitig geprüft.</p>
+                  <p id="widget-action-custom-preview" class="widget-action-custom-preview"></p>
+                  <p id="widget-action-custom-error" class="widget-action-error hidden"></p>
+                </div>
                 <div id="widget-action-flow-fields" class="hidden">
                   <label><span data-i18n="actions.flow.stroke">Glow-Linie</span>
                     <select id="widget-action-flow-stroke"></select>
@@ -508,14 +553,66 @@
                     <input id="widget-action-opacity" maxlength="16" data-i18n-attr="placeholder:actions.opacity.placeholder" placeholder="z. B. 50% oder COVER">
                   </label>
                 </div>
+                <label id="device-binding-property-field"><span data-i18n="deviceBinding.property">Widget-Eigenschaft/Ereignis</span><select id="device-binding-property"></select></label>
+                <label id="device-binding-event-field" class="hidden"><span data-i18n="deviceBinding.reverseEvent">Widget-Ereignis für Rückrichtung</span><select id="device-binding-event"></select></label>
+                <label id="device-binding-indicator-field" class="hidden"><span data-i18n="deviceBinding.indicator">Meter-Indikator</span><select id="device-binding-indicator"></select></label>
+                <label id="device-binding-command-field" class="hidden"><span data-i18n="deviceBinding.command">Aktor-Befehl</span><select id="device-binding-command"></select></label>
+                <div id="device-binding-transform-field">
+                  <label><span data-i18n="deviceBinding.transform">Transformation (JSON)</span>
+                    <textarea id="device-binding-transform" rows="5" spellcheck="false">{}</textarea>
+                  </label>
+                  <p class="hint" data-i18n="deviceBinding.transformHint">Unterstützt u. a. factor, offset, input_min, input_max, output_min, output_max, clamp, round und format.</p>
+                </div>
+                <div id="device-binding-conditions-field">
+                  <label><span data-i18n="deviceBinding.conditions">Bedingungen (JSON)</span>
+                    <textarea id="device-binding-conditions" rows="3" spellcheck="false">[]</textarea>
+                  </label>
+                  <p class="hint" data-i18n="deviceBinding.conditionsHint">Beispiel: [{"operator":"gte","value":30}]. Mehrere Bedingungen werden mit UND verknüpft.</p>
+                </div>
+                <div id="device-binding-custom-fields" class="hidden">
+                  <label id="device-binding-custom-name-field"><span data-i18n="actions.custom.name">Aktionsname</span>
+                    <input id="device-binding-custom-name" list="widget-action-custom-name-options" maxlength="128" placeholder="z. B. modbus_controller.send">
+                  </label>
+                  <div id="device-binding-custom-params" class="widget-action-custom-params"></div>
+                  <button id="device-binding-custom-add-param" type="button" class="button compact" data-i18n="actions.custom.addParam">+ Parameter</button>
+                  <label class="checkbox-field"><input id="device-binding-custom-raw-toggle" type="checkbox">
+                    <span data-i18n="actions.custom.rawToggle">Roh-YAML statt Parameterliste</span>
+                  </label>
+                  <label id="device-binding-custom-yaml-field" class="hidden"><span data-i18n="actions.custom.rawYaml">Roh-YAML</span>
+                    <textarea id="device-binding-custom-yaml" rows="12" spellcheck="false"></textarea>
+                  </label>
+                  <p class="hint" data-i18n="deviceBinding.customHint">Genau eine ESPHome-Aktion. Syntax und ESPHome-Tags werden vor dem Speichern geprüft.</p>
+                  <p id="device-binding-custom-preview" class="widget-action-custom-preview"></p>
+                  <p id="device-binding-custom-error" class="widget-action-error hidden"></p>
+                  <div class="actions runtime-binding-actions">
+                    <button id="save-custom-binding" type="button" class="button primary compact" data-i18n="deviceBinding.customSave">YAML speichern</button>
+                    <button id="restore-custom-binding" type="button" class="button subtle compact" data-i18n="deviceBinding.customRestore">Importiertes Original</button>
+                  </div>
+                </div>
+                <button id="add-widget-link" type="button" class="button primary compact" data-i18n="widgetLinks.add">Verknüpfung hinzufügen</button>
                 <p id="widget-action-error" class="widget-action-error hidden"></p>
-                <button id="add-widget-action" type="button" class="button primary compact" data-i18n="actions.add">Aktion hinzufügen</button>
+                <p id="device-binding-error" class="hint issue-error hidden"></p>
+                <button id="add-widget-action" type="button" class="button hidden-field" data-i18n="actions.add">Aktion hinzufügen</button>
+                <label class="hidden-field"><span data-i18n="deviceBinding.existing">Vorhandene Bindung</span>
+                  <select id="device-binding-existing"><option value="" data-i18n="deviceBinding.new">— Neue Bindung —</option></select>
+                </label>
+                <label class="hidden-field"><span data-i18n="deviceBinding.direction">Richtung</span>
+                  <select id="device-binding-direction">
+                    <option value="entity_to_widget" data-i18n="deviceBinding.entityToWidget">Entität → Widget</option>
+                    <option value="widget_to_entity" data-i18n="deviceBinding.widgetToEntity">Widget → Entität</option>
+                    <option value="bidirectional" data-i18n="deviceBinding.bidirectional">Bidirektional</option>
+                  </select>
+                </label>
+                <button id="save-device-binding" type="button" class="button hidden-field" data-i18n="deviceBinding.save">Binding übernehmen</button>
+                <button id="remove-device-binding" type="button" class="button subtle compact" data-i18n="deviceBinding.remove">Entfernen</button>
+                <div class="property-section" data-i18n="deviceBinding.graph">Binding-Graph des Projekts</div>
+                <div id="device-binding-graph" class="device-binding-graph"></div>
               </div>
             </details>
 
-            <div id="runtime-binding-section" class="hidden">
-              <div class="property-section" data-i18n="binding.section">Live-Daten im Viewer</div>
-              <p id="runtime-binding-hint" class="hint" data-i18n="binding.hint">Ordnet diesem Widget einen schreibgeschützten ESPHome-Zustand zu.</p>
+            <div id="runtime-binding-section" class="hidden runtime-preview-only">
+              <div class="property-section">👁 <span data-i18n="binding.section">Live-Daten im Viewer</span></div>
+              <p id="runtime-binding-hint" class="hint" data-i18n="binding.hint">Ordnet diesem Widget einen schreibgeschützten ESPHome-Zustand zu. Nur lokale Vorschau - hat keinen Einfluss auf die exportierte YAML oder das echte Gerät.</p>
               <label><span data-i18n="binding.target">Ziel</span>
                 <select id="runtime-binding-target"></select>
               </label>
@@ -551,52 +648,6 @@
                 <button id="paste-runtime-binding" type="button" class="button subtle compact" data-i18n="binding.paste">Einfügen</button>
               </div>
             </div>
-
-            <details id="device-binding-section" class="device-binding-section">
-              <summary data-i18n="deviceBinding.section">ESPHome-Gerätebindungen</summary>
-              <p class="hint" data-i18n="deviceBinding.hint">Diese Bindungen werden beim Zusammenführen als echte ESPHome-Automationen in die Geräte-YAML geschrieben.</p>
-              <label><span data-i18n="deviceBinding.existing">Vorhandene Bindung</span>
-                <select id="device-binding-existing"><option value="" data-i18n="deviceBinding.new">— Neue Bindung —</option></select>
-              </label>
-              <label><span data-i18n="deviceBinding.direction">Richtung</span>
-                <select id="device-binding-direction">
-                  <option value="entity_to_widget" data-i18n="deviceBinding.entityToWidget">Entität → Widget</option>
-                  <option value="widget_to_entity" data-i18n="deviceBinding.widgetToEntity">Widget → Entität</option>
-                  <option value="bidirectional" data-i18n="deviceBinding.bidirectional">Bidirektional</option>
-                </select>
-              </label>
-              <label><span data-i18n="deviceBinding.entity">ESPHome-Entität</span><select id="device-binding-entity"></select></label>
-              <label><span data-i18n="deviceBinding.property">Widget-Eigenschaft/Ereignis</span><select id="device-binding-property"></select></label>
-              <label id="device-binding-event-field" class="hidden"><span data-i18n="deviceBinding.reverseEvent">Widget-Ereignis für Rückrichtung</span><select id="device-binding-event"></select></label>
-              <label id="device-binding-indicator-field" class="hidden"><span data-i18n="deviceBinding.indicator">Meter-Indikator</span><select id="device-binding-indicator"></select></label>
-              <label id="device-binding-command-field" class="hidden"><span data-i18n="deviceBinding.command">Aktor-Befehl</span><select id="device-binding-command"></select></label>
-              <label><span data-i18n="deviceBinding.transform">Transformation (JSON)</span>
-                <textarea id="device-binding-transform" rows="5" spellcheck="false">{}</textarea>
-              </label>
-              <p class="hint" data-i18n="deviceBinding.transformHint">Unterstützt u. a. factor, offset, input_min, input_max, output_min, output_max, clamp, round und format.</p>
-              <label><span data-i18n="deviceBinding.conditions">Bedingungen (JSON)</span>
-                <textarea id="device-binding-conditions" rows="3" spellcheck="false">[]</textarea>
-              </label>
-              <p class="hint" data-i18n="deviceBinding.conditionsHint">Beispiel: [{"operator":"gte","value":30}]. Mehrere Bedingungen werden mit UND verknüpft.</p>
-              <div id="device-binding-custom-fields" class="hidden">
-                <label><span data-i18n="deviceBinding.customYaml">Custom YAML-Aktion</span>
-                  <textarea id="device-binding-custom-yaml" rows="12" spellcheck="false"></textarea>
-                </label>
-                <p class="hint" data-i18n="deviceBinding.customHint">Genau eine ESPHome-Aktion. Syntax und ESPHome-Tags werden vor dem Speichern geprüft.</p>
-                <div class="actions runtime-binding-actions">
-                  <button id="save-custom-binding" type="button" class="button primary compact" data-i18n="deviceBinding.customSave">YAML speichern</button>
-                  <button id="restore-custom-binding" type="button" class="button subtle compact" data-i18n="deviceBinding.customRestore">Importiertes Original</button>
-                </div>
-              </div>
-              <p id="device-binding-error" class="hint issue-error hidden"></p>
-              <div class="actions runtime-binding-actions">
-                <button id="save-device-binding" type="button" class="button primary compact" data-i18n="deviceBinding.save">Binding übernehmen</button>
-                <button id="remove-device-binding" type="button" class="button subtle compact" data-i18n="deviceBinding.remove">Entfernen</button>
-              </div>
-              <div id="device-binding-list" class="device-binding-list"></div>
-              <div class="property-section" data-i18n="deviceBinding.graph">Binding-Graph des Projekts</div>
-              <div id="device-binding-graph" class="device-binding-graph"></div>
-            </details>
 
             <div id="extra-keys-section" class="hidden">
               <div class="property-section" data-i18n="extra.section">Unbekannte Schlüssel</div>

@@ -13,6 +13,7 @@ import {
 } from "./actions/model.js";
 import { describeWidgetAction as describeAction } from "./actions/describe.js";
 import { buildWidgetAction, wrapValueCondition } from "./actions/build.js";
+import { createCustomActionEditor } from "./actions/custom-editor.js";
 import { buildFlowAction } from "./actions/flow.js";
 import { nearestSegment } from "./glowline/geometry.js";
 import { drawDocument, hasFlow } from "./glowline/renderer.js";
@@ -139,6 +140,16 @@ import {
 const $ = (selector) => document.querySelector(selector);
 /** @param {string} selector @returns {any[]} */
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+// Shared "name + parameters + live preview + raw YAML fallback" editors -
+// one for the widget Actions builder's "Custom-Aktion", one for the device
+// Custom-YAML binding editor. Both wrap the same backend validation endpoint
+// (see frontend/actions/custom-editor.js). Created once DOM elements exist,
+// in bindDesigner().
+/** @type {ReturnType<typeof createCustomActionEditor>} */
+let widgetActionCustomEditor;
+/** @type {ReturnType<typeof createCustomActionEditor>} */
+let deviceBindingCustomEditor;
 
 // Mirrors backend/designer_core/model.py's STATES_KEY - both sides need
 // the exact same key name for a widget/theme's per-state style overrides.
@@ -797,6 +808,42 @@ function bindDesigner() {
   $("#widget-action-target").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-flow-stroke").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-indicator-trigger-value").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
+  widgetActionCustomEditor = createCustomActionEditor({
+    nameField: $("#widget-action-custom-name-field"),
+    nameInput: $("#widget-action-custom-name"),
+    paramsContainer: $("#widget-action-custom-params"),
+    addParamButton: $("#widget-action-custom-add-param"),
+    rawToggle: $("#widget-action-custom-raw-toggle"),
+    rawField: $("#widget-action-custom-yaml-field"),
+    rawTextarea: $("#widget-action-custom-yaml"),
+    preview: $("#widget-action-custom-preview"),
+    error: $("#widget-action-custom-error"),
+  }, t, api);
+  $("#widget-action-custom-name").addEventListener("input", () => widgetActionCustomEditor.schedulePreview());
+  $("#widget-action-custom-yaml").addEventListener("input", () => widgetActionCustomEditor.schedulePreview());
+  $("#widget-action-custom-add-param").addEventListener("click", () => widgetActionCustomEditor.addParamRow());
+  $("#widget-action-custom-raw-toggle").addEventListener("change", () => {
+    widgetActionCustomEditor.setRawMode($("#widget-action-custom-raw-toggle").checked);
+    widgetActionCustomEditor.schedulePreview();
+  });
+  deviceBindingCustomEditor = createCustomActionEditor({
+    nameField: $("#device-binding-custom-name-field"),
+    nameInput: $("#device-binding-custom-name"),
+    paramsContainer: $("#device-binding-custom-params"),
+    addParamButton: $("#device-binding-custom-add-param"),
+    rawToggle: $("#device-binding-custom-raw-toggle"),
+    rawField: $("#device-binding-custom-yaml-field"),
+    rawTextarea: $("#device-binding-custom-yaml"),
+    preview: $("#device-binding-custom-preview"),
+    error: $("#device-binding-custom-error"),
+  }, t, api);
+  $("#device-binding-custom-name").addEventListener("input", () => deviceBindingCustomEditor.schedulePreview());
+  $("#device-binding-custom-yaml").addEventListener("input", () => deviceBindingCustomEditor.schedulePreview());
+  $("#device-binding-custom-add-param").addEventListener("click", () => deviceBindingCustomEditor.addParamRow());
+  $("#device-binding-custom-raw-toggle").addEventListener("change", () => {
+    deviceBindingCustomEditor.setRawMode($("#device-binding-custom-raw-toggle").checked);
+    deviceBindingCustomEditor.schedulePreview();
+  });
   $("#add-widget-action").addEventListener("click", addWidgetAction);
   $("#close-meter-dialog").addEventListener("click", () => $("#meter-dialog").close());
   $("#cancel-meter-dialog").addEventListener("click", () => $("#meter-dialog").close());
@@ -838,12 +885,16 @@ function bindDesigner() {
     state.designerRuntimePreview = event.target.checked;
     renderCanvas();
   });
+  $("#link-trigger-kind").addEventListener("change", () => renderLinkBuilder());
+  $("#link-effect-kind").addEventListener("change", () => renderLinkBuilder());
+  $("#link-bidirectional").addEventListener("change", () => renderLinkBuilder());
+  $("#add-widget-link").addEventListener("click", addWidgetLink);
   $("#device-binding-direction").addEventListener("change", () => renderDeviceBindings(state.selectedWidget));
   $("#device-binding-existing").addEventListener("change", loadSelectedDeviceBinding);
   $("#device-binding-entity").addEventListener("change", () => populateDeviceBindingCommands());
   $("#device-binding-property").addEventListener("change", () => renderDeviceBindingIndicator(state.selectedWidget));
   $("#save-device-binding").addEventListener("click", saveDeviceBinding);
-  $("#remove-device-binding").addEventListener("click", deleteDeviceBinding);
+  $("#remove-device-binding").addEventListener("click", () => deleteDeviceBinding());
   $("#save-custom-binding").addEventListener("click", saveCustomDeviceBinding);
   $("#restore-custom-binding").addEventListener("click", restoreCustomDeviceBinding);
   $("#save-flow-binding").addEventListener("click", saveGlowFlowBinding);
@@ -887,9 +938,9 @@ function bindDesigner() {
   });
   $("#merge-draft-save").addEventListener("click", saveMergeDraft);
   $("#download-zip").addEventListener("click", downloadProjectZip);
-  const actionsSection = $("#widget-actions-section");
-  actionsSection.open = !collapsedPropertyGroups.actions;
-  actionsSection.addEventListener("toggle", () => togglePropertyGroup("actions", !actionsSection.open));
+  const linkBuilderSection = $("#widget-link-builder-section");
+  linkBuilderSection.open = !collapsedPropertyGroups.widgetLinks;
+  linkBuilderSection.addEventListener("toggle", () => togglePropertyGroup("widgetLinks", !linkBuilderSection.open));
   document.addEventListener("keydown", (event) => {
     if (!$("#designer").classList.contains("active")) return;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(
@@ -3265,7 +3316,8 @@ function renderProperties() {
   $("#empty-properties").classList.toggle("hidden", state.canvasMode === "lines" || Boolean(widget));
   $("#properties").classList.toggle("hidden", !widget);
   if (!widget) $("#runtime-binding-section").classList.add("hidden");
-  if (!widget) $("#widget-actions-section").classList.add("hidden");
+  if (!widget) $("#widget-link-builder-section").classList.add("hidden");
+  if (!widget) $("#widget-links-section").classList.add("hidden");
   if (!widget) return;
   $("#prop-id").value = widget.id;
   $("#prop-x").value = widget.x;
@@ -3287,6 +3339,7 @@ function renderProperties() {
   renderWidgetActions(widget);
   renderRuntimeBinding(widget);
   renderDeviceBindings(widget);
+  renderLinkBuilder();
   renderExtraKeys(widget);
 }
 
@@ -3460,44 +3513,123 @@ function applyImageButtonSettings() {
 // slider's numeric value. A button only qualifies once "checkable" is on
 // (otherwise it never reports a checked state to begin with); switch and
 // checkbox are inherently boolean, no extra flag needed.
+// Visibility of the merged builder (#widget-link-builder-section) is owned
+// by renderLinkBuilder() - this function only needs to refresh the fields
+// within it plus the combined links list once a widget is selected.
 function renderWidgetActions(/** @type {any} */ widget) {
-  const section = $("#widget-actions-section");
+  if (!widget) return;
+  widget.events ||= {};
+  renderWidgetActionBuilder(widget);
+  renderWidgetLinks(widget);
+}
+
+// Combines widget.events actions and project.bindings entries for this
+// widget into one "Auslöser → Wirkung" overview - the two systems export to
+// different places in the YAML (see backend/entity_bindings.py::
+// compile_bindings), but from a user's perspective both answer the same
+// question ("wann passiert was"), so they're shown together here. Adding a
+// new link still happens in the two builder panels below (unified in a
+// later step); this list is read-only overview + edit/remove entry points.
+function describeBindingLink(/** @type {any} */ binding, /** @type {any} */ widget) {
+  const imported = ["opaque_yaml", "custom_yaml"].includes(binding.kind);
+  const source = binding.direction === "widget_to_entity"
+    ? `${widget.id}.${binding.source.event}`
+    : `${binding.source.domain}.${binding.source.id}`;
+  const target = binding.direction === "widget_to_entity"
+    ? `${binding.target.domain}.${binding.target.id}`
+    : `${widget.id}.${binding.target.property}`;
+  const arrow = binding.direction === "bidirectional" ? "⇄" : "→";
+  return {
+    text: `${source} ${arrow} ${target}`,
+    badge: imported ? t("actions.link.badge.custom") : t("actions.link.badge.binding"),
+  };
+}
+
+function renderWidgetLinks(/** @type {any} */ widget) {
+  const section = $("#widget-links-section");
   const visible = Boolean(widget);
   section.classList.toggle("hidden", !visible);
   if (!visible) return;
-
-  widget.events ||= {};
-  const list = $("#widget-action-list");
+  const list = $("#widget-links-list");
   list.replaceChildren();
-  let count = 0;
+
+  /** @type {any[]} */
+  const rows = [];
+  widget.events ||= {};
   Object.entries(widget.events).forEach(([trigger, raw]) => {
     const actions = Array.isArray(raw) ? raw : [raw];
-    actions.forEach((action, index) => {
-      count += 1;
+    actions.forEach((/** @type {any} */ action, /** @type {number} */ index) => {
       const description = describeAction(action, t);
       const missing = description.skipMissingCheck ? [] : description.targetIds.filter(
         (id) => !actionTargetEntries().some((item) => item.id === id));
-      const row = document.createElement("div");
-      row.className = `widget-action-item${!description.supported || missing.length ? " invalid" : ""}`;
-      const label = document.createElement("span");
-      const triggerLabel = ACTION_TRIGGER_LABELS[trigger] || trigger;
-      label.textContent = `${triggerLabel}: ${description.text}${missing.length ? ` · Ziel fehlt: ${missing.join(", ")}` : ""}`;
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "button danger compact";
-      remove.textContent = "Entfernen";
-      remove.addEventListener("click", () => removeWidgetAction(widget, trigger, index));
-      row.append(label, remove);
-      list.append(row);
+      rows.push({
+        kind: "action", trigger, index,
+        triggerLabel: ACTION_TRIGGER_LABELS[trigger] || trigger,
+        text: description.text,
+        invalid: !description.supported || Boolean(missing.length),
+        missingText: missing.length ? ` · Ziel fehlt: ${missing.join(", ")}` : "",
+        badge: description.supported ? t("actions.link.badge.action") : t("actions.link.badge.custom"),
+      });
     });
   });
-  if (!count) {
+  const own = bindingsForWidget(state.project.bindings || [], widget.id).filter(
+    (/** @type {any} */ binding) => !binding.deleted,
+  );
+  own.forEach((/** @type {any} */ binding) => {
+    const described = describeBindingLink(binding, widget);
+    rows.push({
+      kind: "binding", bindingId: binding.id,
+      triggerLabel: t("actions.link.trigger.deviceState"),
+      text: described.text,
+      invalid: false,
+      missingText: "",
+      badge: described.badge,
+    });
+  });
+
+  if (!rows.length) {
     const empty = document.createElement("p");
     empty.className = "widget-action-empty";
-    empty.textContent = t("actions.empty");
+    empty.textContent = t("widgetLinks.empty");
     list.append(empty);
+    return;
   }
-  renderWidgetActionBuilder(widget);
+  rows.forEach((/** @type {any} */ row) => {
+    const item = document.createElement("div");
+    item.className = `widget-action-item${row.invalid ? " invalid" : ""}`;
+    const label = document.createElement("span");
+    label.textContent = `${row.triggerLabel}: ${row.text}${row.missingText} · ${row.badge}`;
+    const rowActions = document.createElement("div");
+    rowActions.className = "widget-link-actions";
+    if (row.kind === "binding") {
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "button subtle compact";
+      edit.textContent = t("actions.link.edit");
+      edit.addEventListener("click", () => {
+        const binding = (state.project.bindings || []).find((/** @type {any} */ item) => item.id === row.bindingId);
+        if (!binding) return;
+        const isCustom = ["opaque_yaml", "custom_yaml"].includes(binding.kind);
+        const isWidgetToEntity = binding.direction === "widget_to_entity";
+        $("#link-trigger-kind").value = (!isCustom && isWidgetToEntity) ? "widget_event" : "device_state";
+        renderLinkBuilder(binding, isCustom ? "device_custom_yaml" : (isWidgetToEntity ? "widget_device_command" : "device_update_widget"));
+        $("#widget-link-builder-section").open = true;
+        $("#widget-link-builder-section").scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+      rowActions.append(edit);
+    }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "button danger compact";
+    remove.textContent = t("deviceBinding.remove");
+    remove.addEventListener("click", () => {
+      if (row.kind === "action") removeWidgetAction(widget, row.trigger, row.index);
+      else deleteDeviceBinding(row.bindingId);
+    });
+    rowActions.append(remove);
+    item.append(label, rowActions);
+    list.append(item);
+  });
 }
 
 // Glow lines with flow enabled that are eligible as a flow action's target.
@@ -3535,13 +3667,16 @@ function renderWidgetActionBuilder(/** @type {any} */ widget) {
   const trigger = $("#widget-action-trigger").value;
   const type = $("#widget-action-type").value;
   const flow = type === "flow";
+  const custom = type === "custom";
   const indicatorUpdate = type === "indicator_update";
   const conditionField = $("#widget-action-condition-field");
   const supportsCondition = trigger === "on_value" && !flow && widgetSupportsValueCondition(widget);
   conditionField.classList.toggle("hidden", !supportsCondition);
   if (!supportsCondition) $("#widget-action-condition").value = "always";
 
-  $("#widget-action-target-field").classList.toggle("hidden", flow);
+  $("#widget-action-target-field").classList.toggle("hidden", flow || custom);
+  $("#widget-action-custom-fields").classList.toggle("hidden", !custom);
+  if (custom) widgetActionCustomEditor.schedulePreview();
   const animimgOnly = type === "animimg_start" || type === "animimg_stop";
   const target = $("#widget-action-target");
   const previous = target.value;
@@ -3592,7 +3727,152 @@ function renderWidgetActionBuilder(/** @type {any} */ widget) {
   $("#widget-action-error").classList.add("hidden");
 }
 
-function addWidgetAction() {
+// Phase 2 of the Actions/Bindings UX unification: a single "Auslöser →
+// Wirkung" wizard that routes into the still-unchanged addWidgetAction()/
+// saveDeviceBinding()/addCustomDeviceBinding() functions and their existing
+// field groups (widget.events vs. project.bindings stay separate data
+// models - see LVGL-VOLLSTAENDIGKEIT-UMSETZUNGSPLAN.md context). The router
+// only decides which existing fields to reveal and which hidden driver
+// selects (#widget-action-type, #device-binding-direction) to preset.
+function linkEffectOptions(/** @type {string} */ triggerKind) {
+  return triggerKind === "device_state"
+    ? [
+      { value: "device_update_widget", label: t("widgetLinks.effect.updateWidget") },
+      { value: "device_custom_yaml", label: t("widgetLinks.effect.customYaml") },
+    ]
+    : [
+      { value: "widget_lvgl_effect", label: t("widgetLinks.effect.lvglEffect") },
+      { value: "widget_device_command", label: t("widgetLinks.effect.deviceCommand") },
+      { value: "widget_custom_action", label: t("widgetLinks.effect.customAction") },
+    ];
+}
+
+/**
+ * @param {any} [editingBinding] Pass an existing binding to load it for
+ *   editing (from the "Bearbeiten" button in the combined links list)
+ *   instead of composing a new one.
+ * @param {string | null} [forcedEffectKind] Overrides the effect-kind
+ *   selection - used only when loading an existing binding for editing.
+ */
+function renderLinkBuilder(/** @type {any} */ editingBinding = null, /** @type {string | null} */ forcedEffectKind = null) {
+  const widget = state.selectedWidget;
+  const section = $("#widget-link-builder-section");
+  section.classList.toggle("hidden", !widget);
+  if (!widget) return;
+
+  const triggerKind = $("#link-trigger-kind").value;
+  const effectSelect = $("#link-effect-kind");
+  const previousEffect = effectSelect.value;
+  const options = linkEffectOptions(triggerKind);
+  effectSelect.replaceChildren(...options.map((opt) => new Option(opt.label, opt.value)));
+  effectSelect.value = forcedEffectKind
+    || (options.some((opt) => opt.value === previousEffect) ? previousEffect : options[0].value);
+  const effectKind = effectSelect.value;
+
+  const isWidgetActionEffect = effectKind === "widget_lvgl_effect" || effectKind === "widget_custom_action";
+  const isDeviceBindingEffect = !isWidgetActionEffect;
+  const isCustomYaml = effectKind === "device_custom_yaml";
+  const bidirectionalEligible = effectKind === "widget_device_command" || effectKind === "device_update_widget";
+  const bidirectional = editingBinding
+    ? editingBinding.direction === "bidirectional"
+    : bidirectionalEligible && $("#link-bidirectional").checked;
+
+  $("#link-bidirectional-field").classList.toggle("hidden", !bidirectionalEligible);
+  $("#link-bidirectional").checked = bidirectional;
+  $("#link-bidirectional-label").textContent = effectKind === "widget_device_command"
+    ? t("widgetLinks.bidirectional.widgetToDevice")
+    : t("widgetLinks.bidirectional.deviceToWidget");
+
+  if (!editingBinding) $("#device-binding-existing").value = "";
+
+  $("#widget-action-trigger-field").classList.toggle("hidden", !isWidgetActionEffect);
+  $("#widget-action-type-field").classList.toggle("hidden", effectKind !== "widget_lvgl_effect");
+  $("#widget-action-target-field").classList.toggle("hidden", !isWidgetActionEffect);
+  if (isWidgetActionEffect) {
+    if (effectKind === "widget_custom_action") $("#widget-action-type").value = "custom";
+    else if ($("#widget-action-type").value === "custom") $("#widget-action-type").value = "update";
+    renderWidgetActionBuilder(widget);
+  } else {
+    ["#widget-action-custom-fields", "#widget-action-flow-fields",
+      "#widget-action-indicator-fields", "#widget-action-update-fields",
+      "#widget-action-condition-field"]
+      .forEach((selector) => $(selector).classList.add("hidden"));
+  }
+
+  $("#device-binding-entity-field").classList.toggle("hidden", !isDeviceBindingEffect);
+  if (isDeviceBindingEffect) {
+    $("#device-binding-direction").value = bidirectional
+      ? "bidirectional"
+      : (effectKind === "widget_device_command" ? "widget_to_entity" : "entity_to_widget");
+    renderDeviceBindings(widget, editingBinding);
+    $("#device-binding-property-field").classList.toggle("hidden", isCustomYaml);
+    $("#device-binding-transform-field").classList.toggle("hidden", isCustomYaml);
+    $("#device-binding-conditions-field").classList.toggle("hidden", isCustomYaml);
+    if (isCustomYaml) {
+      $("#device-binding-event-field").classList.add("hidden");
+      $("#device-binding-indicator-field").classList.add("hidden");
+      $("#device-binding-command-field").classList.add("hidden");
+      $("#device-binding-custom-fields").classList.remove("hidden");
+      if (!editingBinding) deviceBindingCustomEditor.reset();
+    } else {
+      $("#device-binding-custom-fields").classList.add("hidden");
+    }
+  } else {
+    ["#device-binding-property-field", "#device-binding-event-field",
+      "#device-binding-indicator-field", "#device-binding-command-field",
+      "#device-binding-transform-field", "#device-binding-conditions-field",
+      "#device-binding-custom-fields"]
+      .forEach((selector) => $(selector).classList.add("hidden"));
+  }
+
+  $("#widget-link-target-hint").textContent = t(`widgetLinks.hint.${effectKind}`);
+}
+
+async function addCustomDeviceBinding() {
+  const widget = state.selectedWidget;
+  if (!widget) return;
+  const error = $("#device-binding-error");
+  const entityId = $("#device-binding-entity").value;
+  const entity = (state.project.entities || []).find((/** @type {any} */ item) => item.id === entityId);
+  if (!entity) {
+    error.textContent = t("widgetLinks.needsEntity");
+    error.classList.remove("hidden");
+    return;
+  }
+  let customAction;
+  try {
+    customAction = await deviceBindingCustomEditor.validateAndBuild();
+  } catch (/** @type {any} */ validationError) {
+    error.textContent = validationError.message;
+    error.classList.remove("hidden");
+    return;
+  }
+  const id = defaultBindingId(widget.id, entity.id);
+  /** @type {any} */
+  const binding = {
+    id, kind: "custom_yaml", origin: "created", direction: "entity_to_widget",
+    source: { domain: entity.domain, id: entity.id },
+    target: { widget_id: widget.id, property: "value" },
+    raw_action: customAction,
+    raw_yaml: deviceBindingCustomEditor.yamlText(),
+    read_only: false,
+    deleted: false,
+  };
+  pushUndo();
+  state.project.bindings = upsertDeviceBinding(state.project.bindings || [], binding);
+  markProjectDirty();
+  error.classList.add("hidden");
+  renderDeviceBindings(widget, binding);
+}
+
+function addWidgetLink() {
+  const effectKind = $("#link-effect-kind").value;
+  if (effectKind === "widget_lvgl_effect" || effectKind === "widget_custom_action") return addWidgetAction();
+  if (effectKind === "device_custom_yaml") return addCustomDeviceBinding();
+  return saveDeviceBinding();
+}
+
+async function addWidgetAction() {
   const widget = state.selectedWidget;
   if (!widget) return;
   const trigger = $("#widget-action-trigger").value;
@@ -3603,7 +3883,7 @@ function addWidgetAction() {
     error.textContent = message;
     error.classList.remove("hidden");
   };
-  if (type !== "flow" && !targetId) {
+  if (!["flow", "custom"].includes(type) && !targetId) {
     fail(type === "page_show" ? t("validation.action.noPage") : t("validation.action.noTargetWidget"));
     return;
   }
@@ -3646,6 +3926,19 @@ function addWidgetAction() {
       normalDuration: $("#widget-action-flow-normal-duration").value,
       fastDuration: $("#widget-action-flow-fast-duration").value,
     });
+  } else if (type === "custom") {
+    if (!widgetActionCustomEditor.yamlText().trim()) {
+      fail(t("validation.action.customNeedsName"));
+      return;
+    }
+    let customAction;
+    try {
+      customAction = await widgetActionCustomEditor.validateAndBuild();
+    } catch (/** @type {any} */ validationError) {
+      fail(validationError.message);
+      return;
+    }
+    action = buildWidgetAction({ type, targetId: "", fields: { customAction } });
   } else {
     const targetWidget = actionTargetEntries().find((item) => item.id === targetId);
     try {
@@ -3692,6 +3985,7 @@ function addWidgetAction() {
     "#widget-action-indicator-end-value", "#widget-action-indicator-opacity"]
     .forEach((selector) => { $(selector).value = ""; });
   $("#widget-action-indicator-trigger-value").checked = false;
+  if (type === "custom") widgetActionCustomEditor.reset();
   syncLinkedColorPickers();
   renderWidgetActions(widget);
 }
@@ -3743,11 +4037,10 @@ function populateDeviceBindingCommands(selected = "") {
   if (selected && [...select.options].some((option) => option.value === selected)) select.value = selected;
 }
 
+// Visibility of the merged builder is owned by renderLinkBuilder() (see
+// renderWidgetActions()) - this only refreshes the fields/lists within it.
 function renderDeviceBindings(/** @type {any} */ widget, /** @type {any} */ selectedBinding = null) {
-  const section = $("#device-binding-section");
-  const visible = Boolean(widget);
-  section.classList.toggle("hidden", !visible);
-  if (!visible) return;
+  if (!widget) return;
   state.project.entities ||= [];
   state.project.bindings ||= [];
   const own = bindingsForWidget(state.project.bindings, widget.id).filter(
@@ -3771,26 +4064,40 @@ function renderDeviceBindings(/** @type {any} */ widget, /** @type {any} */ sele
   const entity = direction === "widget_to_entity" ? binding?.target : binding?.source;
   const widgetSide = direction === "widget_to_entity" ? binding?.source : binding?.target;
 
+  // While composing a NEW binding (no `binding` selected/loaded), the
+  // wizard re-invokes this function on every router change (e.g. toggling
+  // the bidirectional checkbox) - preserve whatever the user already picked
+  // instead of wiping it back to blank each time.
+  const previousEntity = $("#device-binding-entity").value;
+  const previousProperty = $("#device-binding-property").value;
+  const previousEvent = $("#device-binding-event").value;
+  const previousCommand = $("#device-binding-command").value;
+
   const entitySelect = $("#device-binding-entity");
   entitySelect.replaceChildren(new Option("— Entität wählen —", ""));
   compatibleEntities(state.project.entities, direction).forEach((/** @type {any} */ item) => {
     entitySelect.append(new Option(`${item.domain}.${item.id}${item.unit ? ` · ${item.unit}` : ""}`, item.id));
   });
-  entitySelect.value = entity?.id || "";
+  entitySelect.value = entity?.id
+    || (!binding && [...entitySelect.options].some((option) => option.value === previousEntity) ? previousEntity : "");
 
   const propertySelect = $("#device-binding-property");
   propertySelect.replaceChildren();
   deviceBindingTargets(widget, direction).forEach((/** @type {string} */ property) => propertySelect.append(new Option(property, property)));
-  propertySelect.value = widgetSide?.property || widgetSide?.event || propertySelect.options[0]?.value || "";
+  propertySelect.value = widgetSide?.property || widgetSide?.event
+    || (!binding && [...propertySelect.options].some((option) => option.value === previousProperty) ? previousProperty : "")
+    || propertySelect.options[0]?.value || "";
 
   const bidirectional = direction === "bidirectional";
   $("#device-binding-event-field").classList.toggle("hidden", !bidirectional);
   const eventSelect = $("#device-binding-event");
   eventSelect.replaceChildren();
   deviceBindingTargets(widget, "widget_to_entity").forEach((/** @type {string} */ event) => eventSelect.append(new Option(event, event)));
-  eventSelect.value = widgetSide?.event || eventSelect.options[0]?.value || "value";
+  eventSelect.value = widgetSide?.event
+    || (!binding && [...eventSelect.options].some((option) => option.value === previousEvent) ? previousEvent : "")
+    || eventSelect.options[0]?.value || "value";
   $("#device-binding-command-field").classList.toggle("hidden", direction === "entity_to_widget");
-  populateDeviceBindingCommands(entity?.command || "");
+  populateDeviceBindingCommands(entity?.command || (!binding ? previousCommand : "") || "");
   $("#device-binding-transform").value = JSON.stringify(binding?.transform || {}, null, 2);
   $("#device-binding-conditions").value = JSON.stringify(binding?.conditions || [], null, 2);
   $("#remove-device-binding").disabled = !binding;
@@ -3799,28 +4106,19 @@ function renderDeviceBindings(/** @type {any} */ widget, /** @type {any} */ sele
     "device-binding-transform", "device-binding-conditions", "save-device-binding"]
     .forEach((id) => { $(`#${id}`).disabled = importedOnly; });
   $("#device-binding-custom-fields").classList.toggle("hidden", !importedOnly);
-  $("#device-binding-custom-yaml").value = importedOnly ? binding.raw_yaml || "" : "";
+  if (importedOnly) deviceBindingCustomEditor.loadFromYaml(binding.raw_yaml || "");
+  else deviceBindingCustomEditor.reset();
   $("#restore-custom-binding").classList.toggle("hidden", binding?.origin !== "imported");
   const bindingError = $("#device-binding-error");
-  if (importedOnly) {
+  if (importedOnly && binding?.origin === "imported") {
     bindingError.textContent = t("deviceBinding.importedHint");
     bindingError.classList.remove("hidden");
   } else {
     bindingError.classList.add("hidden");
   }
   renderDeviceBindingIndicator(widget);
+  renderWidgetLinks(widget);
 
-  const list = $("#device-binding-list");
-  list.replaceChildren();
-  own.forEach((/** @type {any} */ item) => {
-    const row = document.createElement("div");
-    const source = item.direction === "widget_to_entity" ? `${widget.id}.${item.source.event}` : `${item.source.domain}.${item.source.id}`;
-    const target = item.direction === "widget_to_entity" ? `${item.target.domain}.${item.target.id}` : `${widget.id}.${item.target.property}`;
-    row.textContent = ["opaque_yaml", "custom_yaml"].includes(item.kind)
-      ? `${source} → ${target} · ${t("deviceBinding.importedOnly")}`
-      : `${source} → ${target}`;
-    list.append(row);
-  });
   const graphElement = $("#device-binding-graph");
   graphElement.replaceChildren();
   const graph = bindingGraph(state.project.bindings);
@@ -3892,8 +4190,7 @@ function saveDeviceBinding() {
   renderDeviceBindings(widget, binding);
 }
 
-function deleteDeviceBinding() {
-  const id = $("#device-binding-existing").value;
+function deleteDeviceBinding(/** @type {string} */ id = $("#device-binding-existing").value) {
   if (!id) return;
   pushUndo();
   const binding = (state.project.bindings || []).find((/** @type {any} */ item) => item.id === id);
@@ -3912,7 +4209,7 @@ async function saveCustomDeviceBinding() {
   try {
     const result = await api("designer/bindings/custom-yaml/validate", {
       method: "POST",
-      body: JSON.stringify({ content: $("#device-binding-custom-yaml").value }),
+      body: JSON.stringify({ content: deviceBindingCustomEditor.yamlText() }),
     });
     pushUndo();
     binding.kind = "custom_yaml";
@@ -5487,7 +5784,7 @@ function openMeterConfigurator(/** @type {any} */ widget) {
 function meterField(
   /** @type {HTMLElement} */ parent, /** @type {string} */ labelText,
   /** @type {any} */ target, /** @type {string} */ key,
-  /** @type {{type?: string, step?: string, wide?: boolean, color?: boolean}} */ options = {},
+  /** @type {{type?: string, step?: string, wide?: boolean, color?: boolean, min?: string, max?: string}} */ options = {},
 ) {
   const label = document.createElement("label");
   if (options.wide) label.className = "wide";
@@ -5496,13 +5793,15 @@ function meterField(
   const input = document.createElement("input");
   input.type = options.type || "number";
   if (options.step) input.step = options.step;
+  if (options.min !== undefined) input.min = options.min;
+  if (options.max !== undefined) input.max = options.max;
   if (input.type === "checkbox") input.checked = Boolean(target[key]);
   else input.value = String(target[key] ?? "");
   input.addEventListener("input", () => {
     target[key] = input.type === "checkbox" ? input.checked
       : input.type === "number" ? (input.value === "" ? null : Number(input.value))
         : input.value;
-    renderMeterConfiguratorPreview();
+    scheduleMeterConfiguratorPreview();
   });
   label.append(input.type === "checkbox" ? input : caption);
   if (input.type === "checkbox") label.append(caption);
@@ -5579,6 +5878,12 @@ function syncMeterPreviewControls() {
   $("#meter-preview-value-label").value = String(testValue);
 }
 
+let meterConfiguratorPreviewTimer = 0;
+function scheduleMeterConfiguratorPreview() {
+  window.clearTimeout(meterConfiguratorPreviewTimer);
+  meterConfiguratorPreviewTimer = window.setTimeout(() => renderMeterConfiguratorPreview(), 120);
+}
+
 function renderMeterConfiguratorPreview(/** @type {boolean} */ syncControls = true) {
   if (syncControls) syncMeterPreviewControls();
   const preview = $("#meter-preview");
@@ -5627,7 +5932,7 @@ function renderMeterScaleEditor(/** @type {any} */ scale) {
   meterField(grid, "Startdrehung (°)", scale, "rotation");
   meterField(grid, "Ticks über Indikatoren", scale, "draw_ticks_on_top", { type: "checkbox", wide: true });
   const ticks = scale.ticks ||= {};
-  meterField(grid, "Tick-Anzahl", ticks, "count");
+  meterField(grid, "Tick-Anzahl", ticks, "count", { min: "0", max: "200" });
   meterField(grid, "Tick-Breite", ticks, "width");
   meterField(grid, "Tick-Länge", ticks, "length", { type: "text" });
   meterField(grid, "Tick-Farbe", ticks, "color", { type: "text", color: true });
