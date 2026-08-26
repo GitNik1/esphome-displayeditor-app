@@ -12,6 +12,7 @@ import yaml
 from yaml.constructor import ConstructorError
 
 from .errors import ApiError
+from .project_locks import project_file_lock
 from .settings import Settings
 
 
@@ -282,18 +283,80 @@ class FilesystemBackend:
         relative, _, draft = self._paths(name)
         self._assert_access(relative, write=True)
         self._validate_content_size(content)
-        draft.parent.mkdir(parents=True, exist_ok=True)
-        self._atomic_write(draft, content)
+        with self._configuration_lock(relative):
+            draft.parent.mkdir(parents=True, exist_ok=True)
+            self._atomic_write(draft, content)
         return {"name": relative.as_posix(), "revision": revision_for(content)}
+
+    def save_draft_checked(
+        self,
+        name: str,
+        content: str,
+        *,
+        expected_active_revision: str,
+        expected_draft_revision: str | None,
+    ) -> dict:
+        """Atomically verify both source revisions before replacing a draft."""
+        relative, active, draft = self._paths(name)
+        self._assert_access(relative, write=True)
+        self._validate_content_size(content)
+        with self._configuration_lock(relative):
+            active_content = self._read(
+                active,
+                missing_error="configuration_not_found",
+            )
+            active_revision = revision_for(active_content)
+            if active_revision != expected_active_revision:
+                raise ApiError(
+                    "revision_conflict",
+                    "The active configuration changed after it was selected.",
+                    409,
+                    {
+                        "target": "configuration",
+                        "expected_revision": expected_active_revision,
+                        "actual_revision": active_revision,
+                    },
+                )
+            draft_revision = None
+            if draft.exists():
+                draft_content = self._read(draft, missing_error="draft_not_found")
+                draft_revision = revision_for(draft_content)
+            if draft_revision != expected_draft_revision:
+                raise ApiError(
+                    "revision_conflict",
+                    "The configuration draft changed after it was selected.",
+                    409,
+                    {
+                        "target": "configuration_draft",
+                        "expected_revision": expected_draft_revision,
+                        "actual_revision": draft_revision,
+                    },
+                )
+            draft.parent.mkdir(parents=True, exist_ok=True)
+            self._atomic_write(draft, content)
+            verified = self._read(draft, missing_error="draft_not_found")
+            if verified != content:
+                raise ApiError(
+                    "save_verification_failed",
+                    "Saved configuration draft could not be verified.",
+                    500,
+                )
+            return {
+                "name": relative.as_posix(),
+                "active_revision": active_revision,
+                "old_draft_revision": draft_revision,
+                "revision": revision_for(verified),
+            }
 
     def delete_draft(self, name: str) -> None:
         relative, _, draft = self._paths(name)
         self._assert_access(relative, write=True)
-        if not draft.exists():
-            raise ApiError("draft_not_found", "Draft was not found.", 404)
-        if draft.is_symlink() or not draft.is_file():
-            raise ApiError("invalid_path", "Draft path is invalid.")
-        draft.unlink()
+        with self._configuration_lock(relative):
+            if not draft.exists():
+                raise ApiError("draft_not_found", "Draft was not found.", 404)
+            if draft.is_symlink() or not draft.is_file():
+                raise ApiError("invalid_path", "Draft path is invalid.")
+            draft.unlink()
 
     def diff(self, name: str) -> dict:
         active = self.read_config(name)
@@ -328,36 +391,53 @@ class FilesystemBackend:
     def publish(self, name: str, expected_revision: str) -> dict:
         relative, active, draft = self._paths(name)
         self._assert_access(relative, write=True)
-        current = self._read(active, missing_error="configuration_not_found")
-        current_revision = revision_for(current)
-        if current_revision != expected_revision:
-            raise ApiError(
-                "revision_conflict",
-                "The active configuration changed after it was loaded.",
-                409,
-                {"expected_revision": expected_revision, "actual_revision": current_revision},
-            )
-        content = self._read(draft, missing_error="draft_not_found")
-        yaml_error = self._yaml_error(content)
-        if yaml_error is not None:
-            exc, line, column = yaml_error
-            raise ApiError(
-                "invalid_yaml",
-                "The draft contains invalid YAML and cannot be published.",
-                422,
-                {"error": str(exc), "line": line, "column": column},
-            )
-        self._atomic_write(active, content)
-        verified = self._read(active, missing_error="configuration_not_found")
-        new_revision = revision_for(verified)
-        if new_revision != revision_for(content):
-            raise ApiError("publish_verification_failed", "Published content could not be verified.", 500)
-        draft.unlink()
+        with self._configuration_lock(relative):
+            current = self._read(active, missing_error="configuration_not_found")
+            current_revision = revision_for(current)
+            if current_revision != expected_revision:
+                raise ApiError(
+                    "revision_conflict",
+                    "The active configuration changed after it was loaded.",
+                    409,
+                    {
+                        "expected_revision": expected_revision,
+                        "actual_revision": current_revision,
+                    },
+                )
+            content = self._read(draft, missing_error="draft_not_found")
+            yaml_error = self._yaml_error(content)
+            if yaml_error is not None:
+                exc, line, column = yaml_error
+                raise ApiError(
+                    "invalid_yaml",
+                    "The draft contains invalid YAML and cannot be published.",
+                    422,
+                    {"error": str(exc), "line": line, "column": column},
+                )
+            self._atomic_write(active, content)
+            verified = self._read(active, missing_error="configuration_not_found")
+            new_revision = revision_for(verified)
+            if new_revision != revision_for(content):
+                raise ApiError(
+                    "publish_verification_failed",
+                    "Published content could not be verified.",
+                    500,
+                )
+            draft.unlink()
         return {
             "name": relative.as_posix(),
             "old_revision": current_revision,
             "revision": new_revision,
         }
+
+    def _configuration_lock(self, relative: PurePosixPath):
+        lock_name = hashlib.sha256(relative.as_posix().encode("utf-8")).hexdigest()
+        return project_file_lock(
+            self.settings.data_root / "configuration_locks",
+            lock_name,
+            busy_error="configuration_busy",
+            busy_message="Another process is currently updating this configuration.",
+        )
 
     def _relative_asset(self, name: str) -> PurePosixPath:
         relative = self._relative(name, suffixes=self._allowed_asset_suffixes)

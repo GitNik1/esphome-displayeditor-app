@@ -89,6 +89,17 @@ import { selectCapability, selectDesignerStatus, selectSelectedDevice } from "./
 import { createProjectsController } from "./controllers/projects-controller.js";
 import { createDevicesController } from "./controllers/devices-controller.js";
 import { createBuilderController } from "./controllers/builder-controller.js";
+import {
+  createMcpTokensController,
+  defaultMcpTokenScopes,
+  mcpClientConfigurations,
+  mcpEndpoint,
+  sortedMcpTokenClients,
+} from "./controllers/mcp-tokens-controller.js";
+import {
+  createAssistantController,
+  summarizeAssistantProposal,
+} from "./controllers/assistant-controller.js";
 import { createJsonSocket } from "./services/websocket.js";
 import {
   applyRuntimeEvent,
@@ -232,6 +243,14 @@ const api = createApiClient();
 const projectsController = createProjectsController(api);
 const devicesController = createDevicesController(api);
 const builderController = createBuilderController(api);
+const mcpTokensController = createMcpTokensController(api);
+const assistantController = createAssistantController(api);
+/** @type {{clients: any[], allowed_scopes: string[], maximum: number}} */
+let mcpTokenListing = { clients: [], allowed_scopes: [], maximum: 0 };
+/** @type {any} */
+let mcpListenerStatus = null;
+/** @type {any} */
+let mcpListenerProbe = null;
 /** @type {any} */
 let deviceEventsClient = null;
 /** @type {any} */
@@ -322,6 +341,8 @@ async function initialize() {
   bindDesigner();
   bindConfigurations();
   bindDevices();
+  bindMcpTokens();
+  bindAssistant();
   offerAutosaveRecovery();
   startAutosaveLoop();
   try {
@@ -339,10 +360,14 @@ async function initialize() {
     $("#health").classList.toggle("ok", health.status === "ok");
     $("#profile").textContent = `${system.access_level} · ${system.user.role} · ${system.user.display_name || system.user.name || "Ingress"}`;
     $("#system-json").textContent = JSON.stringify({ system, ...capabilityData }, null, 2);
+    $("#mcp-token-card").classList.toggle("hidden", !state.capabilities["mcp.manage"]);
+    $("#assistant-card").classList.toggle("hidden", !state.capabilities["assistant.ask"]);
+    if (state.capabilities["assistant.ask"]) updateAssistantContext();
     updateDraftActionButtons();
     updateBuilderButtons();
     renderPalette();
     const initialLoads = [loadServerProjects(), loadDevices(), loadViewerRuntimeSources()];
+    if (state.capabilities["mcp.manage"]) initialLoads.push(loadMcpTokens());
     if (state.capabilities["configuration.list"]) initialLoads.push(loadConfigurations());
     else {
       $("#config-list").textContent = t("configs.filesystemDisabled");
@@ -366,7 +391,391 @@ function bindTabs() {
     $$(".tab").forEach((item) => item.classList.toggle("active", item === tab));
     $$(".view").forEach((view) => view.classList.toggle("active", view.id === tab.dataset.tab));
     if (tab.dataset.tab !== "designer") stopFlowPreview();
+    if (tab.dataset.tab === "system" && state.capabilities["assistant.ask"]) updateAssistantContext();
   }));
+}
+
+const MCP_SCOPE_I18N = Object.freeze({
+  "server:read": "serverRead",
+  "project:read": "projectRead",
+  "configuration:read": "configurationRead",
+  "device:read": "deviceRead",
+  "project:write": "projectWrite",
+  "configuration:draft": "configurationDraft",
+  "changeset:read": "changesetRead",
+  "changeset:apply": "changesetApply",
+});
+
+function bindMcpTokens() {
+  $("#refresh-mcp-tokens").addEventListener("click", loadMcpTokens);
+  $("#test-mcp-listener").addEventListener("click", testMcpListener);
+  $("#create-mcp-token").addEventListener("click", openMcpTokenDialog);
+  $("#close-mcp-token-create").addEventListener("click", () => $("#mcp-token-create-dialog").close());
+  $("#mcp-token-create-form").addEventListener("submit", createMcpToken);
+  $("#close-mcp-token-secret-x").addEventListener("click", confirmMcpTokenSecretClose);
+  $("#close-mcp-token-secret").addEventListener("click", closeMcpTokenSecret);
+  $("#copy-mcp-token-secret").addEventListener("click", copyMcpTokenSecret);
+  $("#copy-mcp-claude-command").addEventListener("click", () => copyMcpClientConfig("#mcp-claude-command"));
+  $("#copy-mcp-project-json").addEventListener("click", () => copyMcpClientConfig("#mcp-project-json"));
+  $("#mcp-token-secret-dialog").addEventListener("cancel", (/** @type {Event} */ event) => {
+    event.preventDefault();
+    confirmMcpTokenSecretClose();
+  });
+  $("#mcp-token-secret-dialog").addEventListener("close", clearMcpTokenSecret);
+}
+
+function mcpScopeKey(/** @type {string} */ scope) {
+  return MCP_SCOPE_I18N[/** @type {keyof typeof MCP_SCOPE_I18N} */ (scope)] || scope;
+}
+
+function formatMcpTokenDate(/** @type {any} */ value) {
+  const date = new Date(String(value || ""));
+  if (!Number.isFinite(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(getLanguage() === "de" ? "de-CH" : "en-GB", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+async function loadMcpTokens() {
+  if (!state.capabilities["mcp.manage"]) return;
+  const refresh = $("#refresh-mcp-tokens");
+  refresh.disabled = true;
+  try {
+    [mcpTokenListing, mcpListenerStatus] = await Promise.all([
+      mcpTokensController.list(),
+      mcpTokensController.status(),
+    ]);
+    renderMcpTokens();
+    renderMcpListenerStatus();
+  } catch (/** @type {any} */ error) {
+    $("#mcp-token-list").textContent = t("mcp.tokens.loadFailed");
+    toast(error.message, true, error.details);
+  } finally {
+    refresh.disabled = false;
+  }
+}
+
+function renderMcpListenerStatus() {
+  const node = $("#mcp-listener-status");
+  const testButton = $("#test-mcp-listener");
+  const enabled = mcpListenerStatus?.mode === "lan";
+  testButton.disabled = !enabled;
+  node.className = "mcp-listener-status";
+  if (!enabled) {
+    node.classList.add("warning");
+    node.textContent = t("mcp.listener.disabled");
+    return;
+  }
+  if (!mcpListenerProbe) {
+    node.textContent = t("mcp.listener.configured", {
+      access: mcpListenerStatus.access,
+      port: mcpListenerStatus.port,
+    });
+    return;
+  }
+  const status = String(mcpListenerProbe.status || "unavailable");
+  node.classList.add(mcpListenerProbe.reachable ? "ok" : "error");
+  node.textContent = t(`mcp.listener.status.${status}`, {
+    latency: mcpListenerProbe.latency_ms ?? "—",
+  });
+}
+
+async function testMcpListener() {
+  const button = $("#test-mcp-listener");
+  button.disabled = true;
+  try {
+    mcpListenerProbe = await mcpTokensController.test();
+    renderMcpListenerStatus();
+  } catch (/** @type {any} */ error) {
+    toast(error.message, true, error.details);
+  } finally {
+    button.disabled = mcpListenerStatus?.mode !== "lan";
+  }
+}
+
+function renderMcpTokens() {
+  const list = $("#mcp-token-list");
+  const clients = sortedMcpTokenClients(mcpTokenListing.clients);
+  const active = clients.filter((/** @type {any} */ client) => client.status === "active").length;
+  $("#mcp-token-summary").textContent = t("mcp.tokens.summary", {
+    active,
+    maximum: mcpTokenListing.maximum || "—",
+  });
+  $("#create-mcp-token").disabled = !mcpTokenListing.allowed_scopes.length
+    || active >= mcpTokenListing.maximum;
+  list.replaceChildren();
+  list.classList.toggle("empty", !clients.length);
+  if (!clients.length) {
+    list.textContent = t("mcp.tokens.empty");
+    return;
+  }
+  clients.forEach((client) => list.append(mcpTokenRow(client)));
+}
+
+function mcpTokenRow(/** @type {any} */ client) {
+  const row = document.createElement("article");
+  row.className = "mcp-token-row";
+  const identity = document.createElement("div");
+  identity.className = "mcp-token-identity";
+  const name = document.createElement("strong");
+  name.textContent = String(client.name || t("mcp.tokens.unnamed"));
+  const id = document.createElement("small");
+  id.textContent = String(client.id || "—");
+  identity.append(name, id);
+  row.append(identity);
+
+  if (client.status === "active") {
+    const revoke = document.createElement("button");
+    revoke.type = "button";
+    revoke.className = "button danger compact";
+    revoke.textContent = t("mcp.tokens.revoke");
+    revoke.addEventListener("click", async () => {
+      if (!confirm(t("mcp.tokens.revokeConfirm", { name: client.name || client.id }))) return;
+      revoke.disabled = true;
+      try {
+        await mcpTokensController.revoke(String(client.id));
+        await loadMcpTokens();
+        toast(t("mcp.tokens.revoked", { name: client.name || client.id }));
+      } catch (/** @type {any} */ error) {
+        revoke.disabled = false;
+        toast(error.message, true, error.details);
+      }
+    });
+    row.append(revoke);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "mcp-token-meta";
+  const status = document.createElement("span");
+  status.className = `mcp-token-status ${client.status || "invalid"}`;
+  status.textContent = t(`mcp.tokens.status.${client.status || "invalid"}`);
+  meta.append(status);
+  (Array.isArray(client.scopes) ? client.scopes : []).forEach((/** @type {any} */ scope) => {
+    const chip = document.createElement("span");
+    chip.className = "mcp-scope-chip";
+    chip.textContent = String(scope);
+    chip.title = t(`mcp.scope.${mcpScopeKey(String(scope))}`);
+    meta.append(chip);
+  });
+  const dates = document.createElement("span");
+  dates.textContent = t("mcp.tokens.dates", {
+    created: formatMcpTokenDate(client.created_at),
+    expires: formatMcpTokenDate(client.expires_at),
+  });
+  meta.append(dates);
+  row.append(meta);
+  return row;
+}
+
+function openMcpTokenDialog() {
+  const form = $("#mcp-token-create-form");
+  form.reset();
+  const selected = new Set(defaultMcpTokenScopes(mcpTokenListing.allowed_scopes));
+  const scopes = $("#mcp-token-scopes");
+  scopes.replaceChildren();
+  mcpTokenListing.allowed_scopes.forEach((scope) => {
+    const option = document.createElement("label");
+    option.className = "mcp-scope-option";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.name = "mcp-token-scope";
+    input.value = scope;
+    input.checked = selected.has(scope);
+    const description = document.createElement("span");
+    const title = document.createElement("strong");
+    const key = mcpScopeKey(scope);
+    title.textContent = t(`mcp.scope.${key}`);
+    const hint = document.createElement("small");
+    hint.textContent = t(`mcp.scope.${key}Hint`);
+    description.append(title, hint);
+    option.append(input, description);
+    scopes.append(option);
+  });
+  $("#mcp-token-create-dialog").showModal();
+  $("#mcp-token-name").focus();
+}
+
+async function createMcpToken(/** @type {SubmitEvent} */ event) {
+  event.preventDefault();
+  const scopes = /** @type {HTMLInputElement[]} */ (
+    $$('#mcp-token-scopes input[name="mcp-token-scope"]:checked')
+  ).map((input) => input.value);
+  if (!scopes.length) {
+    toast(t("mcp.tokens.scopeRequired"), true);
+    return;
+  }
+  const submit = $("#submit-mcp-token");
+  submit.disabled = true;
+  try {
+    const created = await mcpTokensController.create({
+      name: $("#mcp-token-name").value,
+      scopes,
+      expires_in_seconds: Number($("#mcp-token-valid-days").value) * 24 * 60 * 60,
+    });
+    $("#mcp-token-create-dialog").close();
+    const token = String(created.token || "");
+    const endpoint = mcpEndpoint(location.hostname, Number(mcpListenerStatus?.port) || 8100);
+    const configurations = mcpClientConfigurations(endpoint, token);
+    $("#mcp-token-secret").value = token;
+    $("#mcp-client-endpoint").value = endpoint;
+    $("#mcp-claude-command").value = configurations.claude_code;
+    $("#mcp-project-json").value = configurations.project_json;
+    $("#mcp-token-secret-dialog").showModal();
+    $("#mcp-token-secret").focus();
+    $("#mcp-token-secret").select();
+    await loadMcpTokens();
+  } catch (/** @type {any} */ error) {
+    toast(error.message, true, error.details);
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function copyMcpTokenSecret() {
+  const secret = $("#mcp-token-secret").value;
+  if (!secret) return;
+  try {
+    await navigator.clipboard.writeText(secret);
+    toast(t("mcp.tokens.secretCopied"));
+  } catch (/** @type {any} */ error) {
+    toast(errorMessage(error), true);
+  }
+}
+
+async function copyMcpClientConfig(/** @type {string} */ selector) {
+  const value = $(selector).value;
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    toast(t("mcp.clientConfig.copied"));
+  } catch (/** @type {any} */ error) {
+    toast(errorMessage(error), true);
+  }
+}
+
+function closeMcpTokenSecret() {
+  $("#mcp-token-secret-dialog").close();
+}
+
+function confirmMcpTokenSecretClose() {
+  if (!$("#mcp-token-secret").value || confirm(t("mcp.tokens.secretCloseConfirm"))) {
+    closeMcpTokenSecret();
+  }
+}
+
+function clearMcpTokenSecret() {
+  $("#mcp-token-secret").value = "";
+  $("#mcp-client-endpoint").value = "";
+  $("#mcp-claude-command").value = "";
+  $("#mcp-project-json").value = "";
+}
+
+function bindAssistant() {
+  $("#assistant-form").addEventListener("submit", askAssistant);
+}
+
+function updateAssistantContext() {
+  const context = $("#assistant-context");
+  const askButton = $("#assistant-ask");
+  if (state.projectName) {
+    context.textContent = t("assistant.context", { project: state.projectName });
+    context.classList.remove("missing");
+    askButton.disabled = false;
+  } else {
+    context.textContent = t("assistant.noProject");
+    context.classList.add("missing");
+    askButton.disabled = true;
+  }
+}
+
+async function askAssistant(/** @type {SubmitEvent} */ event) {
+  event.preventDefault();
+  const projectName = state.projectName;
+  if (!projectName) return;
+  const messageField = /** @type {HTMLTextAreaElement} */ ($("#assistant-message"));
+  const message = messageField.value.trim();
+  if (!message) return;
+  const askButton = /** @type {HTMLButtonElement} */ ($("#assistant-ask"));
+  const reply = $("#assistant-reply");
+  askButton.disabled = true;
+  messageField.disabled = true;
+  reply.classList.remove("hidden");
+  reply.textContent = t("assistant.asking");
+  try {
+    const result = await assistantController.ask({ project_name: projectName, message });
+    reply.textContent = result.reply || "";
+    renderAssistantProposals(result.proposals);
+    messageField.value = "";
+  } catch (/** @type {any} */ error) {
+    reply.textContent = error.message || t("assistant.askFailed");
+    toast(error.message || t("assistant.askFailed"), true, error.details);
+  } finally {
+    askButton.disabled = false;
+    messageField.disabled = false;
+  }
+}
+
+function renderAssistantProposals(/** @type {any[]} */ proposals) {
+  const container = $("#assistant-proposals");
+  container.replaceChildren();
+  if (!proposals.length) return;
+  proposals.forEach((proposal) => container.append(assistantProposalRow(proposal)));
+}
+
+function assistantProposalRow(/** @type {any} */ proposal) {
+  const row = document.createElement("div");
+  row.className = "assistant-proposal";
+
+  const summary = document.createElement("div");
+  summary.className = "assistant-proposal-summary";
+  const { parts, issueTotal } = summarizeAssistantProposal(proposal.preview);
+  parts.forEach((part) => {
+    const chip = document.createElement("span");
+    chip.className = part.kind;
+    chip.textContent = t(part.kind === "added" ? "assistant.proposalAdded" : "assistant.proposalRemoved", {
+      items: part.items.join(", "),
+    });
+    summary.append(chip);
+  });
+  if (issueTotal > 0) {
+    const issues = document.createElement("span");
+    issues.textContent = t("assistant.proposalIssues", { count: issueTotal });
+    summary.append(issues);
+  }
+  row.append(summary);
+
+  const actionsRow = document.createElement("div");
+  actionsRow.className = "actions";
+  const applyButton = document.createElement("button");
+  applyButton.type = "button";
+  applyButton.className = "button primary compact";
+  applyButton.textContent = t("assistant.apply");
+  const status = document.createElement("span");
+  status.className = "assistant-proposal-status";
+  applyButton.addEventListener("click", () => applyAssistantProposal(proposal.change_set_id, applyButton, status));
+  actionsRow.append(applyButton, status);
+  row.append(actionsRow);
+  return row;
+}
+
+async function applyAssistantProposal(
+  /** @type {string} */ changeSetId,
+  /** @type {HTMLButtonElement} */ button,
+  /** @type {HTMLElement} */ status,
+) {
+  button.disabled = true;
+  status.className = "assistant-proposal-status";
+  status.textContent = t("assistant.applying");
+  try {
+    const applied = await assistantController.apply(changeSetId);
+    status.classList.add("applied");
+    status.textContent = `${t("assistant.applied", { revision: String(applied.applied_revision || "").slice(0, 12) })} ${t("assistant.reloadHint")}`;
+  } catch (/** @type {any} */ error) {
+    status.classList.add("error");
+    status.textContent = error.message || t("assistant.applyFailed");
+    button.disabled = false;
+  }
 }
 
 function bindDevices() {

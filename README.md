@@ -2,8 +2,10 @@
 
 Home Assistant App repository for **ESPHome Display Editor**: a visual LVGL
 designer and controlled editor for ESPHome configuration files. It runs
-entirely inside Home Assistant as an Ingress-only add-on, so no extra port is
-exposed on the network, and lets you build LVGL display layouts for ESP32
+entirely inside Home Assistant as an Ingress-first app. By default no extra
+port is exposed; an optional token-protected MCP listener can be published
+explicitly. It is read-only by default and can opt into revision-protected
+project changesets. The editor lets you build LVGL display layouts for ESP32
 devices by dragging and arranging widgets on a canvas instead of hand-writing
 YAML.
 
@@ -41,6 +43,17 @@ YAML.
 - **Security by design** — Ingress-only request enforcement and API rate
   limits, with configurable access levels ranging from fully read-only to
   full write access with an optional Device Builder integration.
+- **Optional MCP integration** — Claude Code and compatible MCP clients can
+  inspect project trees, widget schemas, bindings and validation results over
+  Streamable HTTP. An explicit `project_write` access mode also supports
+  semantic widget placement and typed project/Viewer bindings through
+  expiring, revision-protected changesets. Existing ESPHome YAML can be read
+  and imported into a new project through the same proposal/apply boundary;
+  generated YAML and merge previews are available as read-only, revision-bound
+  transformations, and an approved merge can be saved as a revision-checked
+  draft without publishing active YAML. MCP is disabled by default and runs on
+  a separate, token-protected port. A reproducible MCPB package adds local
+  Claude Desktop support through a bounded stdio-to-HTTP bridge.
 
 ## See it in action
 
@@ -129,8 +142,9 @@ refreshed.
 
 The current milestone provides the Home Assistant app container, stable health
 and capability endpoints, safe ESPHome YAML draft handling, persistent visual
-designer projects, per-user roles, Ingress-only request enforcement, API rate
-limits, encrypted read-only ESPHome Native API device monitoring, and a
+designer projects, per-user roles, Ingress request enforcement, optional
+MCP access with a read-only default, API rate limits, encrypted read-only ESPHome Native API
+device monitoring, and a
 web-native port of the model and YAML export engine from
 `esphome-lvgl-designer`. Device information, entities, current states and logs
 are available in the Devices view; device commands remain disabled.

@@ -20,6 +20,7 @@ from .api.routers.audit import create_audit_router
 from .api.routers.jobs import create_jobs_router
 from .api.routers.devices import create_devices_router
 from .api.routers.admin_devices import create_admin_devices_router
+from .api.routers.admin_mcp import create_admin_mcp_router
 from .api.routers.runtime_events import create_runtime_events_router
 from .api.routers.designer_projects import create_designer_projects_router
 from .api.routers.configuration_files import create_configuration_files_router
@@ -27,6 +28,8 @@ from .api.routers.firmware_workflow import create_firmware_workflow_router
 from .api.routers.designer_transform import create_designer_transform_router
 from .api.routers.designer_import import create_designer_import_router
 from .api.routers.designer_assets import create_designer_assets_router
+from .api.routers.assistant import create_assistant_router
+from .assistant_tools import AssistantToolService
 from .audit import AuditStore
 from .builder import BuilderManager
 from .builder.adapter import BuilderAdapterError
@@ -34,6 +37,7 @@ from .designer import DesignerService
 from .errors import ApiError, capability_unavailable
 from .filesystem import FilesystemBackend
 from .font_sources import FontSourceService
+from .mcp.token_store import MCPTokenStore
 from .project_store import ProjectStore
 from .runtime import DeviceManager, DeviceRegistry, SecretStore
 from .security import RateLimiter
@@ -61,6 +65,7 @@ def create_app(
     projects = ProjectStore(settings.data_root, designer, settings.max_file_size)
     viewer_bindings = ViewerBindingStore(settings.data_root)
     workflow = WorkflowStore(settings.data_root)
+    mcp_tokens = MCPTokenStore(settings.data_root)
     rate_limiter = RateLimiter(
         settings.api_rate_limit_per_minute,
         settings.write_rate_limit_per_minute,
@@ -84,6 +89,7 @@ def create_app(
         )
     if builder_manager is None:
         builder_manager = BuilderManager(settings)
+    assistant_service = AssistantToolService(settings, builder=builder_manager)
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
@@ -105,6 +111,7 @@ def create_app(
     application.state.builder_manager = builder_manager
     application.state.font_sources = font_sources
     application.state.workflow = workflow
+    application.state.mcp_tokens = mcp_tokens
 
     @application.middleware("http")
     async def security_boundary(request: Request, call_next):
@@ -392,6 +399,22 @@ def create_app(
     application.include_router(
         create_admin_devices_router(
             runtime=runtime_manager,
+            audit=audit,
+            require_capability=require_capability,
+        )
+    )
+    application.include_router(
+        create_admin_mcp_router(
+            store=mcp_tokens,
+            audit=audit,
+            settings=settings,
+            require_capability=require_capability,
+        )
+    )
+    application.include_router(
+        create_assistant_router(
+            service=assistant_service,
+            settings=settings,
             audit=audit,
             require_capability=require_capability,
         )

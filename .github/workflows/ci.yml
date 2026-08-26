@@ -38,9 +38,9 @@ jobs:
       - name: Check installed dependencies
         run: pip check
       - name: Lint Python sources
-        run: ruff check backend tests tools
+        run: ruff check backend tests tools scripts
       - name: Compile Python sources
-        run: python -m compileall -q backend tests tools
+        run: python -m compileall -q backend tests tools scripts
       - name: Check architecture boundaries
         run: python tools/check_architecture.py
       - name: Validate Compose configuration
@@ -83,6 +83,24 @@ jobs:
         run: >-
           pytest -q --cov=backend --cov-report=term
           --cov-report=xml:coverage.xml --cov-fail-under=83
+      - name: Validate Claude Desktop MCPB manifest
+        run: >-
+          npx --yes @anthropic-ai/mcpb@2.1.2
+          validate clients/claude-desktop/manifest.json
+      - name: Build Claude Desktop MCPB package
+        run: python scripts/build_mcpb.py
+      - name: Inspect Claude Desktop MCPB package
+        run: >-
+          npx --yes @anthropic-ai/mcpb@2.1.2
+          info dist/esphome-display-editor-*.mcpb
+      - name: Upload Claude Desktop MCPB package
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-desktop-mcpb
+          path: |
+            esphome_displayeditor/dist/*.mcpb
+            esphome_displayeditor/dist/*.mcpb.sha256
+          if-no-files-found: error
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4

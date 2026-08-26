@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -44,6 +44,10 @@ CAPABILITY_MINIMUM_ROLE = {
     "device.manage": "administrator",
     "device.control": "administrator",
     "audit.read": "administrator",
+    "mcp.read": "viewer",
+    "mcp.write": "editor",
+    "mcp.manage": "administrator",
+    "assistant.ask": "administrator",
 }
 
 
@@ -53,6 +57,17 @@ def _bounded_int(options: dict, key: str, default: int, minimum: int, maximum: i
     except (TypeError, ValueError):
         value = default
     return min(max(value, minimum), maximum)
+
+
+def _csv_values(value: object, *, maximum: int = 32) -> tuple[str, ...]:
+    """Parse compact add-on option lists without accepting unbounded input."""
+    if not isinstance(value, str):
+        return ()
+    return tuple(
+        item
+        for item in (part.strip() for part in value.split(","))
+        if item
+    )[:maximum]
 
 
 def _migrate_access_level(options: dict) -> str:
@@ -96,6 +111,26 @@ class Settings:
     #: access at all. Off falls back to the previous GitHub-backed
     #: behaviour (e.g. to pick up icon updates ahead of an add-on release).
     mdi_local: bool = True
+    #: MCP is deliberately opt-in and uses a separately published LAN port.
+    #: Mutations require a second, explicit project_write switch.
+    mcp_mode: str = "disabled"
+    mcp_access: str = "read_only"
+    mcp_access_token: str = field(default="", repr=False)
+    mcp_allowed_hosts: tuple[str, ...] = (
+        "localhost",
+        "127.0.0.1",
+        "[::1]",
+    )
+    mcp_allowed_origins: tuple[str, ...] = ()
+    #: In-app AI help panel (plan M8/D3). Deliberately opt-in and separate
+    #: from mcp_mode: it calls Anthropic's API directly with project/YAML
+    #: content, administrator-only, and its own tool-use loop is hard-bound
+    #: to one project/configuration per request rather than trusting prompt
+    #: instructions. Proposing changes additionally requires mcp_access:
+    #: project_write, the same "AI may write" switch external MCP uses -
+    #: this is intentional, not a bug: one gate for every AI-driven writer.
+    assistant_mode: str = "disabled"
+    assistant_api_key: str = field(default="", repr=False)
 
     @classmethod
     def load(cls) -> "Settings":
@@ -132,6 +167,15 @@ class Settings:
         runtime_provider = str(options.get("runtime_provider", "native")).lower()
         if runtime_provider not in {"native", "disabled"}:
             runtime_provider = "disabled"
+        mcp_mode = str(options.get("mcp_mode", "disabled")).lower()
+        if mcp_mode not in {"disabled", "lan"}:
+            mcp_mode = "disabled"
+        mcp_access = str(options.get("mcp_access", "read_only")).lower()
+        if mcp_access not in {"read_only", "project_write"}:
+            mcp_access = "read_only"
+        assistant_mode = str(options.get("assistant_mode", "disabled")).lower()
+        if assistant_mode not in {"disabled", "enabled"}:
+            assistant_mode = "disabled"
         builder_url = str(
             options.get("builder_url", "http://5c53de3b-esphome:6052")
         ).strip()
@@ -162,6 +206,17 @@ class Settings:
                 options, "validation_max_age_seconds", 900, 30, 86400
             ),
             mdi_local=bool(options.get("mdi_local", True)),
+            mcp_mode=mcp_mode,
+            mcp_access=mcp_access,
+            mcp_access_token=str(options.get("mcp_access_token", "")),
+            mcp_allowed_hosts=_csv_values(
+                options.get("mcp_allowed_hosts", "localhost,127.0.0.1,[::1]")
+            ),
+            mcp_allowed_origins=_csv_values(
+                options.get("mcp_allowed_origins", "")
+            ),
+            assistant_mode=assistant_mode,
+            assistant_api_key=str(options.get("assistant_api_key", "")),
         )
 
     def role_for(self, user_id: str | None) -> str:
@@ -218,6 +273,22 @@ def capabilities(
         "device.manage": native_runtime and writable,
         "device.control": False,
         "audit.read": True,
+        "mcp.read": settings.mcp_mode != "disabled",
+        "mcp.write": (
+            settings.mcp_mode != "disabled"
+            and settings.mcp_access == "project_write"
+            and writable
+        ),
+        "mcp.manage": True,
+        # Requires its own opt-in (assistant_mode) and a key, plus normal
+        # filesystem write access; proposing changes further requires
+        # mcp_access: project_write, checked separately by the propose call
+        # itself (the same "AI may write" gate external MCP clients use).
+        "assistant.ask": (
+            settings.assistant_mode == "enabled"
+            and bool(settings.assistant_api_key)
+            and writable
+        ),
     }
     effective_role = role or settings.default_role
     return {

@@ -91,6 +91,13 @@ VERSION_TARGETS = (
         re.compile(r'([?&]v=)(\d+\.\d+\.\d+)'),
         _cache_parameter,
     ),
+    VersionTarget(
+        "clients/claude-desktop/manifest.json",
+        re.compile(
+            r'(?m)^(\s*"version"\s*:\s*")(\d+\.\d+\.\d+)(",?\s*)$'
+        ),
+        _surrounded,
+    ),
 )
 
 

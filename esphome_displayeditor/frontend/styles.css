@@ -654,8 +654,60 @@ input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var
 .device-form-fields label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 
 .system-view { place-items: start center; padding: 32px; overflow: auto; }
-.system-card { width: min(850px, 100%); border: 1px solid var(--line); border-radius: 14px; padding: 22px; background: var(--surface); }
+.system-grid { display: grid; width: min(850px, 100%); gap: 18px; }
+.system-card { width: 100%; border: 1px solid var(--line); border-radius: 14px; padding: 22px; background: var(--surface); }
 .system-card pre { color: #bcd1e4; white-space: pre-wrap; }
+.mcp-token-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.mcp-listener-status { margin-top: 14px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: #0c1420; font-size: 12px; line-height: 1.45; }
+.mcp-listener-status.ok { border-color: #248c78; color: #8de8cf; }
+.mcp-listener-status.warning { border-color: #8a6a2c; color: #ffd57b; }
+.mcp-listener-status.error { border-color: #7f3643; color: #ff9cab; }
+.mcp-token-summary { margin: 15px 0 10px; color: var(--muted); font-size: 12px; }
+.mcp-token-list { display: grid; gap: 8px; padding: 0; }
+.mcp-token-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 14px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: #0c1420; }
+.mcp-token-identity { min-width: 0; }
+.mcp-token-identity strong, .mcp-token-identity small { display: block; }
+.mcp-token-identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-token-identity small { margin-top: 4px; font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+.mcp-token-meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+.mcp-token-status, .mcp-scope-chip { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; }
+.mcp-token-status.active { border-color: #248c78; color: #8de8cf; }
+.mcp-token-status.expired { border-color: #8a6a2c; color: #ffd57b; }
+.mcp-token-status.revoked, .mcp-token-status.invalid { border-color: #7f3643; color: #ff9cab; }
+.mcp-token-dialog { width: min(680px, 92vw); }
+.mcp-token-form-fields, .mcp-token-secret-body { display: grid; gap: 14px; padding: 18px; }
+.mcp-token-secret-body { max-height: 62vh; overflow: auto; }
+.mcp-token-form-fields > label, .mcp-token-secret-body label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.mcp-token-scopes-fieldset { min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 9px; }
+.mcp-token-scopes-fieldset legend { padding: 0 6px; font-size: 12px; font-weight: 700; }
+.mcp-token-scopes { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 10px; }
+.mcp-scope-option { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: #0c1420; cursor: pointer; }
+.mcp-scope-option strong, .mcp-scope-option small { display: block; }
+.mcp-scope-option small { margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.35; }
+.mcp-token-secret-body .warning-hint { margin: 0; line-height: 1.5; }
+#mcp-token-secret { width: 100%; resize: none; padding: 10px; border: 1px solid var(--warning); border-radius: 7px; color: #fff1c2; background: #0b121b; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+.mcp-client-configs { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
+.mcp-client-configs h3 { margin: 0; font-size: 14px; }
+.mcp-client-configs > label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.mcp-client-config-block { display: grid; gap: 7px; }
+.mcp-client-config-block > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.mcp-client-config-block textarea { width: 100%; resize: vertical; padding: 10px; border: 1px solid var(--line); border-radius: 7px; color: #d5e4f3; background: #0b121b; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; overflow: auto; }
+.assistant-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.assistant-context { margin: 12px 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: #0c1420; font-size: 12px; }
+.assistant-context.missing { border-color: #8a6a2c; color: #ffd57b; }
+.assistant-form { display: grid; gap: 10px; }
+.assistant-form textarea { width: 100%; resize: vertical; padding: 10px; border: 1px solid var(--line); border-radius: 7px; color: var(--text); background: #0b121b; font: 13px/1.5 inherit; }
+.assistant-form .actions { display: flex; justify-content: flex-end; }
+.assistant-reply { margin-top: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: #0c1420; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+.assistant-proposals { display: grid; gap: 8px; margin-top: 10px; }
+.assistant-proposal { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: #0c1420; }
+.assistant-proposal-summary { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 12px; }
+.assistant-proposal-summary .added { color: #8de8cf; }
+.assistant-proposal-summary .removed { color: #ff9cab; }
+.assistant-proposal .actions { display: flex; align-items: center; gap: 10px; }
+.assistant-proposal-status { font-size: 12px; color: var(--muted); }
+.assistant-proposal-status.applied { color: #8de8cf; }
+.assistant-proposal-status.error { color: #ff9cab; }
 dialog { width: min(900px, 90vw); max-height: 82vh; border: 1px solid var(--line); border-radius: 14px; padding: 0; color: var(--text); background: var(--surface); box-shadow: 0 25px 90px #000c; }
 dialog::backdrop { background: #03070bc7; }
 .dialog-heading, .dialog-actions { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--line); }
@@ -728,6 +780,10 @@ dialog::backdrop { background: #03070bc7; }
   .editor-toolbar .actions { grid-column: 1 / -1; justify-content: flex-start; }
   .merge-grid { grid-template-columns: 1fr; height: 62vh; overflow: auto; }
   .merge-grid label { min-height: 260px; }
+  .system-view { padding: 14px; }
+  .mcp-token-scopes { grid-template-columns: 1fr; }
+  .mcp-token-row { grid-template-columns: minmax(0, 1fr); }
+  .mcp-token-row > .button { justify-self: start; }
 
   /* Base rule positions this via right:-1px/bottom:-1px with no left/top, so
      (unlike .glow-handle) the enlarged hit area is centered by adjusting

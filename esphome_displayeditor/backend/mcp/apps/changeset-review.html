@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Display Editor Change-Set Review</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--color-background-primary, #ffffff);
+    color: var(--color-text-primary, #171717);
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+    font-size: 13px;
+  }
+  #panel { padding: 12px 16px 16px; }
+  #header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  #header .id { opacity: 0.6; font-family: monospace; font-size: 11px; }
+  .badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid var(--color-border-primary, #d9d9d9);
+  }
+  .badge.status-pending { color: var(--color-accent, #6366f1); border-color: var(--color-accent, #6366f1); }
+  .badge.status-applied { color: var(--color-success, #16a34a); border-color: var(--color-success, #16a34a); }
+  .badge.status-expired,
+  .badge.status-error { color: var(--color-danger, #dc2626); border-color: var(--color-danger, #dc2626); }
+  section { margin-bottom: 14px; }
+  section h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.6;
+    margin: 0 0 6px;
+  }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { text-align: left; padding: 3px 8px 3px 0; vertical-align: top; }
+  th { opacity: 0.6; font-weight: 500; white-space: nowrap; }
+  .chip-list { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip {
+    font-family: monospace;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--color-background-secondary, #f2f2f2);
+  }
+  .chip.added { border: 1px solid var(--color-success, #16a34a); }
+  .chip.removed { border: 1px solid var(--color-danger, #dc2626); text-decoration: line-through; }
+  pre.diff {
+    max-height: 260px;
+    overflow: auto;
+    background: var(--color-background-secondary, #f2f2f2);
+    padding: 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .issue-row.error { color: var(--color-danger, #dc2626); }
+  .issue-row.warning { color: var(--color-warning, #b45309); }
+  #actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--color-border-primary, #d9d9d9);
+  }
+  button {
+    font: inherit;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--color-border-primary, #d9d9d9);
+    background: var(--color-background-secondary, #f2f2f2);
+    color: inherit;
+    cursor: pointer;
+  }
+  button.primary {
+    background: var(--color-accent, #6366f1);
+    border-color: var(--color-accent, #6366f1);
+    color: var(--color-on-accent, #ffffff);
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #action-message { margin-top: 8px; font-size: 12px; }
+  #action-message.error { color: var(--color-danger, #dc2626); }
+  #action-message.success { color: var(--color-success, #16a34a); }
+  #empty { padding: 24px 16px; opacity: 0.7; }
+</style>
+</head>
+<body>
+  <div id="panel">
+    <div id="empty">Waiting for a change-set proposal&hellip;</div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Same minimal, dependency-free MCP Apps postMessage implementation as
+  // preview.html - see that file's comment for the protocol reference.
+  var nextRequestId = 1;
+  var pending = {};
+  var currentChangeSetId = null;
+  var currentTargetKind = null;
+
+  function send(message) { window.parent.postMessage(message, "*"); }
+
+  function request(method, params) {
+    var id = nextRequestId++;
+    return new Promise(function (resolve, reject) {
+      pending[id] = { resolve: resolve, reject: reject };
+      send({ jsonrpc: "2.0", id: id, method: method, params: params || {} });
+    });
+  }
+
+  function notify(method, params) {
+    send({ jsonrpc: "2.0", method: method, params: params || {} });
+  }
+
+  window.addEventListener("message", function (event) {
+    if (event.source !== window.parent) return;
+    var data = event.data;
+    if (!data || data.jsonrpc !== "2.0") return;
+
+    if (typeof data.id !== "undefined" && (data.result !== undefined || data.error !== undefined)) {
+      var waiting = pending[data.id];
+      if (!waiting) return;
+      delete pending[data.id];
+      if (data.error) waiting.reject(data.error);
+      else waiting.resolve(data.result);
+      return;
+    }
+
+    switch (data.method) {
+      case "ui/notifications/tool-result":
+        renderChangeSet(data.params && data.params.structuredContent);
+        break;
+      case "ui/notifications/host-context-changed":
+        applyHostContext(data.params);
+        break;
+      case "ui/resource-teardown":
+        if (typeof data.id !== "undefined") send({ jsonrpc: "2.0", id: data.id, result: {} });
+        break;
+      default:
+        break;
+    }
+  });
+
+  function applyHostContext(context) {
+    if (!context || !context.styles || !context.styles.variables) return;
+    var root = document.documentElement.style;
+    Object.keys(context.styles.variables).forEach(function (key) {
+      root.setProperty(key, context.styles.variables[key]);
+    });
+  }
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (key) {
+      if (key === "text") node.textContent = attrs[key];
+      else if (key === "class") node.className = attrs[key];
+      else node.setAttribute(key, attrs[key]);
+    });
+    (children || []).forEach(function (child) { node.appendChild(child); });
+    return node;
+  }
+
+  function chipList(values, kind) {
+    var wrap = el("div", { class: "chip-list" });
+    (values || []).forEach(function (value) {
+      wrap.appendChild(el("span", { class: "chip " + kind, text: String(value) }));
+    });
+    return wrap;
+  }
+
+  function issuesTable(issues) {
+    var table = el("table");
+    (issues || []).slice(0, 50).forEach(function (issue) {
+      var severity = String(issue.severity || "info");
+      table.appendChild(
+        el("tr", { class: "issue-row " + severity }, [
+          el("th", { text: severity }),
+          el("td", { text: String(issue.message || "") }),
+        ])
+      );
+    });
+    return table;
+  }
+
+  function renderChangeSet(payload) {
+    var panel = document.getElementById("panel");
+    panel.innerHTML = "";
+
+    if (!payload || payload.ok === false) {
+      var message = (payload && (payload.message || payload.error)) || "Change-set unavailable.";
+      panel.appendChild(el("div", { id: "empty", text: String(message) }));
+      currentChangeSetId = null;
+      return;
+    }
+
+    currentChangeSetId = payload.change_set_id || null;
+    currentTargetKind = payload.target_kind || "";
+    var preview = payload.preview || {};
+
+    var header = el("div", { id: "header" }, [
+      el("span", { class: "badge status-" + payload.status, text: payload.status || "unknown" }),
+      el("span", { class: "badge", text: currentTargetKind }),
+      el("span", { class: "id", text: payload.project_name || "" }),
+      el("span", { class: "id", text: currentChangeSetId || "" }),
+    ]);
+    panel.appendChild(header);
+
+    if (Array.isArray(preview.issues) && preview.issues.length) {
+      panel.appendChild(
+        el("section", {}, [el("h2", { text: "Issues (" + preview.issues.length + ")" }), issuesTable(preview.issues)])
+      );
+    }
+
+    if (preview.widget_count) {
+      panel.appendChild(
+        el("section", {}, [
+          el("h2", { text: "Widgets" }),
+          el("table", {}, [
+            el("tr", {}, [el("th", { text: "Before / after" }), el("td", { text: preview.widget_count.before + " → " + preview.widget_count.after })]),
+          ]),
+          preview.added_widget_ids && preview.added_widget_ids.length
+            ? el("div", {}, [el("th", { text: "Added" }), chipList(preview.added_widget_ids, "added")])
+            : el("div", {}),
+          preview.removed_widget_ids && preview.removed_widget_ids.length
+            ? el("div", {}, [el("th", { text: "Removed" }), chipList(preview.removed_widget_ids, "removed")])
+            : el("div", {}),
+        ])
+      );
+    }
+
+    if (preview.added_viewer_bindings || preview.removed_viewer_bindings) {
+      panel.appendChild(
+        el("section", {}, [
+          el("h2", { text: "Viewer bindings" }),
+          chipList(preview.added_viewer_bindings, "added"),
+          chipList(preview.removed_viewer_bindings, "removed"),
+        ])
+      );
+    }
+
+    if (typeof preview.diff === "string" && preview.diff) {
+      panel.appendChild(
+        el("section", {}, [
+          el("h2", { text: "YAML diff" + (preview.diff_truncated ? " (truncated)" : "") }),
+          el("pre", { class: "diff", text: preview.diff }),
+        ])
+      );
+    }
+
+    var knownKeys = {
+      issues: 1, issue_counts: 1, widget_count: 1, added_widget_ids: 1, removed_widget_ids: 1,
+      added_viewer_bindings: 1, removed_viewer_bindings: 1, diff: 1, diff_truncated: 1,
+      stored_project_bytes: 1, stored_viewer_binding_bytes: 1, operation_count: 1, operations: 1,
+    };
+    var detailRows = Object.keys(preview)
+      .filter(function (key) { return !knownKeys[key]; })
+      .map(function (key) {
+        var value = preview[key];
+        var text = typeof value === "object" ? JSON.stringify(value) : String(value);
+        return el("tr", {}, [el("th", { text: key }), el("td", { text: text })]);
+      });
+    if (detailRows.length) {
+      panel.appendChild(el("section", {}, [el("h2", { text: "Details" }), el("table", {}, detailRows)]));
+    }
+
+    panel.appendChild(buildActions(payload));
+  }
+
+  function buildActions(payload) {
+    var actions = el("div", { id: "actions" });
+    var message = el("div", { id: "action-message" });
+
+    var applyButton = el("button", { class: "primary", text: "Apply" });
+    var dismissButton = el("button", { text: "Dismiss" });
+    applyButton.disabled = payload.status !== "pending";
+    if (payload.status === "applied") {
+      message.textContent = "Already applied (revision " + (payload.applied_revision || "?") + ").";
+      message.className = "success";
+    }
+
+    applyButton.addEventListener("click", function () {
+      if (!currentChangeSetId) return;
+      applyButton.disabled = true;
+      dismissButton.disabled = true;
+      message.textContent = "Applying…";
+      message.className = "";
+      request("tools/call", {
+        name: "display_changeset_apply",
+        arguments: { change_set_id: currentChangeSetId },
+      }).then(function (result) {
+        var content = result && result.structuredContent;
+        if (content && content.ok === false) {
+          message.textContent = content.message || content.error || "Apply failed.";
+          message.className = "error";
+          applyButton.disabled = false;
+          dismissButton.disabled = false;
+          return;
+        }
+        message.textContent = "Applied"
+          + (content && content.applied_revision ? " (revision " + content.applied_revision + ")." : ".");
+        message.className = "success";
+        notify("ui/notifications/size-changed", {});
+      }).catch(function (err) {
+        message.textContent = (err && err.message) || "Apply failed.";
+        message.className = "error";
+        applyButton.disabled = false;
+        dismissButton.disabled = false;
+      });
+    });
+
+    dismissButton.addEventListener("click", function () {
+      // Local only: no server-side discard tool exists. A pending change
+      // set simply expires on its own after its TTL.
+      applyButton.disabled = true;
+      dismissButton.disabled = true;
+      message.textContent = "Dismissed locally; the proposal still expires on its own.";
+      message.className = "";
+    });
+
+    actions.appendChild(applyButton);
+    actions.appendChild(dismissButton);
+    var wrap = el("div", {}, [actions, message]);
+    return wrap;
+  }
+
+  async function initialize() {
+    var response;
+    try {
+      response = await request("ui/initialize", {
+        capabilities: {},
+        clientInfo: { name: "esphome-display-editor-changeset-review", version: "1" },
+        protocolVersion: "2026-01-26",
+        appCapabilities: { experimental: {}, tools: {}, availableDisplayModes: ["inline"] }
+      });
+    } catch (err) {
+      document.getElementById("panel").textContent = "Initialization failed.";
+      return;
+    }
+    if (response && response.hostContext) applyHostContext(response.hostContext);
+    notify("ui/notifications/initialized", {});
+  }
+
+  initialize();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "esphome-display-editor",
+  "display_name": "ESPHome Display Editor",
+  "version": "0.300.0",
+  "description": "Connect Claude Desktop to the ESPHome Display Editor MCP server.",
+  "long_description": "A local stdio bridge for the ESPHome Display Editor's authenticated Streamable HTTP MCP endpoint. Claude can inspect projects and ESPHome YAML, place widgets, create bindings, review deterministic previews, and propose revision-checked change sets according to the scopes of the selected client token. The extension does not contain the editor server and requires a reachable Home Assistant app instance.",
+  "author": {
+    "name": "ESPHome Display Editor contributors"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GitNik1/esphome-displayeditor-app.git"
+  },
+  "homepage": "https://github.com/GitNik1/esphome-displayeditor-app",
+  "documentation": "https://github.com/GitNik1/esphome-displayeditor-app/blob/main/esphome_displayeditor/DOCS.md#claude-desktop-mcpb-package",
+  "support": "https://github.com/GitNik1/esphome-displayeditor-app/issues",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.cjs",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/index.cjs"
+      ],
+      "env": {
+        "ESPHOME_EDITOR_MCP_URL": "${user_config.mcp_url}",
+        "ESPHOME_EDITOR_MCP_TOKEN": "${user_config.mcp_token}"
+      }
+    }
+  },
+  "tools_generated": true,
+  "prompts_generated": true,
+  "keywords": [
+    "esphome",
+    "home-assistant",
+    "lvgl",
+    "display",
+    "designer"
+  ],
+  "license": "MIT",
+  "privacy_policies": [
+    "https://github.com/GitNik1/esphome-displayeditor-app/blob/main/esphome_displayeditor/clients/claude-desktop/PRIVACY.md"
+  ],
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "user_config": {
+    "mcp_url": {
+      "type": "string",
+      "title": "MCP server URL",
+      "description": "The LAN Streamable HTTP endpoint, for example http://homeassistant.local:8100/mcp.",
+      "required": true,
+      "default": "http://homeassistant.local:8100/mcp"
+    },
+    "mcp_token": {
+      "type": "string",
+      "title": "MCP client token",
+      "description": "Create a scoped, expiring token on the editor's System page. The value is stored as a sensitive setting by Claude Desktop.",
+      "required": true,
+      "sensitive": true
+    }
+  }
+}
