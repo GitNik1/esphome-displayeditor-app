@@ -20,6 +20,9 @@ def _repository(root: Path, *, inconsistent: bool = False) -> None:
             "assert 'styles.css?v=1.2.3' in response.text\n"
             "assert 'app.js?v=1.2.3' in response.text\n"
         ),
+        "clients/claude-desktop/manifest.json": (
+            '{\n  "manifest_version": "0.4",\n  "version": "1.2.3"\n}\n'
+        ),
         "CHANGELOG.md": (
             "# Changelog\n\n"
             "## Unreleased\n\n"
@@ -43,9 +46,13 @@ def test_minor_bump_updates_every_version_and_releases_changelog(tmp_path: Path)
 
     assert str(current) == "1.2.3"
     assert str(new) == "1.3.0"
-    assert len(changed) == 5
+    assert len(changed) == 6
     for relative_path in (
-        "backend/version.py", "config.yaml", "frontend/index.html", "tests/test_api.py"
+        "backend/version.py",
+        "config.yaml",
+        "frontend/index.html",
+        "tests/test_api.py",
+        "clients/claude-desktop/manifest.json",
     ):
         text = (tmp_path / relative_path).read_text(encoding="utf-8")
         assert "1.3.0" in text

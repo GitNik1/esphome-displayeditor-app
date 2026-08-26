@@ -2,6 +2,78 @@
 
 ## Unreleased
 
+## 0.300.0
+
+- Added MCP integration over Streamable HTTP. It exposes bounded project,
+  widget-catalog, binding and validation tools/resources on a separate opt-in
+  port and negotiates MCP 2025-11-25 and 2026-07-28. MCP remains read-only by
+  default; the independent `project_write` access mode adds semantic widget
+  add/update/placement proposals and revision-protected change-set apply.
+- Added 15-minute persistent change sets, idempotent apply retention, audit
+  records, cross-process project write locks, strict property/geometry checks
+  and absolute, alignment, Flex/Grid, page, layer, nested and message-box
+  placement validation. Unrestricted JSON patching is not exposed.
+- Added typed change sets for exportable project bindings and separate Viewer
+  sidecars. Project bindings are checked against entity/widget capabilities;
+  Viewer bindings require both project and sidecar revisions plus an existing
+  device and compatible widget target. Imported custom-YAML actions remain
+  read-only through MCP.
+- Added bounded configuration list/read tools and YAML-to-project import
+  proposals. Import uses the existing confined filesystem and Designer parser,
+  requires the exact source revision, never changes the YAML source and
+  atomically refuses an existing project name. YAML reads are segmented at
+  65,536 characters to remain below the MCP response ceiling.
+- Added signed, query-bound pagination cursors for project and configuration
+  listings plus compatible project/Viewer binding-target discovery. Added
+  exact-revision YAML export and read-only merge previews that preserve unknown
+  configuration content and return bounded text segments without saving.
+- Added configuration-draft merge change sets. They require the exact project,
+  active configuration and optional existing-draft revisions, show a bounded
+  diff before apply, use cross-process locks and save only a draft. Active YAML
+  publication remains unavailable through MCP.
+- Added access-aware MCP prompts for project analysis, YAML review, project
+  import, layout editing and entity bindings. Context-aware argument
+  completions cover projects, configurations, widgets and entities and return
+  at most 50 deterministic values.
+- Added revision-bound, paginated structured layout previews with surface,
+  hierarchy, geometry, alignment and Grid/Flex context. Added secret-free
+  registered-device discovery and device-ID completions; the MCP listener
+  explicitly does not expose live states, logs, controls or key references.
+- Added resolved preview boxes backed by a Python layout projection and shared
+  Python/JavaScript parity fixtures for absolute/outside alignment, Grid, Flex,
+  nested containers, pages and layers.
+- Added request-local MCP identities and server-side scope enforcement for all
+  tools and resources. Added administrator-managed, expiring client tokens
+  stored only as hashes, one-time secret delivery, per-client rate buckets,
+  immediate revocation and audited create/revoke operations. The existing LAN
+  token remains a backwards-compatible bootstrap credential.
+- Added an administrator-only MCP client access panel to the System page. It
+  lists token status and scopes, creates least-privilege credentials with a
+  configurable expiry, presents the secret once, and revokes active clients
+  immediately.
+- Added copyable Claude Code and environment-backed `.mcp.json` setup output
+  to the one-time secret dialog. The System page now reports MCP mode/access
+  and can run a two-second, 4-KiB-bounded, token-free probe against the fixed
+  loopback listener health endpoint.
+- Added a reproducible MCPB v0.4 package for Claude Desktop. Its dependency-free
+  Node bridge translates stdio to the authenticated Streamable HTTP listener,
+  preserves negotiated session/version headers and JSON/SSE responses, keeps
+  the client token in a sensitive runtime setting, and enforces the MCP request
+  and response ceilings without writing protocol diagnostics to stdout. CI
+  validates it with the pinned official MCPB CLI and publishes the versioned
+  package as a downloadable artifact.
+- MCP remains disabled by default. LAN access requires a bearer token of at
+  least 32 characters, an explicit Home Assistant port mapping and a Host
+  allowlist; DNS-rebinding, Origin, body, response and rate limits are
+  enforced independently of the Ingress web interface.
+- Hardened machine-driven access: the development Compose listeners now bind
+  only to loopback, numeric binding templates escape every caller-controlled
+  printf conversion, persistent change sets have per-client/global row and
+  byte ceilings and discard payloads after apply, and unauthenticated MCP
+  traffic is rate-limited before the bounded, cached token store is consulted.
+  Linux/Windows builds use `cryptography` 50.0.0, and reproducible MCPB builds
+  now include a SHA-256 sidecar for artifact verification.
+
 ## 0.278.0
 
 ## 0.27.0

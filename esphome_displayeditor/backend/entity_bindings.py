@@ -17,6 +17,7 @@ from typing import Any
 
 import yaml
 
+from .binding_formats import compile_numeric_binding_format, validate_binding_format
 from .designer_core.model import Project
 from .designer_core.yamlimport import LvglImportError, TaggedScalar, load_lvgl_yaml
 
@@ -119,6 +120,24 @@ WIDGET_CAPABILITIES: dict[str, dict[str, list[str]]] = {
         "outputs": ["click", "press", "release"],
     },
 }
+
+WIDGET_INPUT_DATA_TYPES: dict[str, set[str]] = {
+    "text": {"text", "choice", "number", "boolean"},
+    "selected": {"choice", "number"},
+    "checked": {"boolean", "light", "fan", "lock", "alarm"},
+    "visible": {"boolean", "number", "light", "fan", "lock", "alarm"},
+    "value": {"number"},
+    "indicator_value": {"number"},
+    "indicator_start": {"number"},
+    "indicator_end": {"number"},
+    "flow_direction": {"number"},
+}
+
+
+def widget_input_accepts(property_name: str, entity_data_type: str) -> bool:
+    """Apply the same data-type rule used by binding validation."""
+    accepted = WIDGET_INPUT_DATA_TYPES.get(property_name)
+    return accepted is None or entity_data_type in accepted
 
 
 @dataclass
@@ -304,19 +323,7 @@ def validate_project_bindings(project: Project) -> list[BindingIssue]:
                         )
                     )
             if direction in ("entity_to_widget", "bidirectional"):
-                allowed_types = {
-                    "text": {"text", "choice", "number", "boolean"},
-                    "selected": {"choice", "number"},
-                    "checked": {"boolean", "light", "fan", "lock", "alarm"},
-                    "visible": {"boolean", "number", "light", "fan", "lock", "alarm"},
-                    "value": {"number"},
-                    "indicator_value": {"number"},
-                    "indicator_start": {"number"},
-                    "indicator_end": {"number"},
-                    "flow_direction": {"number"},
-                }
-                accepted = allowed_types.get(prop)
-                if accepted and entity.get("data_type") not in accepted:
+                if not widget_input_accepts(prop, str(entity.get("data_type", ""))):
                     issues.append(
                         BindingIssue(
                             "error",
@@ -344,7 +351,11 @@ def validate_project_bindings(project: Project) -> list[BindingIssue]:
                     )
                 )
         if direction == "bidirectional":
-            if not entity.get("readable") or not entity.get("writable"):
+            if (
+                not entity
+                or not entity.get("readable")
+                or not entity.get("writable")
+            ):
                 issues.append(
                     BindingIssue(
                         "error",
@@ -368,6 +379,11 @@ def validate_project_bindings(project: Project) -> list[BindingIssue]:
                     "error", "Binding transform must be an object.", binding_id
                 )
             )
+        elif prop == "text" and entity and entity.get("data_type") == "number":
+            try:
+                validate_binding_format(transform.get("format", "{value}"))
+            except ValueError as exc:
+                issues.append(BindingIssue("error", str(exc), binding_id))
         conditions = binding.get("conditions", [])
         if not isinstance(conditions, list) or any(
             not isinstance(condition, dict)
@@ -522,7 +538,7 @@ def _incoming_action(
         template = str(transform.get("format", "{value}"))
         # ESPHome's format/args form keeps numeric and textual sources typed.
         if entity.get("data_type") == "number":
-            fmt = template.replace("{value}", "%.1f").replace("{state}", "%.1f")
+            fmt = compile_numeric_binding_format(template)
             action = {
                 "lvgl.label.update": {
                     "id": target_id,

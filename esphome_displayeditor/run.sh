@@ -15,6 +15,22 @@ if ! ls /app >/dev/null 2>&1; then
 fi
 
 cd /app
+
+MCP_RUNTIME="$(/opt/esphome-displayeditor/bin/python -m backend.mcp.runtime)"
+set -- ${MCP_RUNTIME}
+MCP_MODE="$1"
+MCP_PORT="$2"
+MCP_ACCESS="$3"
+if [ "${MCP_MODE}" = "lan" ]; then
+  echo "[info] Starting MCP server on port ${MCP_PORT} (access: ${MCP_ACCESS})"
+  /opt/esphome-displayeditor/bin/uvicorn backend.mcp.app:create_mcp_app \
+    --factory \
+    --app-dir /app \
+    --host 0.0.0.0 \
+    --port "${MCP_PORT}" \
+    --no-proxy-headers &
+fi
+
 exec /opt/esphome-displayeditor/bin/uvicorn backend.app:create_app \
   --factory \
   --app-dir /app \

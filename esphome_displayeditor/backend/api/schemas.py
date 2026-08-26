@@ -92,6 +92,16 @@ class DeviceSecretRequest(BaseModel):
     encryption_key: SecretStr
 
 
+class MCPTokenCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    scopes: list[str] = Field(min_length=1, max_length=8)
+    expires_in_seconds: int = Field(
+        default=30 * 24 * 60 * 60,
+        ge=3600,
+        le=365 * 24 * 60 * 60,
+    )
+
+
 class ViewerBindingsRequest(BaseModel):
     bindings: list[dict[str, Any]] = Field(default_factory=list, max_length=256)
     expected_revision: str | None = Field(
@@ -104,3 +114,12 @@ class InstallRequest(BaseModel):
     # generic command arguments are deliberately not exposed by this API.
     port: str = Field(default="OTA", pattern="^OTA$")
     confirmed: bool = False
+
+
+class AssistantAskRequest(BaseModel):
+    # project_name/configuration_name fix the tool scope for this one
+    # request server-side (help_assistant/scope.py); the model is never
+    # given a parameter to pick a different project or configuration.
+    project_name: str = Field(min_length=1, max_length=255)
+    configuration_name: str | None = Field(default=None, max_length=255)
+    message: str = Field(min_length=1, max_length=4000)

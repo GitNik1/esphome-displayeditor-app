@@ -52,11 +52,32 @@ def check_backend_syntax() -> list[str]:
     return []
 
 
+def check_mcp_module_line_limit() -> list[str]:
+    """MCP-UMSETZUNGSPLAN.md §3 caps production modules at 500 lines.
+
+    Scoped to backend/assistant_tools and backend/mcp - the modules that
+    commitment actually covers - rather than the whole backend tree, which
+    has long-standing files (e.g. designer_core/*) predating that rule.
+    """
+    errors: list[str] = []
+    for directory in ("assistant_tools", "mcp"):
+        for path in sorted((ROOT / "backend" / directory).glob("*.py")):
+            if path.name == "__init__.py":
+                continue
+            line_count = len(path.read_text(encoding="utf-8").splitlines())
+            if line_count > 500:
+                errors.append(
+                    f"{path.relative_to(ROOT)} exceeds 500 lines ({line_count})"
+                )
+    return errors
+
+
 def main() -> int:
     errors = (
         check_frontend_boundaries()
         + check_strict_frontend_modules()
         + check_backend_syntax()
+        + check_mcp_module_line_limit()
     )
     if errors:
         print("Architecture violations:")

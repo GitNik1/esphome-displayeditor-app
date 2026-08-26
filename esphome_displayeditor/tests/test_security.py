@@ -52,6 +52,27 @@ def test_hierarchical_role_capabilities(tmp_path: Path) -> None:
     assert not capabilities(settings, "viewer")["device.manage"]
     assert capabilities(settings, "administrator")["device.manage"]
     assert not capabilities(settings, "administrator")["device.control"]
+    assert not capabilities(settings, "viewer")["mcp.read"]
+    assert not capabilities(settings, "viewer")["mcp.manage"]
+    assert capabilities(settings, "administrator")["mcp.manage"]
+
+
+def test_mcp_capability_is_opt_in_and_read_only(tmp_path: Path) -> None:
+    settings = replace(
+        make_settings(tmp_path),
+        mcp_mode="lan",
+        mcp_access_token="a" * 32,
+    )
+
+    assert capabilities(settings, "viewer")["mcp.read"]
+    assert not capabilities(settings, "administrator")["mcp.write"]
+
+    writable = replace(settings, mcp_access="project_write")
+    assert not capabilities(writable, "viewer")["mcp.write"]
+    assert capabilities(writable, "editor")["mcp.write"]
+    assert not capabilities(
+        replace(writable, access_level="read"), "administrator"
+    )["mcp.write"]
 
 
 def test_read_access_level_overrides_administrator_role(tmp_path: Path) -> None:
@@ -129,6 +150,8 @@ def test_invalid_options_fail_closed(tmp_path: Path, monkeypatch) -> None:
                 "api_rate_limit_per_minute": "broken",
                 "write_rate_limit_per_minute": None,
                 "runtime_provider": "unexpected",
+                "mcp_mode": "public-internet",
+                "mcp_access": "unrestricted",
             }
         ),
         encoding="utf-8",
@@ -142,6 +165,8 @@ def test_invalid_options_fail_closed(tmp_path: Path, monkeypatch) -> None:
     assert settings.api_rate_limit_per_minute == 240
     assert settings.write_rate_limit_per_minute == 60
     assert settings.runtime_provider == "disabled"
+    assert settings.mcp_mode == "disabled"
+    assert settings.mcp_access == "read_only"
 
 
 def test_legacy_profile_options_are_migrated_to_access_level(tmp_path: Path, monkeypatch) -> None:

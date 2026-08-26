@@ -110,6 +110,7 @@ export function createCustomActionEditor(els, t, api) {
     return result.action;
   }
 
+  /** @param {boolean} raw */
   function setRawMode(raw) {
     els.rawToggle.checked = raw;
     els.rawField.classList.toggle("hidden", !raw);
@@ -120,7 +121,9 @@ export function createCustomActionEditor(els, t, api) {
 
   /** Loads an existing action's YAML for editing - always in raw mode, since
    * reversing arbitrary YAML back into flat name+param rows isn't reliably
-   * possible (nested values, nested lists, nested !lambda tags). */
+   * possible (nested values, nested lists, nested !lambda tags).
+   * @param {string} existingYamlText
+   */
   function loadFromYaml(existingYamlText) {
     els.rawTextarea.value = existingYamlText || "";
     setRawMode(true);

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>ESPHome Display Editor</title>
-    <link rel="stylesheet" href="styles.css?v=0.278.0">
+    <link rel="stylesheet" href="styles.css?v=0.300.0">
   </head>
   <body>
     <header class="topbar">
@@ -871,7 +871,38 @@
       </section>
 
       <section id="system" class="view system-view">
-        <div class="system-card"><small data-i18n="system.status">STATUS</small><h2 data-i18n="system.heading">System und Fähigkeiten</h2><pre id="system-json" data-i18n="system.loading">Wird geladen …</pre></div>
+        <div class="system-grid">
+          <div class="system-card"><small data-i18n="system.status">STATUS</small><h2 data-i18n="system.heading">System und Fähigkeiten</h2><pre id="system-json" data-i18n="system.loading">Wird geladen …</pre></div>
+          <section id="mcp-token-card" class="system-card mcp-token-card hidden" aria-labelledby="mcp-token-heading">
+            <div class="mcp-token-heading">
+              <div><small>MCP 1.0</small><h2 id="mcp-token-heading" data-i18n="mcp.tokens.heading">KI-Client-Zugänge</h2></div>
+              <div class="actions">
+                <button id="test-mcp-listener" type="button" class="button subtle compact" data-i18n="mcp.listener.test">Listener testen</button>
+                <button id="refresh-mcp-tokens" type="button" class="icon-button" data-i18n-attr="title:mcp.tokens.refresh" title="Neu laden">↻</button>
+                <button id="create-mcp-token" type="button" class="button primary compact" data-i18n="mcp.tokens.create">Zugang erstellen</button>
+              </div>
+            </div>
+            <p class="hint" data-i18n="mcp.tokens.hint">Separate, widerrufbare Zugangsdaten für Claude Code und andere MCP-Clients. Secrets werden nur einmal angezeigt.</p>
+            <div id="mcp-listener-status" class="mcp-listener-status" aria-live="polite" data-i18n="mcp.listener.loading">Listener-Status wird geladen …</div>
+            <div id="mcp-token-summary" class="mcp-token-summary" aria-live="polite"></div>
+            <div id="mcp-token-list" class="mcp-token-list empty" data-i18n="mcp.tokens.loading">Zugänge werden geladen …</div>
+          </section>
+          <section id="assistant-card" class="system-card assistant-card hidden" aria-labelledby="assistant-heading">
+            <div class="assistant-heading">
+              <div><small data-i18n="assistant.badge">KI-Hilfe</small><h2 id="assistant-heading" data-i18n="assistant.heading">KI-Assistent</h2></div>
+            </div>
+            <p class="hint" data-i18n="assistant.hint">Hilft beim aktuell geöffneten Projekt. Schlägt Änderungen als Entwurf vor — nichts wird ohne deine Bestätigung übernommen.</p>
+            <div id="assistant-context" class="assistant-context" aria-live="polite"></div>
+            <form id="assistant-form" class="assistant-form">
+              <textarea id="assistant-message" rows="3" maxlength="4000" data-i18n-attr="placeholder:assistant.messagePlaceholder" placeholder="Was soll ich am Layout ändern?"></textarea>
+              <div class="actions">
+                <button id="assistant-ask" type="submit" class="button primary compact" data-i18n="assistant.ask">Fragen</button>
+              </div>
+            </form>
+            <div id="assistant-reply" class="assistant-reply hidden" aria-live="polite"></div>
+            <div id="assistant-proposals" class="assistant-proposals"></div>
+          </section>
+        </div>
       </section>
     </main>
 
@@ -954,6 +985,56 @@
         </div>
         <div class="dialog-actions"><button type="submit" class="button primary" data-i18n="dialog.device.save">Speichern</button></div>
       </form>
+    </dialog>
+
+    <dialog id="mcp-token-create-dialog" class="mcp-token-dialog" aria-labelledby="mcp-token-create-title">
+      <form id="mcp-token-create-form">
+        <div class="dialog-heading"><h2 id="mcp-token-create-title" data-i18n="mcp.tokens.createTitle">MCP-Zugang erstellen</h2><button id="close-mcp-token-create" type="button" class="icon-button" data-i18n-attr="aria-label:mcp.tokens.closeCreate" aria-label="Dialog schließen">×</button></div>
+        <div class="mcp-token-form-fields">
+          <label><span data-i18n="mcp.tokens.name">Client-Name</span>
+            <input id="mcp-token-name" required maxlength="80" autocomplete="off" data-i18n-attr="placeholder:mcp.tokens.namePlaceholder" placeholder="Claude Code auf Notebook">
+          </label>
+          <label><span data-i18n="mcp.tokens.validDays">Gültigkeit in Tagen</span>
+            <input id="mcp-token-valid-days" required type="number" min="1" max="365" value="30">
+          </label>
+          <fieldset class="mcp-token-scopes-fieldset">
+            <legend data-i18n="mcp.tokens.scopes">Berechtigungen</legend>
+            <p class="hint" data-i18n="mcp.tokens.scopesHint">Nur die tatsächlich benötigten Berechtigungen auswählen. Leserechte sind vorausgewählt.</p>
+            <div id="mcp-token-scopes" class="mcp-token-scopes"></div>
+          </fieldset>
+        </div>
+        <div class="dialog-actions"><button id="submit-mcp-token" type="submit" class="button primary" data-i18n="mcp.tokens.createSubmit">Zugang erstellen</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="mcp-token-secret-dialog" class="mcp-token-dialog" aria-labelledby="mcp-token-secret-title">
+      <div class="dialog-heading"><h2 id="mcp-token-secret-title" data-i18n="mcp.tokens.secretTitle">MCP-Secret sichern</h2><button id="close-mcp-token-secret-x" type="button" class="icon-button" data-i18n-attr="aria-label:mcp.tokens.closeSecret" aria-label="Secret schließen">×</button></div>
+      <div class="mcp-token-secret-body">
+        <p class="warning-hint" data-i18n="mcp.tokens.secretWarning">Dieses Secret wird nur jetzt angezeigt. Vor dem Schließen kopieren und sicher speichern.</p>
+        <label><span data-i18n="mcp.tokens.secret">Bearer-Token</span>
+          <textarea id="mcp-token-secret" rows="3" readonly spellcheck="false" autocomplete="off"></textarea>
+        </label>
+        <section class="mcp-client-configs" aria-labelledby="mcp-client-configs-heading">
+          <h3 id="mcp-client-configs-heading" data-i18n="mcp.clientConfig.heading">Client einrichten</h3>
+          <p class="hint" data-i18n="mcp.clientConfig.reachabilityHint">Die Adresse wird aus dem aktuellen Home-Assistant-Host erzeugt. Port 8100 muss in den Add-on-Netzwerkeinstellungen für das LAN veröffentlicht sein.</p>
+          <label><span data-i18n="mcp.clientConfig.endpoint">MCP-Endpunkt</span>
+            <input id="mcp-client-endpoint" readonly spellcheck="false">
+          </label>
+          <div class="mcp-client-config-block">
+            <div><strong data-i18n="mcp.clientConfig.claudeCode">Claude Code</strong><button id="copy-mcp-claude-command" type="button" class="button subtle compact" data-i18n="mcp.clientConfig.copyCommand">Befehl kopieren</button></div>
+            <textarea id="mcp-claude-command" rows="4" readonly spellcheck="false"></textarea>
+          </div>
+          <div class="mcp-client-config-block">
+            <div><strong data-i18n="mcp.clientConfig.projectJson">Projektdatei .mcp.json</strong><button id="copy-mcp-project-json" type="button" class="button subtle compact" data-i18n="mcp.clientConfig.copyJson">JSON kopieren</button></div>
+            <textarea id="mcp-project-json" rows="12" readonly spellcheck="false"></textarea>
+            <p class="hint"><span data-i18n="mcp.clientConfig.envHint">Die JSON-Variante speichert das Secret nicht in der Projektdatei. Setze dafür die Umgebungsvariable</span> <code>ESPHOME_EDITOR_MCP_TOKEN</code>.</p>
+          </div>
+        </section>
+      </div>
+      <div class="dialog-actions">
+        <button id="copy-mcp-token-secret" type="button" class="button primary" data-i18n="mcp.tokens.copySecret">Secret kopieren</button>
+        <button id="close-mcp-token-secret" type="button" class="button subtle" data-i18n="mcp.tokens.secretSaved">Ich habe es gespeichert</button>
+      </div>
     </dialog>
 
     <dialog id="yaml-dialog">
@@ -1107,6 +1188,6 @@
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js?v=0.278.0"></script>
+    <script type="module" src="app.js?v=0.300.0"></script>
   </body>
 </html>

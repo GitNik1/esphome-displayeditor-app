@@ -77,3 +77,34 @@ configuration:
       Wie lange eine erfolgreiche "esphome config"-Prüfung einer bestimmten
       Config-Revision gültig bleibt, bevor ein Kompilier-/Installationsjob
       eine erneute Prüfung verlangt.
+  mcp_mode:
+    name: MCP-Zugriff
+    description: >-
+      "disabled" startet keinen MCP-Dienst. "lan" aktiviert den separat
+      freigegebenen, ausschließlich lesenden MCP-Endpunkt auf Port 8100.
+      Zusätzlich sind ein starkes Zugriffstoken und eine Portfreigabe in
+      Home Assistant erforderlich.
+  mcp_access:
+    name: MCP-Berechtigung
+    description: >-
+      "read_only" stellt nur Lese-Werkzeuge bereit. "project_write" erlaubt
+      zusätzlich temporäre Projekt-Changesets und ein getrenntes,
+      revisionsgeschütztes Apply-Werkzeug. YAML-Publishing, Builds und
+      Gerätesteuerung werden dadurch nicht freigegeben.
+  mcp_access_token:
+    name: MCP-Zugriffstoken
+    description: >-
+      Geheimes Bearer-Token für jede MCP-Anfrage. Verwende mindestens 32
+      zufällige Zeichen und hinterlege dasselbe Token in Claude oder einem
+      anderen MCP-Client.
+  mcp_allowed_hosts:
+    name: Erlaubte MCP-Hosts
+    description: >-
+      Kommagetrennte Host-Allowlist als Schutz vor DNS-Rebinding. Ergänze
+      den Hostnamen oder die IP-Adresse, über die Home Assistant erreichbar
+      ist.
+  mcp_allowed_origins:
+    name: Erlaubte MCP-Browser-Origins
+    description: >-
+      Optionale, kommagetrennte Origin-Allowlist. Für native MCP-Clients leer
+      lassen; vollständige http(s)-Origins nur für Browser-Clients ergänzen.

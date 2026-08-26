@@ -8,7 +8,7 @@ from ...audit import AuditStore
 from ...errors import ApiError
 from ...project_store import ProjectStore
 from ...runtime import DeviceManager
-from ...viewer_bindings import ViewerBindingStore, validate_bindings
+from ...viewer_bindings import ViewerBindingStore, validate_binding_targets
 from ..schemas import SaveDesignerProjectRequest, ViewerBindingsRequest
 from ..viewer_projection import project_widget_types
 
@@ -43,23 +43,11 @@ def create_designer_projects_router(
     ) -> dict:
         user_id = require_capability(request, "designer.project_write")
         try:
-            widget_types = project_widget_types(projects.read(name)["project"])
-            target_types = {
-                "text": {"label"},
-                "value": {"slider", "bar", "arc"},
-                "state_checked": {"switch"},
-            }
-            normalized = validate_bindings(body.bindings)
-            for binding in normalized:
-                actual_type = widget_types.get(binding["widget_id"])
-                if actual_type not in target_types[binding["target"]]:
-                    raise ApiError(
-                        "invalid_binding_target",
-                        "The selected Viewer target does not match the stored widget.",
-                        422,
-                        {"widget_id": binding["widget_id"], "widget_type": actual_type},
-                    )
-                runtime.registry.get(binding["device_id"])
+            normalized = validate_binding_targets(
+                body.bindings,
+                project_widget_types(projects.read(name)["project"]),
+                runtime.registry.get,
+            )
             result = viewer_bindings.save(name, normalized, body.expected_revision)
         except ApiError as exc:
             _record(audit, user_id, "designer.viewer_bindings.save", name,

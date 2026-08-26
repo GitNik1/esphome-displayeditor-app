@@ -1,5 +1,5 @@
 name: ESPHome Display Editor
-version: "0.278.0"
+version: "0.300.0"
 slug: esphome_displayeditor
 description: Visual LVGL designer and safe ESPHome configuration editor
 url: https://github.com/GitNik1/esphome-displayeditor-app
@@ -17,7 +17,10 @@ ingress_stream: true
 panel_icon: mdi:monitor-edit
 panel_title: ESPHome Display Editor
 panel_admin: true
-ports: {}
+ports:
+  8100/tcp: null
+ports_description:
+  8100/tcp: Model Context Protocol (MCP); read-only unless mcp_access is set to project_write
 map:
   - type: homeassistant_config
     read_only: false
@@ -38,6 +41,13 @@ options:
   builder_url: "http://5c53de3b-esphome:6052"
   validation_max_age_seconds: 900
   mdi_local: true
+  mcp_mode: disabled
+  mcp_access: read_only
+  mcp_access_token: ""
+  mcp_allowed_hosts: "localhost,127.0.0.1,[::1]"
+  mcp_allowed_origins: ""
+  assistant_mode: disabled
+  assistant_api_key: ""
 schema:
   access_level: list(none|read|write|write_with_builder)
   max_file_size_kib: int(64,4096)
@@ -54,3 +64,10 @@ schema:
   builder_url: url
   validation_max_age_seconds: int(30,86400)
   mdi_local: bool
+  mcp_mode: list(disabled|lan)
+  mcp_access: list(read_only|project_write)
+  mcp_access_token: password
+  mcp_allowed_hosts: str
+  mcp_allowed_origins: str
+  assistant_mode: list(disabled|enabled)
+  assistant_api_key: password

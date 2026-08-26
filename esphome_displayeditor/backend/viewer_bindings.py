@@ -11,6 +11,7 @@ from typing import Any
 
 from .errors import ApiError
 from .filesystem import revision_for
+from .project_locks import locked_project_write
 
 
 _PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.lvgldesign$")
@@ -18,6 +19,20 @@ _WIDGET_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _ENTITY_ID = re.compile(r"^[a-z0-9_]{1,64}:[A-Za-z0-9_.:-]{1,128}$")
 _TARGETS = {"text", "value", "state_checked"}
 _MAX_FILE_SIZE = 256 * 1024
+_TARGET_WIDGET_TYPES = {
+    "text": {"label"},
+    "value": {"slider", "bar", "arc"},
+    "state_checked": {"switch"},
+}
+
+
+def viewer_targets_for_widget_type(widget_type: str) -> list[str]:
+    """Return deterministic Viewer-sidecar targets for a widget type."""
+    return sorted(
+        target
+        for target, widget_types in _TARGET_WIDGET_TYPES.items()
+        if widget_type in widget_types
+    )
 
 
 def validate_bindings(bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -68,6 +83,27 @@ def validate_bindings(bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return normalized
 
 
+def validate_binding_targets(
+    bindings: list[dict[str, Any]],
+    widget_types: dict[str, str],
+    device_lookup=None,
+) -> list[dict[str, Any]]:
+    """Validate sidecar syntax and references against a concrete project."""
+    normalized = validate_bindings(bindings)
+    for binding in normalized:
+        actual_type = widget_types.get(binding["widget_id"])
+        if actual_type not in _TARGET_WIDGET_TYPES[binding["target"]]:
+            raise ApiError(
+                "invalid_binding_target",
+                "The selected Viewer target does not match the stored widget.",
+                422,
+                {"widget_id": binding["widget_id"], "widget_type": actual_type},
+            )
+        if device_lookup is not None:
+            device_lookup(binding["device_id"])
+    return normalized
+
+
 class ViewerBindingStore:
     """Revision-protected JSON sidecars that never enter the LVGL project model."""
 
@@ -95,6 +131,7 @@ class ViewerBindingStore:
         bindings = validate_bindings(payload.get("bindings", []) if isinstance(payload, dict) else [])
         return {"project": project_name, "bindings": bindings, "revision": revision_for(raw)}
 
+    @locked_project_write
     def save(
         self,
         project_name: str,
@@ -129,6 +166,7 @@ class ViewerBindingStore:
             "revision": revision_for(raw),
         }
 
+    @locked_project_write
     def delete(self, project_name: str) -> None:
         path = self._path(project_name)
         if path.exists():

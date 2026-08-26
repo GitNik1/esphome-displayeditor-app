@@ -1,0 +1,198 @@
+[
+  {
+    "name": "absolute_alignment",
+    "project": {
+      "canvas": {"width": 480, "height": 320},
+      "extra_lvgl": {},
+      "widgets": [
+        {
+          "id": "base",
+          "widget_type": "obj",
+          "x": 10,
+          "y": 20,
+          "width": 100,
+          "height": 40,
+          "align": "TOP_LEFT",
+          "children": []
+        },
+        {
+          "id": "center",
+          "widget_type": "obj",
+          "x": 5,
+          "y": -5,
+          "width": 80,
+          "height": 40,
+          "align": "CENTER",
+          "children": []
+        },
+        {
+          "id": "outside",
+          "widget_type": "obj",
+          "x": 10,
+          "y": 0,
+          "width": 40,
+          "height": 20,
+          "align": "OUT_RIGHT_MID",
+          "align_to": "base",
+          "children": []
+        }
+      ]
+    },
+    "expected": {
+      "base": {"left": 10, "top": 20, "width": 100, "height": 40, "managed": false, "origin_x": 0, "origin_y": 0},
+      "center": {"left": 205, "top": 135, "width": 80, "height": 40, "managed": false, "origin_x": 0, "origin_y": 0},
+      "outside": {"left": 120, "top": 40, "width": 40, "height": 20, "managed": false, "origin_x": 0, "origin_y": 0}
+    }
+  },
+  {
+    "name": "grid_tracks_and_padding",
+    "project": {
+      "canvas": {"width": 300, "height": 200},
+      "extra_lvgl": {
+        "pad_left": 10,
+        "pad_right": 10,
+        "pad_top": 5,
+        "pad_bottom": 5,
+        "layout": {
+          "type": "GRID",
+          "grid_columns": [100, "FR(1)"],
+          "grid_rows": [50, "FR(1)"]
+        }
+      },
+      "widgets": [
+        {
+          "id": "grid_a",
+          "widget_type": "obj",
+          "x": 2,
+          "y": 3,
+          "width": 50,
+          "height": 20,
+          "grid_cell": {"column_pos": 0, "row_pos": 0, "x_align": "CENTER", "y_align": "END"},
+          "children": []
+        },
+        {
+          "id": "grid_b",
+          "widget_type": "obj",
+          "x": 0,
+          "y": 0,
+          "width": 80,
+          "height": 40,
+          "grid_cell": {"column_pos": 1, "row_pos": 1, "x_align": "END", "y_align": "CENTER"},
+          "children": []
+        }
+      ]
+    },
+    "expected": {
+      "grid_a": {"left": 37, "top": 38, "width": 50, "height": 20, "managed": true, "origin_x": 10, "origin_y": 5},
+      "grid_b": {"left": 210, "top": 105, "width": 80, "height": 40, "managed": true, "origin_x": 110, "origin_y": 55}
+    }
+  },
+  {
+    "name": "flex_space_between",
+    "project": {
+      "canvas": {"width": 300, "height": 100},
+      "extra_lvgl": {
+        "pad_left": 10,
+        "pad_right": 10,
+        "layout": {
+          "type": "FLEX",
+          "flex_flow": "ROW",
+          "flex_align_main": "SPACE_BETWEEN",
+          "flex_align_cross": "CENTER",
+          "flex_align_track": "CENTER"
+        }
+      },
+      "widgets": [
+        {"id": "flex_a", "widget_type": "obj", "width": 50, "height": 20, "children": []},
+        {"id": "flex_b", "widget_type": "obj", "width": 50, "height": 20, "children": []},
+        {"id": "flex_c", "widget_type": "obj", "width": 50, "height": 20, "children": []}
+      ]
+    },
+    "expected": {
+      "flex_a": {"left": 10, "top": 40, "width": 50, "height": 20, "managed": true, "origin_x": 10, "origin_y": 40},
+      "flex_b": {"left": 125, "top": 40, "width": 50, "height": 20, "managed": true, "origin_x": 125, "origin_y": 40},
+      "flex_c": {"left": 240, "top": 40, "width": 50, "height": 20, "managed": true, "origin_x": 240, "origin_y": 40}
+    }
+  },
+  {
+    "name": "nested_flex_with_padding",
+    "project": {
+      "canvas": {"width": 240, "height": 140},
+      "extra_lvgl": {},
+      "widgets": [
+        {
+          "id": "panel",
+          "widget_type": "obj",
+          "x": 10,
+          "y": 10,
+          "width": 200,
+          "height": 100,
+          "style_tree": {"pad_all": 10, "pad_row": 5},
+          "layout": {
+            "type": "FLEX",
+            "flex_flow": "COLUMN",
+            "flex_align_main": "START",
+            "flex_align_cross": "END",
+            "flex_align_track": "END"
+          },
+          "children": [
+            {"id": "nested_a", "widget_type": "obj", "width": 50, "height": 20, "children": []},
+            {"id": "nested_b", "widget_type": "obj", "width": 50, "height": 20, "children": []}
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "panel": {"left": 10, "top": 10, "width": 200, "height": 100, "managed": false, "origin_x": 0, "origin_y": 0},
+      "nested_a": {"left": 150, "top": 20, "width": 50, "height": 20, "managed": true, "origin_x": 150, "origin_y": 20},
+      "nested_b": {"left": 150, "top": 45, "width": 50, "height": 20, "managed": true, "origin_x": 150, "origin_y": 45}
+    }
+  },
+  {
+    "name": "page_surface_style_merge",
+    "surface": "page:main",
+    "project": {
+      "canvas": {"width": 200, "height": 100},
+      "extra_lvgl": {"pad_top": 3},
+      "widgets": [],
+      "pages": [
+        {
+          "id": "main",
+          "style_tree": {"pad_left": 10},
+          "layout": {},
+          "widgets": [
+            {"id": "page_widget", "widget_type": "obj", "x": 5, "y": 7, "width": 40, "height": 20, "children": []}
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "page_widget": {"left": 15, "top": 10, "width": 40, "height": 20, "managed": false, "origin_x": 10, "origin_y": 3}
+    }
+  },
+  {
+    "name": "top_layer_flex_surface",
+    "surface": "top",
+    "project": {
+      "canvas": {"width": 200, "height": 100},
+      "extra_lvgl": {"pad_top": 5},
+      "widgets": [],
+      "top_layer": {
+        "style_tree": {"pad_left": 20},
+        "layout": {
+          "type": "FLEX",
+          "flex_flow": "ROW",
+          "flex_align_main": "START",
+          "flex_align_cross": "START",
+          "flex_align_track": "END"
+        },
+        "widgets": [
+          {"id": "layer_widget", "widget_type": "obj", "width": 50, "height": 20, "children": []}
+        ]
+      }
+    },
+    "expected": {
+      "layer_widget": {"left": 20, "top": 80, "width": 50, "height": 20, "managed": true, "origin_x": 20, "origin_y": 80}
+    }
+  }
+]

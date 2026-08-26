@@ -73,3 +73,31 @@ configuration:
       How long a successful "esphome config" validation of a specific
       config revision stays valid before a compile/install job requires a
       fresh one.
+  mcp_mode:
+    name: MCP access
+    description: >-
+      "disabled" starts no MCP listener. "lan" enables the separately
+      published, read-only MCP endpoint on port 8100. A strong access token
+      and an explicit Home Assistant network port mapping are also required.
+  mcp_access:
+    name: MCP permission
+    description: >-
+      "read_only" exposes inspection tools only. "project_write" additionally
+      allows temporary project changesets and a separate revision-protected
+      apply tool. It never grants YAML publishing, builds or device control.
+  mcp_access_token:
+    name: MCP access token
+    description: >-
+      Secret bearer token required by every MCP request. Use at least 32
+      random characters and configure the same token in Claude or another
+      MCP client.
+  mcp_allowed_hosts:
+    name: MCP allowed hosts
+    description: >-
+      Comma-separated Host header allowlist for DNS-rebinding protection.
+      Add the hostname or IP address clients use to reach Home Assistant.
+  mcp_allowed_origins:
+    name: MCP allowed browser origins
+    description: >-
+      Optional comma-separated Origin allowlist. Leave empty for native MCP
+      clients; add complete http(s) origins only for browser-based clients.

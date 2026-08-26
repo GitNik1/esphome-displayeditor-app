@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import yaml
+import pytest
 
+from backend.binding_formats import compile_numeric_binding_format
 from backend.designer_core.model import Project, WidgetNode
 from backend.designer import DesignerService
 from backend.designer_core.yamlimport import load_lvgl_yaml
@@ -34,6 +36,50 @@ def meter() -> WidgetNode:
             ]
         },
     )
+
+
+def test_numeric_binding_formats_escape_all_user_printf_conversions() -> None:
+    assert compile_numeric_binding_format("Load 100%: %n{value}") == (
+        "Load 100%%: %%n%.1f"
+    )
+    with pytest.raises(ValueError, match="exactly one"):
+        compile_numeric_binding_format("%.1f")
+    with pytest.raises(ValueError, match="exactly one"):
+        compile_numeric_binding_format("{value} {state}")
+
+
+def test_numeric_text_binding_never_emits_user_controlled_conversion() -> None:
+    project = Project(
+        widgets=[WidgetNode(id="temperature_label", widget_type="label")]
+    )
+    project.entities = [
+        {
+            "domain": "sensor",
+            "id": "temperature",
+            "readable": True,
+            "writable": False,
+            "data_type": "number",
+            "trigger": "on_value",
+            "commands": [],
+        }
+    ]
+    project.bindings = [
+        {
+            "id": "temperature_binding",
+            "direction": "entity_to_widget",
+            "source": {"domain": "sensor", "id": "temperature"},
+            "target": {"widget_id": "temperature_label", "property": "text"},
+            "transform": {"format": "%n{value}"},
+        }
+    ]
+
+    compiled = compile_bindings(project)
+
+    assert compiled.issues == []
+    assert compiled.entity_actions[0]["action"]["lvgl.label.update"]["text"] == {
+        "format": "%%n%.1f",
+        "args": [{"__esphome_lambda__": "return x;"}],
+    }
 
 
 def test_import_discovers_all_supported_entity_domains(tmp_path) -> None:

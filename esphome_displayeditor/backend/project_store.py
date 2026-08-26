@@ -13,6 +13,7 @@ from typing import Any
 from .designer import DesignerService
 from .errors import ApiError
 from .filesystem import revision_for
+from .project_locks import locked_project_write
 
 _PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.lvgldesign$")
 
@@ -86,6 +87,16 @@ class ProjectStore:
             "issues": issues,
         }
 
+    def prepare(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Validate and canonicalize a project without writing it."""
+        project, issues, raw = self._prepare(payload)
+        return {
+            "project": self.designer.project_payload(project),
+            "issues": issues,
+            "size": len(raw),
+        }
+
+    @locked_project_write
     def save(
         self,
         name: str,
@@ -93,12 +104,7 @@ class ProjectStore:
         expected_revision: str | None,
     ) -> dict:
         path = self._path(name)
-        project, issues = self.designer.validate(payload)
-        blocking = [issue for issue in issues if issue["severity"] == "error"]
-        if blocking:
-            raise ApiError(
-                "invalid_project", "Project validation failed.", 422, {"issues": issues}
-            )
+        _project, issues, raw = self._prepare(payload)
 
         old_revision: str | None = None
         if path.exists():
@@ -128,16 +134,6 @@ class ProjectStore:
                 {"expected_revision": expected_revision, "actual_revision": None},
             )
 
-        stored_payload = project.to_dict()
-        stored_payload["entities"] = getattr(project, "entities", [])
-        stored_payload["bindings"] = getattr(project, "bindings", [])
-        raw = (json.dumps(stored_payload, ensure_ascii=False, indent=2) + "\n").encode(
-            "utf-8"
-        )
-        if len(raw) > self.max_size:
-            raise ApiError(
-                "file_too_large", "Project exceeds the configured size limit.", 413
-            )
         self._atomic_write(path, raw)
         verified = self._read_bytes(path)
         new_revision = revision_for(verified)
@@ -152,6 +148,7 @@ class ProjectStore:
             "issues": issues,
         }
 
+    @locked_project_write
     def delete(self, name: str, expected_revision: str) -> dict:
         path = self._path(name)
         current_revision = revision_for(self._read_bytes(path))
@@ -167,6 +164,27 @@ class ProjectStore:
             )
         path.unlink()
         return {"name": name, "revision": current_revision}
+
+    def _prepare(
+        self, payload: dict[str, Any]
+    ) -> tuple[Any, list[dict], bytes]:
+        project, issues = self.designer.validate(payload)
+        blocking = [issue for issue in issues if issue["severity"] == "error"]
+        if blocking:
+            raise ApiError(
+                "invalid_project", "Project validation failed.", 422, {"issues": issues}
+            )
+        stored_payload = project.to_dict()
+        stored_payload["entities"] = getattr(project, "entities", [])
+        stored_payload["bindings"] = getattr(project, "bindings", [])
+        raw = (json.dumps(stored_payload, ensure_ascii=False, indent=2) + "\n").encode(
+            "utf-8"
+        )
+        if len(raw) > self.max_size:
+            raise ApiError(
+                "file_too_large", "Project exceeds the configured size limit.", 413
+            )
+        return project, issues, raw
 
     def _read_bytes(self, path: Path) -> bytes:
         try:

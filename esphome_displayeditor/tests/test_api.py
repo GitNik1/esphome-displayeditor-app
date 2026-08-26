@@ -157,8 +157,8 @@ def test_frontend_is_served(tmp_path: Path) -> None:
     assert 'id="merge-dialog"' in response.text
     assert 'id="image-button-section"' in response.text
     assert 'id="widget-action-image"' in response.text
-    assert 'styles.css?v=0.278.0' in response.text
-    assert 'app.js?v=0.278.0' in response.text
+    assert 'styles.css?v=0.300.0' in response.text
+    assert 'app.js?v=0.300.0' in response.text
     assert client.get("/app.js").status_code == 200
     viewer = client.get("/viewer/viewer.js")
     assert viewer.status_code == 200

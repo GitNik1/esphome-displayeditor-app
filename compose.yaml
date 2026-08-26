@@ -11,11 +11,13 @@ services:
       ESPHOME_ALLOW_ANONYMOUS_WRITE: "1"
       ESPHOME_ALLOW_DIRECT_ACCESS: "1"
     ports:
-      - "${ESPHOME_EDITOR_PORT:-8099}:8099"
+      # The development profile deliberately uses an anonymous local admin.
+      # Never publish either listener beyond the Docker host by default.
+      - "127.0.0.1:${ESPHOME_EDITOR_PORT:-8099}:8099"
+      - "127.0.0.1:${ESPHOME_MCP_PORT:-8100}:8100"
     volumes:
       - app-data:/data
     restart: unless-stopped
 
 volumes:
   app-data:
-

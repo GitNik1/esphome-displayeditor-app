@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Display Editor Preview</title>
+<style>
+  :root {
+    color-scheme: light dark;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--color-background-primary, #ffffff);
+    color: var(--color-text-primary, #171717);
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+    font-size: 13px;
+    overflow: auto;
+  }
+  #status {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--color-border-primary, #d9d9d9);
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: baseline;
+  }
+  #status .name { font-weight: 600; }
+  #status .muted { opacity: 0.65; }
+  #stage {
+    padding: 16px;
+  }
+  #canvas {
+    position: relative;
+    border: 1px solid var(--color-border-primary, #d9d9d9);
+    background: var(--color-background-secondary, #fafafa);
+    transform-origin: top left;
+  }
+  .widget {
+    position: absolute;
+    border: 1px solid var(--color-accent, #6366f1);
+    background: color-mix(in srgb, var(--color-accent, #6366f1) 12%, transparent);
+    overflow: hidden;
+    font-size: 10px;
+    line-height: 1.3;
+    padding: 1px 3px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .widget .label {
+    font-weight: 600;
+  }
+  #empty, #error {
+    padding: 24px 16px;
+    opacity: 0.75;
+  }
+  #error { color: var(--color-danger, #dc2626); }
+</style>
+</head>
+<body>
+  <div id="status">
+    <span class="name" id="status-name">Waiting for preview&hellip;</span>
+    <span class="muted" id="status-revision"></span>
+    <span class="muted" id="status-surface"></span>
+    <span class="muted" id="status-count"></span>
+  </div>
+  <div id="stage">
+    <div id="canvas"></div>
+    <div id="empty" hidden>No widgets on this surface.</div>
+    <div id="error" hidden></div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Minimal, dependency-free implementation of the MCP Apps postMessage
+  // wire protocol (see modelcontextprotocol.io/extensions/apps) - no
+  // external script, style, or resource is loaded, matching this app's
+  // fixed CSP (no connect/resource/frame domains granted).
+  var nextRequestId = 1;
+  var pending = {};
+
+  function send(message) {
+    window.parent.postMessage(message, "*");
+  }
+
+  function request(method, params) {
+    var id = nextRequestId++;
+    return new Promise(function (resolve, reject) {
+      pending[id] = { resolve: resolve, reject: reject };
+      send({ jsonrpc: "2.0", id: id, method: method, params: params || {} });
+    });
+  }
+
+  function notify(method, params) {
+    send({ jsonrpc: "2.0", method: method, params: params || {} });
+  }
+
+  window.addEventListener("message", function (event) {
+    // The host is always window.parent; messages from any other source
+    // (e.g. a nested frame this document never creates) are ignored.
+    if (event.source !== window.parent) return;
+    var data = event.data;
+    if (!data || data.jsonrpc !== "2.0") return;
+
+    if (typeof data.id !== "undefined" && (data.result !== undefined || data.error !== undefined)) {
+      var waiting = pending[data.id];
+      if (!waiting) return;
+      delete pending[data.id];
+      if (data.error) waiting.reject(data.error);
+      else waiting.resolve(data.result);
+      return;
+    }
+
+    switch (data.method) {
+      case "ui/notifications/tool-result":
+        renderToolResult(data.params);
+        break;
+      case "ui/notifications/host-context-changed":
+        applyHostContext(data.params);
+        break;
+      case "ui/resource-teardown":
+        if (typeof data.id !== "undefined") {
+          send({ jsonrpc: "2.0", id: data.id, result: {} });
+        }
+        break;
+      default:
+        break;
+    }
+  });
+
+  function applyHostContext(context) {
+    if (!context) return;
+    if (context.styles && context.styles.variables) {
+      var root = document.documentElement.style;
+      Object.keys(context.styles.variables).forEach(function (key) {
+        root.setProperty(key, context.styles.variables[key]);
+      });
+    }
+  }
+
+  function setText(id, text) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = text || "";
+  }
+
+  function renderToolResult(params) {
+    var payload = params && params.structuredContent;
+    var canvasEl = document.getElementById("canvas");
+    var emptyEl = document.getElementById("empty");
+    var errorEl = document.getElementById("error");
+    canvasEl.innerHTML = "";
+    errorEl.hidden = true;
+
+    if (!payload || payload.ok === false) {
+      var message = (payload && (payload.message || payload.error)) || "Preview unavailable.";
+      setText("status-name", "Preview failed");
+      setText("status-revision", "");
+      setText("status-surface", "");
+      setText("status-count", "");
+      errorEl.textContent = String(message);
+      errorEl.hidden = false;
+      emptyEl.hidden = true;
+      return;
+    }
+
+    setText("status-name", payload.name || "");
+    setText("status-revision", payload.revision ? payload.revision.slice(0, 19) + "…" : "");
+    setText("status-surface", "surface: " + (payload.surface || "root"));
+    setText("status-count", (payload.returned || 0) + " widget(s)" + (payload.truncated ? " (truncated)" : ""));
+
+    var canvas = payload.canvas || {};
+    var width = Number(canvas.width) || 320;
+    var height = Number(canvas.height) || 240;
+    canvasEl.style.width = width + "px";
+    canvasEl.style.height = height + "px";
+
+    var stage = document.getElementById("stage");
+    var maxWidth = Math.max(200, stage.clientWidth - 32);
+    var scale = width > maxWidth ? maxWidth / width : 1;
+    canvasEl.style.transform = scale < 1 ? "scale(" + scale.toFixed(3) + ")" : "";
+    stage.style.paddingBottom = scale < 1 ? (height * scale - height) + "px" : "0";
+
+    var widgets = Array.isArray(payload.widgets) ? payload.widgets : [];
+    emptyEl.hidden = widgets.length > 0;
+
+    widgets.forEach(function (widget) {
+      var box = widget.resolved;
+      if (!box) return;
+      var el = document.createElement("div");
+      el.className = "widget";
+      el.style.left = Math.round(box.left) + "px";
+      el.style.top = Math.round(box.top) + "px";
+      el.style.width = Math.max(2, Math.round(box.width)) + "px";
+      el.style.height = Math.max(2, Math.round(box.height)) + "px";
+      el.title = (widget.id || "") + " (" + (widget.widget_type || "") + ")";
+      var label = document.createElement("span");
+      label.className = "label";
+      label.textContent = widget.widget_type || "";
+      el.appendChild(label);
+      canvasEl.appendChild(el);
+    });
+  }
+
+  async function initialize() {
+    var response;
+    try {
+      response = await request("ui/initialize", {
+        capabilities: {},
+        clientInfo: { name: "esphome-display-editor-preview", version: "1" },
+        protocolVersion: "2026-01-26",
+        appCapabilities: { experimental: {}, tools: {}, availableDisplayModes: ["inline"] }
+      });
+    } catch (err) {
+      setText("status-name", "Initialization failed");
+      return;
+    }
+    if (response && response.hostContext) applyHostContext(response.hostContext);
+    notify("ui/notifications/initialized", {});
+  }
+
+  initialize();
+})();
+</script>
+</body>
+</html>

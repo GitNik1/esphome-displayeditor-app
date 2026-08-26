@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:mcpb": "python scripts/build_mcpb.py",
     "test:unit": "node --test tests/frontend/*.test.mjs",
     "test:e2e": "playwright test",
     "typecheck": "tsc --project tsconfig.json"

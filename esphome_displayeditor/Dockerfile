@@ -29,7 +29,7 @@ ENV PYTHONPATH=/app \
     ESPHOME_DATA_ROOT=/data
 
 WORKDIR /app
-EXPOSE 8099
+EXPOSE 8099 8100
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/api/v1/health', timeout=2)" || exit 1
 ENTRYPOINT []

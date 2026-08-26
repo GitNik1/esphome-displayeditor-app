@@ -42,15 +42,28 @@ def test_apparmor_allows_listing_the_app_directory() -> None:
     assert "/app/** r," in apparmor
 
 
-def test_app_remains_ingress_only_and_protected() -> None:
+def test_app_keeps_ingress_ui_and_opt_in_mcp_port() -> None:
     config = yaml.safe_load((APP_ROOT / "config.yaml").read_text(encoding="utf-8"))
 
     assert config["ingress"] is True
-    assert config["ports"] == {}
+    assert config["ports"] == {"8100/tcp": None}
     assert config["apparmor"] is True
     assert config.get("host_network", False) is False
     assert config.get("full_access", False) is False
     assert config["options"]["default_role"] == "viewer"
+    assert config["options"]["mcp_mode"] == "disabled"
+    assert config["options"]["mcp_access"] == "read_only"
+    assert config["options"]["mcp_access_token"] == ""
+
+
+def test_anonymous_development_compose_ports_are_loopback_only() -> None:
+    compose = yaml.safe_load(
+        (APP_ROOT.parent / "compose.yaml").read_text(encoding="utf-8")
+    )
+
+    ports = compose["services"]["app"]["ports"]
+    assert ports
+    assert all(str(port).startswith("127.0.0.1:") for port in ports)
 
 
 def test_container_includes_native_api_and_websocket_runtimes() -> None:
