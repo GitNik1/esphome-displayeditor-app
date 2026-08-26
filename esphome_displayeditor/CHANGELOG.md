@@ -2,13 +2,24 @@
 
 ## Unreleased
 
+## 0.302.0
+
+- Fixed the "Permission denied" startup failure for real: 0.301.0's
+  AppArmor rule additions were not enough because `python3 -m venv`
+  symlinks `bin/python`/`bin/python3` to the *system* interpreter outside
+  `/opt/esphome-displayeditor/` by default. AppArmor mediates exec() against
+  that resolved target, not the symlink path, so no rule scoped to
+  `/opt/esphome-displayeditor/**` could ever cover it. The venv is now
+  created with `--copies`, so the interpreter is a real, self-contained copy
+  inside the tree the profile already covers.
+
 ## 0.301.0
 
 - Fixed a startup failure ("Permission denied" executing
   `/opt/esphome-displayeditor/bin/python`): the AppArmor profile only
   explicitly allowed executing `bin/python3`, not the `bin/python` symlink
   or `bin/uvicorn` that run.sh also invokes. Added exact-path `ix` rules for
-  both, alongside the existing broad rule.
+  both, alongside the existing broad rule. (Incomplete - see Unreleased.)
 
 ## 0.300.0
 
