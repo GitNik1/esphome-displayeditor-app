@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.301.0
+
+- Fixed a startup failure ("Permission denied" executing
+  `/opt/esphome-displayeditor/bin/python`): the AppArmor profile only
+  explicitly allowed executing `bin/python3`, not the `bin/python` symlink
+  or `bin/uvicorn` that run.sh also invokes. Added exact-path `ix` rules for
+  both, alongside the existing broad rule.
+
 ## 0.300.0
 
 - Added MCP integration over Streamable HTTP. It exposes bounded project,

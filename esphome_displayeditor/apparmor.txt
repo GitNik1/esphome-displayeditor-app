@@ -14,7 +14,14 @@ profile esphome_displayeditor flags=(attach_disconnected,mediate_deleted) {
   # The container runs run.sh directly as PID 1 (no S6 Overlay/Bashio).
   /bin/** ix,
 
+  # The broad rix rule below should in principle cover every file under this
+  # tree, but Supervisor's AppArmor enforcement has repeatedly denied exec
+  # on specific venv entry points (symlinks such as bin/python, or
+  # console-script wrappers such as bin/uvicorn) despite it - hence the
+  # exact-path rules kept here for every binary run.sh actually invokes.
+  /opt/esphome-displayeditor/bin/python ix,
   /opt/esphome-displayeditor/bin/python3 ix,
+  /opt/esphome-displayeditor/bin/uvicorn ix,
   /opt/esphome-displayeditor/** rix,
   # /app itself must be listable, not just its contents: it is a sys.path
   # entry, so Python scans the directory to find the `backend` package.
