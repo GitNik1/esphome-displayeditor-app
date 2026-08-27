@@ -7,6 +7,7 @@ from typing import Any
 from mcp.server import MCPServer
 
 from ..assistant_tools import AssistantToolService
+from ..assistant_tools.operations import PlacementOperation
 from .identity import MCPAuthorization
 from .support import APPLY, READ_ONLY, scoped_tool_result
 
@@ -96,6 +97,38 @@ def register_write_api(
             fallback,
             lambda authorization: service.read_changeset(
                 change_set_id,
+                identity=authorization.identity,
+            ),
+        )
+
+    @server.tool(name="display_project_apply", annotations=APPLY)
+    def display_project_apply(
+        name: str,
+        base_revision: str,
+        operations: list[PlacementOperation],
+    ) -> dict[str, Any]:
+        """Validate and persist project operations in one step, without review.
+
+        The reviewed route (display_project_propose -> display_changeset_apply)
+        stays available and is the better choice when someone should look at
+        the diff first. This one trades that look for a single round trip and
+        relies on the project version history to undo a bad change.
+
+        It is not a shortcut past the safety checks: the operations are
+        validated exactly as a proposal is, and ``base_revision`` is still
+        enforced, so a change made by another session in the meantime is
+        refused rather than silently overwritten.
+        """
+        return scoped_tool_result(
+            ("project:write", "changeset:apply"),
+            fallback,
+            lambda authorization: service.apply_changeset(
+                service.propose_project(
+                    name,
+                    base_revision,
+                    operations,
+                    identity=authorization.identity,
+                )["change_set_id"],
                 identity=authorization.identity,
             ),
         )

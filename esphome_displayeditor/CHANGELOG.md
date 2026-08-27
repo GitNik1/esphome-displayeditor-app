@@ -2,6 +2,77 @@
 
 ## Unreleased
 
+## 0.400.0
+
+- Designer projects now keep a version history. Every write is recorded —
+  from the editor, from another browser session and from the MCP server —
+  closing the gap that the in-browser undo (memory-only, editor edits only)
+  never covered. **Versionen …** next to the project list shows the versions
+  with a diff of the selected one against the current state; the System page
+  gains a **Letzte Änderungen** card across all projects.
+- The last 10 versions per project are kept automatically, plus up to 5
+  **locked** ones that are exempt from that rotation. Versions can be
+  **named**; naming and locking are independent actions.
+- **Restoring** writes a version back through the normal revision-checked
+  save. Nothing is rewound — the replaced state stays in the list and the
+  restored state is added on top, so a restore is itself undoable. A
+  concurrent change by someone else is refused rather than overwritten.
+- Deleting a project keeps its last content, so it can be recreated from the
+  history (its viewer bindings are not versioned and do not return with it).
+- Layout regressions are now tested. Four of them shipped past the behavioural
+  suite during this work and were only found by looking at screenshots, so
+  `tests/e2e/layout.spec.mjs` asserts geometry directly: the version dialog's
+  actions stay on screen at 620/768/900px, the viewer's rows stack without
+  gaps, a closed `<dialog>` occupies no space, and the comparison switch does
+  not wrap. Each case was mutation-tested by reintroducing the bug.
+- Fixed a closed `#meter-dialog` being laid out as an 820px block: a bare
+  `display: grid` overrode the browser's `display: none`. Not visible today,
+  since the page does not scroll, but the same trap the new guard now catches.
+- The viewer gained a revision graph: versions laid out oldest to newest,
+  coloured by origin, locked ones ringed, and restores drawn as an arc back to
+  the version they came from. Clicking a node inspects it, so a history can be
+  walked without returning to the dialog.
+- Any two stored versions can be compared, not just a version against the
+  current state: *Vergleichen mit* picks the target, and both the diff and the
+  Viewer's A/B switch follow it. The target can be changed from either side —
+  the viewer's second segment is the picker itself, so choosing a target and
+  showing it is one action — and the choice carries back to the dialog. A
+  deleted project, having no current state, falls back to comparing two of its
+  own versions.
+- A version can now be opened in the Viewer instead of only being read as a
+  diff, with a bar that names it and flips between that version and the
+  current state in place — same position, same zoom — so the two are actually
+  comparable. Historical versions render without runtime bindings, and
+  "Zurück zur Historie" reopens the dialog on the same version. Viewing needs
+  only the `viewer` role; restoring still needs `editor`.
+- The editor now notices when the project it has open was written by someone
+  else — another session or the MCP server — and says so in a dismissible
+  banner that leads straight to the history. Without it the change would only
+  have surfaced as a conflict on the next save, which matters more now that
+  changes can be applied without review. Polling rather than a push: every
+  WebSocket channel is fed from an in-process device/job queue, and the MCP
+  listener runs in a separate process.
+- Entries in the **Letzte Änderungen** card are clickable and open that
+  project's history with the entry preselected.
+- Restoring from that card no longer swaps out what the editor is showing:
+  it only adopts the restored state when it is the same project, and asks
+  first when there are unsaved changes.
+- New MCP tool `display_project_apply` applies project operations in one call
+  without a review step, backed by the version history for undo. Operations are
+  validated exactly as a proposal is and `base_revision` is still enforced, so
+  a concurrent change by another session is refused rather than overwritten.
+  Needs both the `project:write` and `changeset:apply` scopes; a token with
+  only `project:write` stays on the reviewed propose/apply route.
+- New read-only MCP tools `display_project_revisions` and
+  `display_project_revision_read`. There is deliberately no restore tool:
+  rollbacks go through the existing changeset pipeline so they keep their
+  base-revision check and stay reviewable.
+- History lives in `/data/database/project_revisions.sqlite3`, compressed and
+  capped. Reading needs `viewer`; naming, locking and restoring need `editor`.
+  Actor identities in the global feed are visible to administrators only.
+  Existing installations start with an empty history — earlier content was
+  overwritten in place and cannot be reconstructed.
+
 ## 0.302.0
 
 - Fixed the "Permission denied" startup failure for real: 0.301.0's

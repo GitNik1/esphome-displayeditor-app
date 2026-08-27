@@ -156,6 +156,35 @@ def create_mcp_server(
             lambda _authorization: service.validate_project(name),
         )
 
+    @server.tool(name="display_project_revisions", annotations=READ_ONLY)
+    def display_project_revisions(name: str, limit: int = 10) -> dict[str, Any]:
+        """List the stored earlier versions of a project with actor and origin."""
+        return scoped_tool_result(
+            ("project:read",),
+            fallback,
+            lambda _authorization: service.list_project_revisions(name, limit),
+        )
+
+    @server.tool(name="display_project_revision_read", annotations=READ_ONLY)
+    def display_project_revision_read(
+        name: str,
+        revision_id: int,
+        view: Literal["summary", "diff"] = "summary",
+        against: str = "current",
+    ) -> dict[str, Any]:
+        """Read one earlier version as a bounded summary or a unified diff.
+
+        Rolling back is deliberately not a tool: read the version, then go
+        through display_project_propose and display_changeset_apply.
+        """
+        return scoped_tool_result(
+            ("project:read",),
+            fallback,
+            lambda _authorization: service.read_project_revision(
+                name, revision_id, view, against
+            ),
+        )
+
     register_discovery_tools(server, service, fallback)
 
     @server.tool(name="display_binding_targets", annotations=READ_ONLY)

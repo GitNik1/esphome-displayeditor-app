@@ -18,7 +18,7 @@ from ..filesystem import FilesystemBackend
 from ..project_store import ProjectStore
 from ..runtime.registry import DeviceRegistry
 from ..viewer_bindings import ViewerBindingStore
-from . import query_bindings, query_project_tree, query_yaml
+from . import query_bindings, query_project_tree, query_revisions, query_yaml
 from .device_discovery import DeviceDiscoveryService
 from .limits import (
     MCP_CONFIGURATION_CHUNK_CHARACTERS,
@@ -376,6 +376,18 @@ class QueryService:
             "issue_counts": dict(counts),
             "issues": issues,
         }
+
+    def list_revisions(self, name: str, limit: int = 10) -> dict[str, Any]:
+        return query_revisions.list_revisions(self, name, limit)
+
+    def read_revision(
+        self,
+        name: str,
+        revision_id: int,
+        view: str = "summary",
+        against: str = "current",
+    ) -> dict[str, Any]:
+        return query_revisions.read_revision(self, name, revision_id, view, against)
 
     def _page(
         self,

@@ -33,6 +33,8 @@ _READ_ONLY_TOOL_NAMES = frozenset(
         "display_configuration_read",
         "display_project_read",
         "display_project_validate",
+        "display_project_revisions",
+        "display_project_revision_read",
         "display_binding_targets",
         "display_yaml_transform",
         "display_preview",
