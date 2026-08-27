@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>ESPHome Display Editor</title>
-    <link rel="stylesheet" href="styles.css?v=0.302.0">
+    <link rel="stylesheet" href="styles.css?v=0.400.0">
   </head>
   <body>
     <header class="topbar">
@@ -18,6 +18,12 @@
       </label>
       <div id="health" class="health"><span class="health-dot"></span> <span data-i18n="app.health.backend">Backend</span></div>
     </header>
+
+    <div id="external-change-banner" class="external-change-banner hidden" role="status" aria-live="polite">
+      <span id="external-change-message"></span>
+      <button id="external-change-open" type="button" class="button primary compact" data-i18n="external.open">Versionen ansehen</button>
+      <button id="external-change-dismiss" type="button" class="icon-button" data-i18n-attr="aria-label:external.dismiss" aria-label="Hinweis schließen">×</button>
+    </div>
 
     <nav class="tabs" data-i18n-attr="aria-label:nav.ariaLabel" aria-label="Bereiche">
       <button class="tab active" data-tab="designer" data-i18n="nav.designer">Designer</button>
@@ -181,6 +187,7 @@
               <button id="load-server-project" class="button subtle" data-i18n="project.load" disabled>Laden</button>
               <button id="save-server-project" class="button primary" data-i18n="project.saveToApp">In App speichern</button>
               <button id="delete-server-project" class="button danger compact" data-i18n="project.delete" disabled>Löschen</button>
+              <button id="open-revisions" class="button subtle compact" data-i18n="revisions.open" disabled>Versionen …</button>
             </div>
           </details>
 
@@ -873,6 +880,17 @@
       <section id="system" class="view system-view">
         <div class="system-grid">
           <div class="system-card"><small data-i18n="system.status">STATUS</small><h2 data-i18n="system.heading">System und Fähigkeiten</h2><pre id="system-json" data-i18n="system.loading">Wird geladen …</pre></div>
+          <section id="revision-feed-card" class="system-card revision-feed-card hidden" aria-labelledby="revision-feed-heading">
+            <div class="mcp-token-heading">
+              <div><h2 id="revision-feed-heading" data-i18n="revisions.feed.title">Letzte Änderungen</h2></div>
+              <div class="actions">
+                <button id="refresh-revision-feed" type="button" class="icon-button" data-i18n-attr="title:revisions.feed.refresh" title="Neu laden">↻</button>
+              </div>
+            </div>
+            <p class="hint" data-i18n="revisions.feed.hint">Wer hat welches Projekt zuletzt geändert – aus dem Editor oder vom MCP-Server.</p>
+            <div id="revision-feed" class="revision-feed"></div>
+          </section>
+
           <section id="mcp-token-card" class="system-card mcp-token-card hidden" aria-labelledby="mcp-token-heading">
             <div class="mcp-token-heading">
               <div><small>MCP 1.0</small><h2 id="mcp-token-heading" data-i18n="mcp.tokens.heading">KI-Client-Zugänge</h2></div>
@@ -985,6 +1003,33 @@
         </div>
         <div class="dialog-actions"><button type="submit" class="button primary" data-i18n="dialog.device.save">Speichern</button></div>
       </form>
+    </dialog>
+
+    <dialog id="revisions-dialog" class="revisions-dialog" aria-labelledby="revisions-title">
+      <div class="dialog-heading"><h2 id="revisions-title" data-i18n="revisions.title">Versionen</h2><button id="close-revisions" type="button" class="icon-button" data-i18n-attr="aria-label:revisions.close" aria-label="Dialog schließen">×</button></div>
+      <p class="hint" id="revisions-hint" data-i18n="revisions.hint">Die letzten Fassungen dieses Projekts – aus dem Editor und vom MCP-Server. Gesperrte Fassungen bleiben zusätzlich erhalten.</p>
+      <div class="revisions-body">
+        <div id="revisions-list" class="revisions-list" role="listbox" data-i18n-attr="aria-label:revisions.listAria" aria-label="Gespeicherte Fassungen"></div>
+        <div class="revisions-compare">
+          <label class="revisions-compare-target"><span data-i18n="revisions.compareWith">Vergleichen mit</span>
+            <select id="revision-compare"></select>
+          </label>
+          <div id="revisions-diff" class="revisions-diff output"></div>
+        </div>
+      </div>
+      <div class="revisions-annotate">
+        <label><span data-i18n="revisions.label">Name</span>
+          <input id="revision-label" maxlength="80" autocomplete="off" data-i18n-attr="placeholder:revisions.labelPlaceholder" placeholder="z. B. vor dem Umbau" disabled>
+        </label>
+        <button id="save-revision-label" type="button" class="button subtle compact" data-i18n="revisions.labelSave" disabled>Namen speichern</button>
+        <button id="toggle-revision-lock" type="button" class="button subtle compact" data-i18n="revisions.lock" disabled>Sperren</button>
+        <span id="revision-lock-quota" class="hint"></span>
+      </div>
+      <div class="dialog-actions">
+        <button id="preview-revision" type="button" class="button subtle" data-i18n="revisions.preview" disabled>Ansehen</button>
+        <button id="restore-revision" type="button" class="button warning" data-i18n="revisions.restore" disabled>Wiederherstellen</button>
+        <button id="close-revisions-footer" type="button" class="button subtle" data-i18n="revisions.closeButton">Schließen</button>
+      </div>
     </dialog>
 
     <dialog id="mcp-token-create-dialog" class="mcp-token-dialog" aria-labelledby="mcp-token-create-title">
@@ -1169,6 +1214,22 @@
             <button id="viewer-close" class="button primary compact" data-i18n="dialog.viewer.close">Schließen</button>
           </div>
         </header>
+        <div id="viewer-history-bar" class="viewer-history-bar hidden">
+          <div class="viewer-history-top">
+            <span class="viewer-history-badge" data-i18n="viewer.history.badge">Historische Fassung</span>
+            <strong id="viewer-history-label"></strong>
+            <span id="viewer-history-date" class="viewer-history-date"></span>
+            <div class="viewer-history-switch" role="group" data-i18n-attr="aria-label:viewer.history.switchAria" aria-label="Vergleich">
+              <button id="viewer-history-version" type="button" class="button subtle compact active" data-i18n="viewer.history.showVersion">Diese Fassung</button>
+              <select id="viewer-history-compare" class="viewer-history-compare" data-i18n-attr="aria-label:revisions.compareWith" aria-label="Vergleichen mit"></select>
+            </div>
+            <button id="viewer-history-back" type="button" class="button subtle compact" data-i18n="viewer.history.back">Zurück zur Historie</button>
+          </div>
+          <div class="revision-graph" data-i18n-attr="aria-label:viewer.history.graphAria" aria-label="Fassungen">
+            <svg id="revision-graph-edges" class="revision-graph-edges" aria-hidden="true" preserveAspectRatio="none"></svg>
+            <div id="revision-graph-nodes" class="revision-graph-nodes"></div>
+          </div>
+        </div>
         <div id="viewer-stage" class="viewer-stage">
           <div id="viewer-frame" class="viewer-frame">
             <div id="viewer-display" class="viewer-display" data-i18n-attr="aria-label:viewer.displayAria" aria-label="Schreibgeschützte LVGL-Vorschau"></div>
@@ -1188,6 +1249,6 @@
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js?v=0.302.0"></script>
+    <script type="module" src="app.js?v=0.400.0"></script>
   </body>
 </html>

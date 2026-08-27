@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from pathlib import Path
+import json
 import sqlite3
 
 import pytest
@@ -11,6 +12,7 @@ from backend.assistant_tools.changesets import ChangeSetStore
 from backend.assistant_tools.limits import (
     MCP_APPLIED_CHANGESET_RETENTION_SECONDS,
     MCP_CHANGESET_TTL_SECONDS,
+    MCP_TOOL_RESULT_SOFT_TARGET_CHARACTERS,
 )
 from backend.assistant_tools.placement import PlacementService
 from backend.errors import ApiError
@@ -73,6 +75,13 @@ def test_changeset_proposal_apply_and_idempotent_retry(tmp_path: Path) -> None:
     actions = [entry["action"] for entry in service.audit.recent()]
     assert "mcp.project.propose" in actions
     assert "mcp.changeset.apply" in actions
+
+    versions = service.projects.revisions.list("display.lvgldesign")
+    assert versions[0]["origin"] == "mcp"
+    assert versions[0]["actor"] == "mcp:lan"
+    assert versions[0]["revision"] == applied["applied_revision"]
+    # The idempotent retry writes nothing, so it must not add a version either.
+    assert len(versions) == 2
 
 
 def test_changeset_apply_rejects_a_newer_project_revision(tmp_path: Path) -> None:
@@ -1090,3 +1099,207 @@ def test_secrets_yaml_is_unreadable_via_mcp_even_when_protect_sensitive_paths_is
             identity="mcp:lan",
         )
     assert import_propose.value.error == "secrets_file_protected"
+
+
+def seed_two_versions(service) -> str:
+    project = project_with_button()
+    created = service.projects.save("display.lvgldesign", project, None, origin="ui")
+    project["canvas"]["width"] = 800
+    service.projects.save(
+        "display.lvgldesign", project, created["revision"], actor="mcp:lan", origin="mcp"
+    )
+    return created["revision"]
+
+
+def test_revision_tools_expose_metadata_without_content(tmp_path: Path) -> None:
+    service = AssistantToolService(write_settings(tmp_path))
+    seed_two_versions(service)
+
+    listing = service.list_project_revisions("display.lvgldesign")
+    assert listing["exists"] is True
+    assert [item["origin"] for item in listing["versions"]] == ["mcp", "ui"]
+    assert [item["is_current"] for item in listing["versions"]] == [True, False]
+    assert listing["truncated"] is False
+    # Metadata only - the tool must never hand back a whole project blob.
+    assert all("project" not in item and "content" not in item for item in listing["versions"])
+
+
+def test_revision_summary_and_diff_views(tmp_path: Path) -> None:
+    service = AssistantToolService(write_settings(tmp_path))
+    seed_two_versions(service)
+    oldest = service.list_project_revisions("display.lvgldesign")["versions"][-1]
+
+    summary = service.read_project_revision("display.lvgldesign", oldest["id"])
+    assert summary["view"] == "summary"
+    assert summary["widget_count"] == 1
+    assert summary["valid"] is True
+    assert "diff" not in summary
+
+    diff = service.read_project_revision("display.lvgldesign", oldest["id"], "diff")
+    assert diff["against"] == "current"
+    assert '-    "width": 480' in diff["diff"]
+    assert '+    "width": 800' in diff["diff"]
+    assert diff["diff_truncated"] is False
+
+
+def test_revision_reads_reject_bad_arguments_and_foreign_versions(tmp_path: Path) -> None:
+    service = AssistantToolService(write_settings(tmp_path))
+    seed_two_versions(service)
+    version_id = service.list_project_revisions("display.lvgldesign")["versions"][0]["id"]
+
+    with pytest.raises(ApiError) as bad_view:
+        service.read_project_revision("display.lvgldesign", version_id, "everything")
+    assert bad_view.value.error == "invalid_request"
+
+    with pytest.raises(ApiError) as bad_against:
+        service.read_project_revision(
+            "display.lvgldesign", version_id, "diff", "nonsense"
+        )
+    assert bad_against.value.error == "invalid_request"
+
+    with pytest.raises(ApiError) as foreign:
+        service.read_project_revision("other.lvgldesign", version_id)
+    assert foreign.value.error == "revision_not_found"
+
+
+def test_revision_diff_is_capped_at_the_soft_target(tmp_path: Path) -> None:
+    service = AssistantToolService(write_settings(tmp_path))
+    project = project_with_button()
+    created = service.projects.save("display.lvgldesign", project, None, origin="ui")
+    project["widgets"] = [
+        {
+            "id": f"label_{index}",
+            "widget_type": "label",
+            "x": 0, "y": index, "width": 40, "height": 12,
+            "properties": {"text": f"row {index}"},
+            "style_tree": {},
+            "children": [],
+        }
+        for index in range(400)
+    ]
+    service.projects.save(
+        "display.lvgldesign", project, created["revision"], origin="ui"
+    )
+    oldest = service.list_project_revisions("display.lvgldesign")["versions"][-1]
+
+    diff = service.read_project_revision("display.lvgldesign", oldest["id"], "diff")
+    assert diff["diff_truncated"] is True
+    assert len(diff["diff"]) == MCP_TOOL_RESULT_SOFT_TARGET_CHARACTERS
+
+
+def add_button_op(widget_id: str = "light_button") -> dict:
+    return {
+        "op": "add_widget",
+        "widget_id": widget_id,
+        "widget_type": "button",
+        "surface": "root",
+        "placement": {"x": 160, "y": 20, "width": 120, "height": 40},
+        "properties": {"text": "Licht"},
+    }
+
+
+def direct_apply(service, name, base_revision, operations, identity="mcp:lan"):
+    """The composition display_project_apply performs, without the MCP transport."""
+    proposed = service.propose_project(name, base_revision, operations, identity=identity)
+    return service.apply_changeset(proposed["change_set_id"], identity=identity)
+
+
+def test_direct_apply_writes_without_a_review_step(tmp_path: Path) -> None:
+    service = AssistantToolService(write_settings(tmp_path))
+    created = service.projects.save("display.lvgldesign", project_with_button(), None)
+
+    applied = direct_apply(
+        service, "display.lvgldesign", created["revision"], [add_button_op()]
+    )
+
+    assert applied["status"] == "applied"
+    stored = service.projects.read("display.lvgldesign")
+    assert stored["revision"] == applied["applied_revision"]
+    assert {item["id"] for item in stored["project"]["widgets"]} == {
+        "button_1",
+        "light_button",
+    }
+
+
+def test_direct_apply_still_records_a_recoverable_version(tmp_path: Path) -> None:
+    """The history is the safety net that replaces the review step."""
+    service = AssistantToolService(write_settings(tmp_path))
+    created = service.projects.save(
+        "display.lvgldesign", project_with_button(), None, origin="ui"
+    )
+
+    direct_apply(service, "display.lvgldesign", created["revision"], [add_button_op()])
+
+    versions = service.projects.revisions.list("display.lvgldesign")
+    assert [item["origin"] for item in versions] == ["mcp", "ui"]
+    assert versions[0]["actor"] == "mcp:lan"
+    # The state before the agent touched it is still there and restorable.
+    restored, _ = service.projects.revisions.content(
+        "display.lvgldesign", versions[1]["id"]
+    )
+    assert restored is not None
+    service.projects.save(
+        "display.lvgldesign",
+        json.loads(restored),
+        versions[0]["revision"],
+        actor="ha:user",
+        origin="restore",
+    )
+    rolled_back = service.projects.read("display.lvgldesign")
+    assert {item["id"] for item in rolled_back["project"]["widgets"]} == {"button_1"}
+
+
+def test_direct_apply_still_refuses_a_stale_base_revision(tmp_path: Path) -> None:
+    """Skipping review does not mean skipping concurrency safety."""
+    service = AssistantToolService(write_settings(tmp_path))
+    project = project_with_button()
+    created = service.projects.save("display.lvgldesign", project, None)
+    project["canvas"]["width"] = 800
+    newer = service.projects.save("display.lvgldesign", project, created["revision"])
+
+    with pytest.raises(ApiError) as raised:
+        direct_apply(
+            service, "display.lvgldesign", created["revision"], [add_button_op()]
+        )
+
+    assert raised.value.error == "revision_conflict"
+    assert service.projects.read("display.lvgldesign")["revision"] == newer["revision"]
+
+
+def test_direct_apply_still_validates_the_operations(tmp_path: Path) -> None:
+    service = AssistantToolService(write_settings(tmp_path))
+    created = service.projects.save("display.lvgldesign", project_with_button(), None)
+
+    with pytest.raises(ApiError):
+        direct_apply(
+            service,
+            "display.lvgldesign",
+            created["revision"],
+            [add_button_op("invalid id")],
+        )
+
+    assert service.projects.read("display.lvgldesign")["revision"] == created["revision"]
+    assert len(service.projects.revisions.list("display.lvgldesign")) == 1
+
+
+def test_direct_apply_is_refused_for_read_only_mcp(tmp_path: Path) -> None:
+    service = AssistantToolService(write_settings(tmp_path, mcp_access="read_only"))
+    created = service.projects.save("display.lvgldesign", project_with_button(), None)
+
+    with pytest.raises(ApiError) as raised:
+        direct_apply(
+            service, "display.lvgldesign", created["revision"], [add_button_op()]
+        )
+
+    assert raised.value.error == "mcp_write_disabled"
+
+
+def test_direct_apply_leaves_an_audit_trail_for_both_halves(tmp_path: Path) -> None:
+    service = AssistantToolService(write_settings(tmp_path))
+    created = service.projects.save("display.lvgldesign", project_with_button(), None)
+
+    direct_apply(service, "display.lvgldesign", created["revision"], [add_button_op()])
+
+    actions = [entry["action"] for entry in service.audit.recent()]
+    assert "mcp.project.propose" in actions
+    assert "mcp.changeset.apply" in actions

@@ -23,6 +23,7 @@ from .api.routers.admin_devices import create_admin_devices_router
 from .api.routers.admin_mcp import create_admin_mcp_router
 from .api.routers.runtime_events import create_runtime_events_router
 from .api.routers.designer_projects import create_designer_projects_router
+from .api.routers.project_revisions import create_project_revisions_router
 from .api.routers.configuration_files import create_configuration_files_router
 from .api.routers.firmware_workflow import create_firmware_workflow_router
 from .api.routers.designer_transform import create_designer_transform_router
@@ -38,6 +39,7 @@ from .errors import ApiError, capability_unavailable
 from .filesystem import FilesystemBackend
 from .font_sources import FontSourceService
 from .mcp.token_store import MCPTokenStore
+from .project_revisions import ProjectRevisionStore
 from .project_store import ProjectStore
 from .runtime import DeviceManager, DeviceRegistry, SecretStore
 from .security import RateLimiter
@@ -62,7 +64,10 @@ def create_app(
     )
     audit = AuditStore(settings.data_root)
     designer = DesignerService(settings.data_root)
-    projects = ProjectStore(settings.data_root, designer, settings.max_file_size)
+    revisions = ProjectRevisionStore(settings.data_root)
+    projects = ProjectStore(
+        settings.data_root, designer, settings.max_file_size, revisions=revisions
+    )
     viewer_bindings = ViewerBindingStore(settings.data_root)
     workflow = WorkflowStore(settings.data_root)
     mcp_tokens = MCPTokenStore(settings.data_root)
@@ -463,6 +468,17 @@ def create_app(
             viewer_bindings=viewer_bindings,
             runtime=runtime_manager,
             audit=audit,
+            require_capability=require_capability,
+        )
+    )
+    application.include_router(
+        create_project_revisions_router(
+            projects=projects,
+            revisions=revisions,
+            designer=designer,
+            audit=audit,
+            request_identity=request_identity,
+            ensure_capability_available=ensure_capability_available,
             require_capability=require_capability,
         )
     )

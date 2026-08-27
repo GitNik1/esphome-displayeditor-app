@@ -18,6 +18,7 @@ Ingress boundary.
 - Active ESPHome files: `/homeassistant/esphome`
 - Drafts and app state: `/data`
 - Persistent designer projects: `/data/projects`
+- Designer project version history: `/data/database/project_revisions.sqlite3`
 - Viewer runtime bindings: `/data/viewer_bindings`
 - Native API device registry: `/data/runtime/devices.json`
 - Native API keys: `/data/runtime/native_api_keys.json` (mode `0600`)
@@ -169,8 +170,10 @@ user_roles:
 
 The user UUID and effective role are visible on the System page.
 
-- `viewer`: read configurations, projects and generated output
-- `editor`: additionally save drafts and designer projects
+- `viewer`: read configurations, projects and generated output, including the
+  project version history and its diffs
+- `editor`: additionally save drafts and designer projects, and name, lock and
+  restore project versions
 - `publisher`: additionally publish drafts and run ESPHome validation
 - `installer`: additionally compile firmware, start confirmed OTA installs,
   inspect jobs and cancel jobs
@@ -191,12 +194,103 @@ the app. Stored projects are included in Home Assistant app backups. Saving
 and deleting use SHA-256 revisions so a stale browser cannot silently
 overwrite a project changed by another session.
 
+### Version history
+
+Every write to a stored project is kept as a version - from the editor, from
+another browser session and from the MCP server alike. **Versionen …** next to
+the project list opens the history: versions on the left, a diff of the
+selected one against the current state on the right. The System page carries a
+**Letzte Änderungen** card with the same information across all projects, which
+answers "what did the MCP server change last?". Clicking an entry there opens
+that project's history with the entry preselected.
+
+Because nothing pushes project changes to the browser, the editor checks
+periodically whether the project it has open still matches the stored one. If
+another session or the MCP server wrote it in the meantime, a banner says so
+and offers to open the history. Dismissing it keeps it away until the next,
+different change. The check only runs while the tab is visible and only for a
+project that is actually stored.
+
+- The last **10** versions per project are kept automatically, oldest first
+  out. Up to **5** further versions per project can be **locked**, which keeps
+  them out of that rotation entirely; unlocking returns a version to it.
+- Versions can be **named**. Naming and locking are independent - naming a
+  version does not protect it, and locking does not require a name.
+- **Comparison** is not limited to the current state: *Vergleichen mit* picks
+  any other stored version as the target, so two earlier versions can be held
+  against each other. A project whose file was deleted has no current state
+  and falls back to comparing two of its versions.
+- **Viewing** a version opens it in the read-only Viewer, so a change can be
+  judged by what the display looked like rather than by a JSON diff. A bar
+  names the version on screen and flips between it and the comparison target,
+  without moving or rezooming, which is what makes the two comparable. The
+  target can be changed in the viewer as well as in the dialog, and whichever
+  was chosen last is the one both show.
+- A **graph** under that bar lays the versions out oldest to newest, coloured
+  by who wrote them, with locked ones ringed. Clicking a node inspects it, so
+  a whole history can be walked without leaving the viewer. Restores are drawn
+  as an arc back to the version they were taken from - the history is not a
+  plain line, and that relationship is what the arc makes visible.
+  Historical versions are shown without runtime bindings on purpose: a past
+  layout carrying today's live values would be a state that never existed.
+  Viewing needs only the `viewer` role.
+- **Restoring** writes the chosen version back through the normal
+  revision-checked save. Nothing is rewound: the state being replaced stays in
+  the list as an ordinary version, and the restored state is added on top
+  marked *Wiederhergestellt*, so a restore is itself undoable with one click.
+  A concurrent change by someone else is refused rather than overwritten.
+- Deleting a project records a marker and keeps its last content, so a deleted
+  project can be recreated from the history. Its viewer bindings are **not**
+  versioned and do not come back with it.
+- The history starts empty on existing installations - earlier content was not
+  retained and cannot be reconstructed. One save per project is enough to give
+  it a fallback point.
+- Versions written outside the app (for example editing the file over Samba,
+  or restoring a Home Assistant backup) are not recorded.
+- A version stored before a schema change may no longer validate. It can still
+  be viewed and diffed, but is marked as not restorable rather than being
+  written back in a broken state.
+
+History lives in `/data/database/project_revisions.sqlite3`, is compressed and
+capped, and is included in Home Assistant backups along with the rest of
+`/data`. Reading history and diffs needs the `viewer` role; naming, locking
+and restoring need `editor`. Who made a change is shown to administrators
+only - everyone else sees what kind of writer it was, not which user.
+
 ## Optional MCP service
 
 MCP is disabled by default and supports Streamable HTTP on `/mcp`. With the
 default `mcp_access: read_only`, it can list projects, read project summaries,
-trees, widgets and bindings, validate stored projects and expose the widget
-and binding catalogs without registering write tools. Project/configuration
+trees, widgets and bindings, validate stored projects, inspect the project
+version history (`display_project_revisions`, `display_project_revision_read`)
+and expose the widget and binding catalogs without registering write tools.
+There is deliberately no restore tool: an agent that wants to roll a project
+back reads the version it wants and proposes it through the normal
+`display_project_propose` / `display_changeset_apply` pipeline, so the change
+keeps its base-revision check and stays reviewable.
+
+With `mcp_access: project_write` there are two routes for changing a project:
+
+- **Reviewed** — `display_project_propose` creates an expiring change set and
+  changes nothing; `display_changeset_apply` persists it after someone has
+  looked at the preview. Use this when a diff should be seen first.
+- **Direct** — `display_project_apply` validates and writes in one call, with
+  no review step, relying on the version history to undo a bad change. It is
+  not a shortcut past the safety checks: operations are validated exactly as a
+  proposal is, and the supplied `base_revision` is still enforced, so a change
+  made by another session in the meantime is refused rather than overwritten.
+  Both halves are still recorded in the audit log.
+
+Direct application needs the `project:write` **and** `changeset:apply` scopes,
+the same pair the reviewed route needs end to end. A token issued with only
+`project:write` can propose but neither apply nor write directly, which is how
+you keep a client on the reviewed route.
+
+Bear in mind what the history does and does not cover: it keeps the last ten
+versions per project (plus locked ones), so a long unattended agent session can
+push the state from before it out of that window - lock a version first if that
+matters. It does not cover the active ESPHome YAML, so publishing remains the
+step with no rollback. Project/configuration
 listings and compatible entity/widget target suggestions use signed opaque
 `next_cursor` values that are bound to their query and source revision. It can
 also list and read confined active or existing draft ESPHome YAML configurations;

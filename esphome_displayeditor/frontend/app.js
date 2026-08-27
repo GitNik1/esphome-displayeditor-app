@@ -3,6 +3,17 @@
 import { computeLayout, contentOrigin, fontFamilyId, resolvedFontFamily } from "./layout.js";
 import { createApiClient, encodedName } from "./api/client.js";
 import { renderUnifiedDiff } from "./configurations/diff-view.js";
+import { createRevisionsController } from "./controllers/revisions-controller.js";
+import {
+  actionKey as revisionActionKey,
+  actorLabel as revisionActorLabel,
+  carriesContent,
+  entryModifier,
+  groupFeedByDay,
+  lockQuota,
+  originKey as revisionOriginKey,
+  versionTitle,
+} from "./project/revisions-view.js";
 import { blobToBase64, uploadImageAsset } from "./api/assets.js";
 import {
   actionIdsForEditor,
@@ -245,6 +256,15 @@ const devicesController = createDevicesController(api);
 const builderController = createBuilderController(api);
 const mcpTokensController = createMcpTokensController(api);
 const assistantController = createAssistantController(api);
+const revisionsController = createRevisionsController(api);
+/** @typedef {"current" | number | null} CompareTarget */
+/** @type {{name: string | null, listing: any, selectedId: number | null,
+ *   compareTo: CompareTarget}} */
+let revisionState = { name: null, listing: null, selectedId: null, compareTo: "current" };
+// Revision a banner has already been shown for, so dismissing it sticks
+// until the *next* external change rather than reappearing on every poll.
+/** @type {string | null} */
+let externalChangeSeen = null;
 /** @type {{clients: any[], allowed_scopes: string[], maximum: number}} */
 let mcpTokenListing = { clients: [], allowed_scopes: [], maximum: 0 };
 /** @type {any} */
@@ -342,6 +362,7 @@ async function initialize() {
   bindConfigurations();
   bindDevices();
   bindMcpTokens();
+  bindRevisions();
   bindAssistant();
   offerAutosaveRecovery();
   startAutosaveLoop();
@@ -362,12 +383,17 @@ async function initialize() {
     $("#system-json").textContent = JSON.stringify({ system, ...capabilityData }, null, 2);
     $("#mcp-token-card").classList.toggle("hidden", !state.capabilities["mcp.manage"]);
     $("#assistant-card").classList.toggle("hidden", !state.capabilities["assistant.ask"]);
+    $("#revision-feed-card").classList.toggle("hidden", !state.capabilities["designer.project"]);
     if (state.capabilities["assistant.ask"]) updateAssistantContext();
     updateDraftActionButtons();
     updateBuilderButtons();
     renderPalette();
     const initialLoads = [loadServerProjects(), loadDevices(), loadViewerRuntimeSources()];
     if (state.capabilities["mcp.manage"]) initialLoads.push(loadMcpTokens());
+    if (state.capabilities["designer.project"]) {
+      initialLoads.push(loadRevisionFeed());
+      startExternalChangeWatch();
+    }
     if (state.capabilities["configuration.list"]) initialLoads.push(loadConfigurations());
     else {
       $("#config-list").textContent = t("configs.filesystemDisabled");
@@ -1070,6 +1096,7 @@ function clearViewerBindings() {
 }
 
 async function openLiveViewer() {
+  clearViewerHistory();
   // Glow-line strokes only become real image/animimg widgets through
   // bakeAllStrokes() (see there) - without this, a stroke's flow action
   // would reference widget ids the viewer (which only simulates
@@ -1826,6 +1853,7 @@ function updateServerProjectButtons() {
   $("#delete-server-project").title = canWrite ? "" : writeHint;
   $("#save-server-project").disabled = !canWrite;
   $("#save-server-project").title = writeHint;
+  $("#open-revisions").disabled = !selected;
 }
 
 async function loadSelectedServerProject() {
@@ -1833,24 +1861,35 @@ async function loadSelectedServerProject() {
   if (!name) return;
   if (state.projectDirty && !confirm(t("confirm.discardUnsaved"))) return;
   try {
-    const result = await projectsController.load(name);
-    stopFlowPreview();
-    state.project = result.project;
-    state.activeSurface = result.project.pages?.[0] ? `page:${result.project.pages[0].id}` : "root";
-    state.projectName = result.name;
-    state.projectRevision = result.revision;
-    await loadViewerBindings(result.name);
-    markProjectClean();
-    state.selectedWidget = null;
-    state.selectedStroke = null;
-    state.drawingStroke = null;
-    $("#project-name").value = result.name;
-    resetHistory();
+    adoptLoadedProject(await projectsController.load(name));
+    await loadViewerBindings(name);
     renderDesigner();
     toast(t("toast.project.loadedFromStorage"));
   } catch (/** @type {any} */ error) {
     toast(error.message, true, error.details);
   }
+}
+
+/** Move a project fetched from the server into the editor.
+ * Caller loads the viewer bindings and renders - restoring a version reuses
+ * this so the two paths cannot drift apart.
+ * @param {any} result */
+function adoptLoadedProject(result) {
+  stopFlowPreview();
+  state.project = result.project;
+  state.activeSurface = result.project.pages?.[0] ? `page:${result.project.pages[0].id}` : "root";
+  state.projectName = result.name;
+  state.projectRevision = result.revision;
+  markProjectClean();
+  state.selectedWidget = null;
+  state.selectedStroke = null;
+  state.drawingStroke = null;
+  $("#project-name").value = result.name;
+  // The in-memory undo stack now points at a server state that no longer
+  // applies, so it has to go.
+  resetHistory();
+  externalChangeSeen = null;
+  hideExternalChangeBanner();
 }
 
 async function saveServerProject() {
@@ -1892,6 +1931,755 @@ async function deleteServerProject() {
   } catch (/** @type {any} */ error) {
     toast(error.message, true, error.details);
   }
+}
+
+// --- Externe Aenderungen ---------------------------------------------------
+
+const EXTERNAL_CHANGE_POLL_MS = 20000;
+
+// Nothing pushes project changes to the browser: every WebSocket channel is
+// fed from an in-process device/job queue, and the MCP listener runs in a
+// separate process, so it could not write into one. Polling one small
+// endpoint is the honest trade for an event that happens a few times a day.
+function startExternalChangeWatch() {
+  setInterval(checkExternalChanges, EXTERNAL_CHANGE_POLL_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") checkExternalChanges();
+  });
+}
+
+async function checkExternalChanges() {
+  const name = state.projectName;
+  // A project that was never stored server-side cannot change behind our back,
+  // and a hidden tab does not need to know yet.
+  if (!name || document.visibilityState !== "visible") return;
+  if (!state.capabilities["designer.project"]) return;
+  try {
+    const listing = await revisionsController.list(name);
+    const deleted = listing.exists === false;
+    const changed = !deleted && listing.current_revision !== state.projectRevision;
+    if (!deleted && !changed) {
+      hideExternalChangeBanner();
+      externalChangeSeen = null;
+      return;
+    }
+    const marker = deleted ? "deleted" : listing.current_revision;
+    if (marker === externalChangeSeen) return;
+    externalChangeSeen = marker;
+    showExternalChangeBanner(name, deleted, listing.versions?.[0]);
+    await loadRevisionFeed();
+  } catch {
+    // A failed poll is not worth bothering the user about; the next one runs
+    // in twenty seconds, and a real problem surfaces on the next save.
+  }
+}
+
+/** @param {string} name @param {boolean} deleted @param {any} [newest] */
+function showExternalChangeBanner(name, deleted, newest) {
+  const origin = newest ? t(revisionOriginKey(newest.origin)) : "";
+  $("#external-change-message").textContent = t(
+    deleted ? "external.deleted" : "external.changed",
+    { name, origin },
+  );
+  $("#external-change-banner").classList.remove("hidden");
+}
+
+function hideExternalChangeBanner() {
+  $("#external-change-banner").classList.add("hidden");
+}
+
+function bindExternalChangeBanner() {
+  $("#external-change-open").addEventListener("click", () => {
+    if (state.projectName) openRevisionsDialog(state.projectName);
+  });
+  $("#external-change-dismiss").addEventListener("click", hideExternalChangeBanner);
+}
+
+// --- Historische Fassung ansehen -------------------------------------------
+
+/** @typedef {{name: string, versions: any[], exists: boolean, inspectedId: number,
+ *   compareTo: CompareTarget, cache: Record<string, any>,
+ *   side: "version" | "compare"}} ViewerHistory */
+/** @type {ViewerHistory | null} */
+let viewerHistory = null;
+
+/** @param {number} id */
+function viewerVersionAt(id) {
+  const versions = viewerHistory?.versions || [];
+  const index = versions.findIndex((/** @type {any} */ item) => item.id === id);
+  return index < 0 ? null : { version: versions[index], index };
+}
+
+/** @param {CompareTarget} target */
+function viewerTargetLabel(target) {
+  if (target === "current" || target === null) return t("revisions.compareCurrent");
+  const found = viewerVersionAt(target);
+  return found ? versionTitle(found.version, found.index, t) : t("revisions.compareCurrent");
+}
+
+async function previewSelectedRevision() {
+  const name = revisionState.name;
+  const version = selectedRevision();
+  if (!name || !version || !carriesContent(version)) return;
+  try {
+    const loaded = await revisionsController.read(name, version.id);
+    viewerHistory = {
+      name,
+      versions: revisionState.listing?.versions || [],
+      exists: Boolean(revisionState.listing?.exists),
+      inspectedId: version.id,
+      compareTo: revisionState.compareTo,
+      cache: { [String(version.id)]: loaded.project },
+      side: "version",
+    };
+    // One modal at a time: the viewer replaces the dialog, and "Zurück zur
+    // Historie" brings it back on the same version and target.
+    $("#revisions-dialog").close();
+    renderViewerHistoryBar();
+    openHistoricProject();
+  } catch (/** @type {any} */ error) {
+    toast(error.message, true, error.details);
+  }
+}
+
+/** Fetch a version (or the current state) once and keep it, so moving around
+ * the graph stays instant. @param {CompareTarget} target */
+async function loadViewerProject(target) {
+  if (!viewerHistory || target === null) return false;
+  const key = String(target);
+  if (viewerHistory.cache[key]) return true;
+  try {
+    viewerHistory.cache[key] = target === "current"
+      ? (await projectsController.load(viewerHistory.name)).project
+      : (await revisionsController.read(viewerHistory.name, target)).project;
+    return true;
+  } catch (/** @type {any} */ error) {
+    toast(error.message, true, error.details);
+    return false;
+  }
+}
+
+/** Open whichever side is active, keeping the user's zoom and rotation so
+ * flipping actually compares like with like. */
+function openHistoricProject() {
+  if (!viewerHistory) return;
+  const { zoom, rotation, fitMode } = viewer;
+  const showingCompare = viewerHistory.side === "compare";
+  const key = String(showingCompare ? viewerHistory.compareTo : viewerHistory.inspectedId);
+  viewer.open(viewerHistory.cache[key], {
+    name: t("viewer.history.versionTitle", {
+      name: viewerHistory.name,
+      version: showingCompare
+        ? viewerTargetLabel(viewerHistory.compareTo)
+        : viewerTargetLabel(viewerHistory.inspectedId),
+    }),
+    // Deliberately no runtime bindings: showing a past layout with today's
+    // live values would be a state that never existed.
+    runtimeBindings: [],
+  });
+  if (!fitMode) {
+    viewer.setZoom(zoom);
+    viewer.setRotation(rotation);
+  }
+}
+
+/** @param {"version" | "compare"} side */
+async function showViewerHistorySide(side) {
+  if (!viewerHistory || viewerHistory.side === side) return;
+  const target = side === "compare" ? viewerHistory.compareTo : viewerHistory.inspectedId;
+  if (!(await loadViewerProject(target))) return;
+  viewerHistory.side = side;
+  renderViewerHistoryBar();
+  openHistoricProject();
+}
+
+/** Choosing a target also shows it - picking something you then have to click
+ * to see would be a pointless second step. @param {CompareTarget} target */
+async function setViewerCompareTarget(target) {
+  if (!viewerHistory || target === null) return;
+  if (!(await loadViewerProject(target))) {
+    renderViewerHistoryBar();
+    return;
+  }
+  viewerHistory.compareTo = target;
+  viewerHistory.side = "compare";
+  renderViewerHistoryBar();
+  openHistoricProject();
+}
+
+/** Move the inspected version, driven by the graph. @param {number} id */
+async function setViewerInspectedVersion(id) {
+  if (!viewerHistory) return;
+  if (viewerHistory.inspectedId === id) {
+    await showViewerHistorySide("version");
+    return;
+  }
+  if (!(await loadViewerProject(id))) return;
+  viewerHistory.inspectedId = id;
+  // Nothing compares with itself.
+  if (viewerHistory.compareTo === id) {
+    viewerHistory.compareTo = viewerHistory.exists ? "current" : null;
+  }
+  viewerHistory.side = "version";
+  renderViewerHistoryBar();
+  openHistoricProject();
+}
+
+function renderViewerHistoryBar() {
+  const bar = $("#viewer-history-bar");
+  if (!viewerHistory) {
+    bar.classList.add("hidden");
+    return;
+  }
+  const showingVersion = viewerHistory.side === "version";
+  const inspected = viewerVersionAt(viewerHistory.inspectedId);
+  $("#viewer-history-label").textContent = viewerTargetLabel(viewerHistory.inspectedId);
+  $("#viewer-history-date").textContent = inspected
+    ? formatRevisionDate(inspected.version.created_at)
+    : "";
+  $("#viewer-history-version").classList.toggle("active", showingVersion);
+  $("#viewer-history-version").setAttribute("aria-pressed", String(showingVersion));
+  renderViewerCompareOptions();
+  $("#viewer-history-compare").classList.toggle("active", !showingVersion);
+  renderRevisionGraph();
+  bar.classList.remove("hidden");
+}
+
+function renderViewerCompareOptions() {
+  const select = $("#viewer-history-compare");
+  select.replaceChildren();
+  // Held locally: the module-level binding is mutable, so it cannot be
+  // narrowed inside the callback below.
+  const history = viewerHistory;
+  if (!history) return;
+  if (history.exists) {
+    const option = document.createElement("option");
+    option.value = "current";
+    option.textContent = t("revisions.compareCurrent");
+    select.append(option);
+  }
+  history.versions.forEach((/** @type {any} */ version, /** @type {number} */ index) => {
+    if (version.id === history.inspectedId || !carriesContent(version)) return;
+    const option = document.createElement("option");
+    option.value = String(version.id);
+    option.textContent = versionTitle(version, index, t);
+    select.append(option);
+  });
+  select.value = history.compareTo === null ? "" : String(history.compareTo);
+  select.disabled = !select.options.length;
+}
+
+async function returnToRevisions() {
+  const previous = viewerHistory;
+  viewer.close();
+  if (!previous) return;
+  // Carry both choices back, so the dialog shows what the viewer ended on.
+  await openRevisionsDialog(previous.name, previous.inspectedId, previous.compareTo);
+}
+
+function clearViewerHistory() {
+  viewerHistory = null;
+  $("#viewer-history-bar").classList.add("hidden");
+}
+
+function bindViewerHistory() {
+  $("#preview-revision").addEventListener("click", previewSelectedRevision);
+  $("#viewer-history-version").addEventListener("click", () => showViewerHistorySide("version"));
+  $("#viewer-history-compare").addEventListener("change", () => {
+    setViewerCompareTarget(parseCompareTarget($("#viewer-history-compare").value));
+  });
+  // Clicking the select without changing it should still switch sides.
+  $("#viewer-history-compare").addEventListener("click", () => showViewerHistorySide("compare"));
+  $("#viewer-history-back").addEventListener("click", returnToRevisions);
+  // Covers every way out - the viewer's own close button, Escape, and
+  // returnToRevisions - so the bar can never linger over a live preview.
+  $("#viewer-dialog").addEventListener("close", clearViewerHistory);
+  // Arcs are drawn from measured node positions, so they have to be redrawn
+  // whenever the row is laid out again.
+  new ResizeObserver(() => drawRevisionGraphEdges()).observe($("#revision-graph-nodes"));
+}
+
+// --- Revisions-Graph --------------------------------------------------------
+
+// The history is not a plain line: a restore creates a version whose content
+// comes from an older one, and that relationship is what the arcs show. Nodes
+// are real buttons so the graph is keyboard-navigable; the arcs are a
+// decorative SVG layer measured from those buttons after layout.
+
+function renderRevisionGraph() {
+  const row = $("#revision-graph-nodes");
+  row.replaceChildren();
+  const history = viewerHistory;
+  if (!history) return;
+  // Oldest on the left, so the graph reads in the direction time runs.
+  const ordered = [...history.versions].reverse();
+  ordered.forEach((version) => {
+    const index = history.versions.indexOf(version);
+    row.append(revisionGraphNode(version, index, history));
+  });
+  drawRevisionGraphEdges();
+}
+
+/** @param {any} version @param {number} index @param {ViewerHistory} history */
+function revisionGraphNode(version, index, history) {
+  const node = document.createElement("button");
+  node.type = "button";
+  node.className = `revision-node ${entryModifier(version)}`;
+  node.dataset.revisionId = String(version.id);
+  const showing = history.side === "version"
+    ? version.id === history.inspectedId
+    : version.id === history.compareTo;
+  node.classList.toggle("showing", showing);
+  node.classList.toggle("inspected", version.id === history.inspectedId);
+  node.classList.toggle("target", version.id === history.compareTo);
+  node.classList.toggle("locked", Boolean(version.locked));
+  node.disabled = !carriesContent(version);
+
+  const dot = document.createElement("span");
+  dot.className = "revision-node-dot";
+  node.append(dot);
+
+  const caption = document.createElement("span");
+  caption.className = "revision-node-caption";
+  caption.textContent = versionTitle(version, index, t);
+  node.append(caption);
+
+  node.title = [
+    versionTitle(version, index, t),
+    formatRevisionDate(version.created_at),
+    t(version.action === "delete" ? revisionActionKey(version.action) : revisionOriginKey(version.origin)),
+    version.locked ? t("revisions.lockedBadge") : "",
+    version.restored_from ? t("revisions.restoredFrom", { id: version.restored_from }) : "",
+  ].filter(Boolean).join(" · ");
+
+  if (!node.disabled) {
+    node.addEventListener("click", () => setViewerInspectedVersion(version.id));
+  }
+  return node;
+}
+
+/** Draw the restore relationships as arcs between measured node centres. */
+function drawRevisionGraphEdges() {
+  const svg = $("#revision-graph-edges");
+  const row = $("#revision-graph-nodes");
+  svg.replaceChildren();
+  if (!viewerHistory) return;
+  const box = row.getBoundingClientRect();
+  if (!box.width) return;
+  svg.setAttribute("viewBox", `0 0 ${Math.round(box.width)} 26`);
+
+  /** @param {number} id */
+  const centreOf = (id) => {
+    const node = row.querySelector(`[data-revision-id="${id}"]`);
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    return rect.left - box.left + rect.width / 2;
+  };
+
+  viewerHistory.versions.forEach((/** @type {any} */ version) => {
+    if (!version.restored_from) return;
+    const to = centreOf(version.id);
+    const from = centreOf(version.restored_from);
+    if (to === null || from === null) return;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    const lift = Math.min(22, Math.max(10, Math.abs(to - from) / 4));
+    path.setAttribute("d", `M ${from} 24 C ${from} ${24 - lift}, ${to} ${24 - lift}, ${to} 24`);
+    path.setAttribute("class", "revision-edge");
+    svg.append(path);
+  });
+}
+
+// --- Versionen -------------------------------------------------------------
+
+function bindRevisions() {
+  // Wrapped, not passed directly: the listener would hand the PointerEvent to
+  // the first parameter and the dialog would ask for a project called
+  // "[object PointerEvent]".
+  $("#open-revisions").addEventListener("click", () => openRevisionsDialog());
+  $("#close-revisions").addEventListener("click", () => $("#revisions-dialog").close());
+  $("#close-revisions-footer").addEventListener("click", () => $("#revisions-dialog").close());
+  $("#restore-revision").addEventListener("click", restoreSelectedRevision);
+  $("#save-revision-label").addEventListener("click", saveRevisionLabel);
+  $("#toggle-revision-lock").addEventListener("click", toggleRevisionLock);
+  $("#refresh-revision-feed").addEventListener("click", loadRevisionFeed);
+  bindExternalChangeBanner();
+  bindViewerHistory();
+  $("#revisions-dialog").addEventListener("close", () => {
+    revisionState = { name: null, listing: null, selectedId: null, compareTo: "current" };
+  });
+  $("#revision-compare").addEventListener("change", () => {
+    revisionState.compareTo = parseCompareTarget($("#revision-compare").value);
+    loadRevisionDiff();
+  });
+}
+
+/** @param {string} [projectName] @param {number} [preselectId]
+ * @param {CompareTarget} [compareTo] */
+async function openRevisionsDialog(projectName, preselectId, compareTo) {
+  const name = projectName || $("#server-projects").value;
+  if (!name) return;
+  revisionState = {
+    name, listing: null, selectedId: null,
+    compareTo: compareTo === undefined ? "current" : compareTo,
+  };
+  hideExternalChangeBanner();
+  $("#revisions-list").replaceChildren();
+  $("#revisions-diff").replaceChildren();
+  $("#revisions-dialog").showModal();
+  $("#close-revisions").focus();
+  await loadRevisions(preselectId);
+}
+
+/** @param {number} [preselectId] */
+async function loadRevisions(preselectId) {
+  const name = revisionState.name;
+  if (!name) return;
+  try {
+    revisionState.listing = await revisionsController.list(name);
+    if (revisionState.compareTo === "current" && !revisionState.listing.exists) {
+      revisionState.compareTo = defaultCompareTarget(revisionState.selectedId);
+    }
+    renderRevisionList();
+    const versions = revisionState.listing.versions || [];
+    // Fall back to the newest when the requested version has since been
+    // pruned out of the rolling window.
+    const wanted = versions.find((/** @type {any} */ item) => item.id === preselectId);
+    const target = wanted || versions[0];
+    if (target) await selectRevision(target.id);
+    else updateRevisionControls();
+  } catch (/** @type {any} */ error) {
+    toast(error.message, true, error.details);
+  }
+}
+
+function renderRevisionList() {
+  const list = $("#revisions-list");
+  const versions = revisionState.listing?.versions || [];
+  list.replaceChildren();
+  list.classList.toggle("empty", !versions.length);
+  if (!versions.length) {
+    list.textContent = t("revisions.empty");
+    $("#revision-lock-quota").textContent = "";
+    return;
+  }
+  versions.forEach((/** @type {any} */ version, /** @type {number} */ index) => {
+    list.append(revisionRow(version, index));
+  });
+  $("#revision-lock-quota").textContent = t("revisions.lockQuota", lockQuota(revisionState.listing || {}));
+}
+
+/** @param {any} version @param {number} index */
+function revisionRow(version, index) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "revision-row";
+  row.setAttribute("role", "option");
+  row.classList.toggle("selected", version.id === revisionState.selectedId);
+  row.classList.toggle("locked", Boolean(version.locked));
+  row.setAttribute("aria-selected", String(version.id === revisionState.selectedId));
+
+  const title = document.createElement("strong");
+  title.textContent = versionTitle(version, index, t);
+  row.append(title);
+
+  const when = document.createElement("small");
+  when.textContent = formatRevisionDate(version.created_at);
+  row.append(when);
+
+  row.append(revisionMeta(version, { current: true }));
+  row.addEventListener("click", () => selectRevision(version.id));
+  return row;
+}
+
+/** Chips shared by the dialog list and the global feed.
+ * @param {any} entry @param {{current?: boolean, missingProject?: boolean}} options */
+function revisionMeta(entry, options = {}) {
+  const meta = document.createElement("div");
+  meta.className = "revision-meta";
+
+  const origin = document.createElement("span");
+  origin.className = `revision-chip ${entryModifier(entry)}`;
+  origin.textContent = entry.action === "delete"
+    ? t(revisionActionKey(entry.action))
+    : t(revisionOriginKey(entry.origin));
+  meta.append(origin);
+
+  if (options.current && entry.is_current) {
+    const current = document.createElement("span");
+    current.className = "revision-chip current";
+    current.textContent = t("revisions.current");
+    meta.append(current);
+  }
+  if (entry.locked) {
+    const locked = document.createElement("span");
+    locked.className = "revision-chip locked";
+    locked.textContent = t("revisions.lockedBadge");
+    meta.append(locked);
+  }
+
+  const actor = document.createElement("span");
+  actor.textContent = revisionActorLabel(entry.actor, t);
+  meta.append(actor);
+
+  if (entry.restored_from) {
+    const from = document.createElement("span");
+    from.textContent = t("revisions.restoredFrom", { id: entry.restored_from });
+    meta.append(from);
+  }
+  if (options.missingProject) {
+    const gone = document.createElement("span");
+    gone.className = "revision-chip delete";
+    gone.textContent = t("revisions.feed.deletedProject");
+    meta.append(gone);
+  }
+  return meta;
+}
+
+/** @param {number} id */
+async function selectRevision(id) {
+  revisionState.selectedId = id;
+  // Nothing is compared with itself, so a target that just became the
+  // selection has to give way.
+  if (revisionState.compareTo === id) revisionState.compareTo = defaultCompareTarget(id);
+  renderRevisionList();
+  renderCompareOptions();
+  const version = selectedRevision();
+  $("#revision-label").value = version?.label || "";
+  updateRevisionControls();
+  await loadRevisionDiff();
+}
+
+/** @param {string} value @returns {CompareTarget} */
+function parseCompareTarget(value) {
+  return value === "current" ? "current" : Number(value);
+}
+
+/** @param {number | null} selectedId @returns {CompareTarget} */
+function defaultCompareTarget(selectedId) {
+  if (revisionState.listing?.exists) return "current";
+  // A deleted project has no current state, so fall back to the newest other
+  // version that still carries content.
+  const other = (revisionState.listing?.versions || []).find(
+    (/** @type {any} */ item) => item.id !== selectedId && carriesContent(item),
+  );
+  return other ? other.id : null;
+}
+
+/** @param {CompareTarget} target */
+function compareTargetLabel(target) {
+  if (target === "current") return t("revisions.compareCurrent");
+  const versions = revisionState.listing?.versions || [];
+  const index = versions.findIndex((/** @type {any} */ item) => item.id === target);
+  return index >= 0 ? versionTitle(versions[index], index, t) : t("revisions.compareCurrent");
+}
+
+function renderCompareOptions() {
+  const select = $("#revision-compare");
+  const listing = revisionState.listing;
+  const versions = listing?.versions || [];
+  select.replaceChildren();
+  if (listing?.exists) {
+    const option = document.createElement("option");
+    option.value = "current";
+    option.textContent = t("revisions.compareCurrent");
+    select.append(option);
+  }
+  versions.forEach((/** @type {any} */ version, /** @type {number} */ index) => {
+    if (version.id === revisionState.selectedId || !carriesContent(version)) return;
+    const option = document.createElement("option");
+    option.value = String(version.id);
+    option.textContent = versionTitle(version, index, t);
+    select.append(option);
+  });
+  select.value = String(revisionState.compareTo);
+  // The stored target may have been pruned away or become the selection.
+  if (!select.value) {
+    revisionState.compareTo = select.options.length
+      ? parseCompareTarget(select.options[0].value)
+      : null;
+    select.value = revisionState.compareTo === null ? "" : String(revisionState.compareTo);
+  }
+  select.disabled = select.options.length < 2;
+}
+
+function selectedRevision() {
+  const versions = revisionState.listing?.versions || [];
+  return versions.find((/** @type {any} */ item) => item.id === revisionState.selectedId) || null;
+}
+
+function updateRevisionControls() {
+  const version = selectedRevision();
+  const canWrite = Boolean(state.capabilities["designer.project_write"]);
+  const restorable = Boolean(version) && carriesContent(version) && !version.is_current;
+  $("#revision-label").disabled = !version || !canWrite;
+  $("#save-revision-label").disabled = !version || !canWrite;
+  $("#toggle-revision-lock").disabled = !version || !canWrite;
+  $("#toggle-revision-lock").textContent = version?.locked ? t("revisions.unlock") : t("revisions.lock");
+  $("#preview-revision").disabled = !version || !carriesContent(version);
+  $("#restore-revision").disabled = !restorable || !canWrite;
+  $("#restore-revision").title = version && !carriesContent(version) ? t("revisions.noContent") : "";
+}
+
+async function loadRevisionDiff() {
+  const version = selectedRevision();
+  const output = $("#revisions-diff");
+  if (!revisionState.name || !version) return;
+  if (!carriesContent(version)) {
+    output.classList.remove("diff-output");
+    output.textContent = t("revisions.noContent");
+    return;
+  }
+  if (revisionState.compareTo === null) {
+    output.classList.remove("diff-output");
+    output.textContent = t("revisions.compareNone");
+    return;
+  }
+  try {
+    const result = await revisionsController.diff(
+      revisionState.name, version.id, revisionState.compareTo,
+    );
+    if (result.diff) {
+      renderUnifiedDiff(output, result.diff, t);
+      if (result.diff_truncated) {
+        const note = document.createElement("p");
+        note.className = "hint";
+        note.textContent = t("revisions.diffTruncated");
+        output.prepend(note);
+      }
+    } else {
+      output.classList.remove("diff-output");
+      output.textContent = t("revisions.diffEmpty", {
+        target: compareTargetLabel(revisionState.compareTo),
+      });
+    }
+  } catch (/** @type {any} */ error) {
+    output.classList.remove("diff-output");
+    output.textContent = error.message;
+  }
+}
+
+async function saveRevisionLabel() {
+  const version = selectedRevision();
+  if (!revisionState.name || !version) return;
+  try {
+    await revisionsController.setLabel(revisionState.name, version.id, $("#revision-label").value);
+    await loadRevisions();
+    await selectRevision(version.id);
+    toast(t("toast.revisions.labelSaved"));
+  } catch (/** @type {any} */ error) {
+    toast(error.message, true, error.details);
+  }
+}
+
+async function toggleRevisionLock() {
+  const version = selectedRevision();
+  if (!revisionState.name || !version) return;
+  const next = !version.locked;
+  if (!next && !confirm(t("confirm.revisions.unlock"))) return;
+  try {
+    await revisionsController.setLocked(revisionState.name, version.id, next);
+    await loadRevisions();
+    await selectRevision(version.id);
+    toast(t(next ? "toast.revisions.locked" : "toast.revisions.unlocked"));
+  } catch (/** @type {any} */ error) {
+    toast(error.message, true, error.details);
+  }
+}
+
+async function restoreSelectedRevision() {
+  const name = revisionState.name;
+  const version = selectedRevision();
+  if (!name || !version || !state.capabilities["designer.project_write"]) return;
+  const exists = Boolean(revisionState.listing?.exists);
+  const question = exists
+    ? t("confirm.revisions.restore", { date: formatRevisionDate(version.created_at) })
+    : t("confirm.revisions.restoreDeleted", { name });
+  if (!confirm(question)) return;
+  // A project open in the editor may be further along than the listing, so
+  // prefer its revision - the freshness rule deleteServerProject uses.
+  const expectedRevision = !exists
+    ? null
+    : (state.projectName === name ? state.projectRevision : revisionState.listing.current_revision);
+  try {
+    await revisionsController.restore(name, version.id, expectedRevision);
+    // Only touch the editor when it is showing this very project - the feed
+    // can open this dialog for any project, and silently swapping what the
+    // user is editing (or discarding their unsaved work) would be worse than
+    // the change they just undid.
+    if (state.projectName === name
+        && (!state.projectDirty || confirm(t("confirm.discardUnsaved")))) {
+      adoptLoadedProject(await projectsController.load(name));
+      await loadViewerBindings(name);
+      renderDesigner();
+    }
+    externalChangeSeen = null;
+    hideExternalChangeBanner();
+    await Promise.all([loadServerProjects(), loadRevisions(version.id), loadRevisionFeed()]);
+    updateServerProjectButtons();
+    toast(t("toast.revisions.restored"));
+  } catch (/** @type {any} */ error) {
+    toast(
+      error.code === "revision_conflict" ? t("toast.revisions.conflict") : error.message,
+      true,
+      error.details,
+    );
+    await loadRevisions();
+  }
+}
+
+async function loadRevisionFeed() {
+  if (!state.capabilities["designer.project"]) return;
+  try {
+    renderRevisionFeed(await revisionsController.feed(50));
+  } catch (/** @type {any} */ error) {
+    $("#revision-feed").textContent = error.message;
+  }
+}
+
+/** @param {any[]} events */
+function renderRevisionFeed(events) {
+  const feed = $("#revision-feed");
+  const items = events || [];
+  feed.replaceChildren();
+  feed.classList.toggle("empty", !items.length);
+  if (!items.length) {
+    feed.textContent = t("revisions.feed.empty");
+    return;
+  }
+  groupFeedByDay(items).forEach((group) => {
+    const heading = document.createElement("p");
+    heading.className = "revision-feed-day";
+    heading.textContent = formatRevisionDate(group.events[0].created_at, true);
+    feed.append(heading);
+    group.events.forEach((event) => feed.append(revisionFeedRow(event)));
+  });
+}
+
+/** @param {any} event */
+function revisionFeedRow(event) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "revision-row";
+  row.addEventListener("click", () => openRevisionsDialog(event.project_name, event.id));
+  const title = document.createElement("strong");
+  title.textContent = event.project_name;
+  row.append(title);
+  const when = document.createElement("small");
+  when.textContent = formatRevisionDate(event.created_at);
+  row.append(when);
+  row.append(revisionMeta(event, { missingProject: !event.project_exists }));
+  return row;
+}
+
+/** @param {any} value @param {boolean} [dateOnly] */
+function formatRevisionDate(value, dateOnly = false) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return new Intl.DateTimeFormat(getLanguage() === "de" ? "de-CH" : "en-GB", {
+    dateStyle: "medium",
+    ...(dateOnly ? {} : { timeStyle: "short" }),
+  }).format(parsed);
 }
 
 function pushUndo() {

@@ -80,6 +80,19 @@ class SaveDesignerProjectRequest(DesignerProjectRequest):
     )
 
 
+class AnnotateProjectRevisionRequest(BaseModel):
+    """Names a version. Never touches the lock - the two are independent."""
+
+    label: str | None = Field(default=None, max_length=80)
+
+
+class RestoreProjectRevisionRequest(BaseModel):
+    #: ``None`` recreates a project whose file was deleted.
+    expected_revision: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+
+
 class DeviceRequest(BaseModel):
     id: str = Field(min_length=1, max_length=63)
     name: str = Field(min_length=1, max_length=80)

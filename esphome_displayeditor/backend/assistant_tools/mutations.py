@@ -225,6 +225,8 @@ class ProjectMutationService:
                 name,
                 record["project"],
                 record["base_revision"],
+                actor=identity,
+                origin="mcp",
             )
             applied = self.changesets.mark_applied(
                 change_set_id,

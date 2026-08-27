@@ -3,7 +3,7 @@
   "manifest_version": "0.4",
   "name": "esphome-display-editor",
   "display_name": "ESPHome Display Editor",
-  "version": "0.302.0",
+  "version": "0.400.0",
   "description": "Connect Claude Desktop to the ESPHome Display Editor MCP server.",
   "long_description": "A local stdio bridge for the ESPHome Display Editor's authenticated Streamable HTTP MCP endpoint. Claude can inspect projects and ESPHome YAML, place widgets, create bindings, review deterministic previews, and propose revision-checked change sets according to the scopes of the selected client token. The extension does not contain the editor server and requires a reachable Home Assistant app instance.",
   "author": {

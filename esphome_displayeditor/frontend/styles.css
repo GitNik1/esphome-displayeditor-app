@@ -146,7 +146,12 @@ input:focus-visible, select:focus-visible, button:focus-visible, textarea:focus-
    selection, pointer capture and resize rules can never leak into preview. */
 .viewer-dialog { width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; padding: 0; border: 0; background: #080d13; color: var(--text); }
 .viewer-dialog::backdrop { background: #000d; }
-.viewer-shell { width: 100%; height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.viewer-shell { width: 100%; height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+/* Rows are assigned explicitly so the optional history bar cannot shift
+   the stage out of its 1fr row; hidden, its auto row collapses to 0. */
+.viewer-toolbar { grid-row: 1; }
+.viewer-history-bar { grid-row: 2; }
+.viewer-statusline { grid-row: 4; }
 .viewer-toolbar { min-height: 64px; padding: 10px 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); background: #0d1520; }
 .viewer-heading { min-width: 0; }
 .viewer-heading small, .viewer-heading strong { display: block; }
@@ -157,7 +162,7 @@ input:focus-visible, select:focus-visible, button:focus-visible, textarea:focus-
 .viewer-page-controls, .viewer-page-controls label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .viewer-page-controls[hidden] { display: none; }
 .viewer-page-controls select { width: auto; min-width: 130px; max-width: 220px; }
-.viewer-stage { min-height: 0; overflow: auto; padding: 28px; display: grid; place-items: safe center; background-color: #070b10; background-image: radial-gradient(#223144 1px, transparent 1px); background-size: 20px 20px; }
+.viewer-stage { grid-row: 3; min-height: 0; overflow: auto; padding: 28px; display: grid; place-items: safe center; background-color: #070b10; background-image: radial-gradient(#223144 1px, transparent 1px); background-size: 20px 20px; }
 .viewer-wasm-canvas { display: block; width: 100%; height: 100%; background: #000; image-rendering: pixelated; touch-action: none; }
 .viewer-renderer { display: inline-flex; align-items: center; gap: 6px; }
 .viewer-renderer select { max-width: 210px; }
@@ -448,7 +453,10 @@ input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var
 .glyph-chip.missing { border-color: #9a3f47; color: #ff929b; }
 .glyph-chip button { width: 20px; height: 20px; border: 0; color: var(--muted); background: transparent; cursor: pointer; }
 .glyph-dialog-actions { gap: 7px; }
-.meter-dialog { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(1320px, 96vw); height: min(820px, 92vh); max-height: 92vh; overflow: hidden; }
+/* Scoped to [open]: a bare display rule overrides the UA's display:none and
+   lays the closed dialog out as an 820px block. */
+.meter-dialog { width: min(1320px, 96vw); height: min(820px, 92vh); max-height: 92vh; overflow: hidden; }
+.meter-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .meter-dialog-body { display: grid; grid-template-columns: 180px minmax(0, 1fr) minmax(280px, 380px); min-width: 0; min-height: 0; overflow: hidden; }
 .meter-config-list, .meter-config-editor, .meter-config-preview { min-width: 0; min-height: 0; padding: 16px; overflow: auto; }
 .meter-config-list { border-right: 1px solid var(--line); }
@@ -606,6 +614,86 @@ input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var
 .diff-changed-old { color: #fed7aa; background: #42230f; border-left-color: #f97316; text-decoration: line-through; text-decoration-color: rgb(251 146 60 / 60%); }
 .diff-changed-new { color: #fef3c7; background: #3c2e09; border-left-color: #f59e0b; }
 .diff-added::selection, .diff-deleted::selection, .diff-changed-old::selection, .diff-changed-new::selection { background: #2563eb; color: white; }
+/* Revision history: rows, chips and the two-pane dialog. Reuses the diff
+   renderer from configurations/diff-view.js, so .diff-* above styles the
+   right-hand pane unchanged. */
+/* History bar inside the viewer: identifies the version on screen and flips
+   between it and the current state without leaving the position. */
+.viewer-history-bar { display: flex; flex-direction: column; gap: 8px; padding: 9px 16px 11px; border-bottom: 1px solid var(--line); background: #131d2b; font-size: 12px; }
+.viewer-history-top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+/* Revision graph: nodes are buttons, the arcs behind them are decorative and
+   redrawn from measured positions whenever the row is laid out. */
+.revision-graph { position: relative; overflow-x: auto; overflow-y: hidden; padding-top: 22px; }
+.revision-graph-edges { position: absolute; inset: 0 0 auto 0; width: 100%; height: 26px; pointer-events: none; overflow: visible; }
+.revision-edge { fill: none; stroke: #f59e0b; stroke-width: 1.5; stroke-dasharray: 3 3; opacity: .85; }
+.revision-graph-nodes { position: relative; display: flex; align-items: flex-start; gap: 4px; min-width: max-content; }
+.revision-graph-nodes::before { position: absolute; top: 7px; right: 8px; left: 8px; height: 1px; background: var(--line); content: ""; }
+.revision-node { position: relative; display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 64px; max-width: 130px; padding: 0 6px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
+.revision-node:disabled { opacity: .4; cursor: default; }
+.revision-node-dot { width: 15px; height: 15px; border: 2px solid #2a3949; border-radius: 50%; background: #17293c; transition: transform .12s; }
+.revision-node-caption { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.revision-node.ui .revision-node-dot { background: #16324a; border-color: #3b7fb8; }
+.revision-node.mcp .revision-node-dot, .revision-node.mcp_import .revision-node-dot { background: #1c3b33; border-color: #29a98c; }
+.revision-node.restore .revision-node-dot { background: #3c2e09; border-color: #f59e0b; }
+.revision-node.delete .revision-node-dot { background: #42191d; border-color: #ef4444; }
+.revision-node.locked .revision-node-dot { box-shadow: 0 0 0 2px #42230f, 0 0 0 3px var(--warning); }
+.revision-node.target .revision-node-dot { border-style: dashed; border-color: var(--accent); }
+.revision-node.showing { color: var(--text); }
+.revision-node.showing .revision-node-dot { transform: scale(1.35); background: var(--accent); border-color: var(--accent); }
+.revision-node:not(:disabled):hover .revision-node-dot { transform: scale(1.2); }
+.revision-node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.viewer-history-badge { flex: none; border-radius: 999px; padding: 3px 9px; background: #3c2e09; color: #fef3c7; font-weight: 600; letter-spacing: .02em; }
+#viewer-history-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13px; }
+.viewer-history-date { color: var(--muted); }
+.viewer-history-switch { display: inline-flex; align-items: stretch; margin-left: auto; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; background: #0c1420; }
+/* Segments keep their natural width: shrinking one wraps its label and
+   breaks the pill. */
+.viewer-history-switch > * { flex: none; white-space: nowrap; }
+.viewer-history-switch .button { border: 0; border-radius: 0; background: none; }
+.viewer-history-switch .button.active, .viewer-history-compare.active { background: var(--accent); color: #071313; }
+/* The second segment is the target picker itself: choosing a target and
+   showing it are one action, not two. */
+.viewer-history-compare { border: 0; border-left: 1px solid var(--line); border-radius: 0; padding: 4px 10px; background: none; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.viewer-history-compare:disabled { opacity: .45; cursor: default; }
+.viewer-history-switch .button:disabled { opacity: .45; }
+.external-change-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 20px 12px; padding: 10px 14px; border: 1px solid var(--warning); border-radius: 9px; color: #ffe6ab; background: #2b2110; font-size: 13px; }
+.external-change-banner > span { flex: 1 1 260px; min-width: 0; }
+.external-change-banner .icon-button { color: #ffe6ab; }
+/* The flex column below is what keeps the actions on screen - the browser
+   already caps a dialog at the viewport. This max-height only stops the
+   dialog becoming absurdly tall on a very tall display. */
+.revisions-dialog { min-width: min(920px, 92vw); max-height: min(90vh, 900px); }
+/* Scoped to [open]: a bare display rule would override the UA's
+   display:none and leave the closed dialog on screen. */
+.revisions-dialog[open] { display: flex; flex-direction: column; }
+.revisions-dialog > .dialog-heading, .revisions-dialog > .hint,
+.revisions-dialog > .revisions-annotate, .revisions-dialog > .dialog-actions { flex: none; }
+.revisions-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(220px, 320px) minmax(0, 1fr); gap: 12px; margin-top: 12px; }
+.revisions-list { display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow: auto; }
+.revisions-list.empty { display: block; padding: 14px; border: 1px dashed var(--line); border-radius: 9px; color: var(--muted); font-size: 12px; }
+.revision-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: #0c1420; cursor: pointer; text-align: left; }
+.revision-row:hover { border-color: #35506b; }
+.revision-row.selected { border-color: var(--accent); }
+.revision-row.locked { border-left: 3px solid var(--warning); }
+.revision-row strong, .revision-row small { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.revision-row small { margin-top: 4px; color: var(--muted); font-size: 11px; }
+.revision-meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+.revision-chip { border-radius: 999px; padding: 2px 7px; background: #17293c; color: #cfe0f2; }
+.revision-chip.ui { background: #16324a; color: #b6dcff; }
+.revision-chip.mcp, .revision-chip.mcp_import { background: #1c3b33; color: #8de8cf; }
+.revision-chip.restore { background: #3c2e09; color: #fef3c7; }
+.revision-chip.delete { background: #42191d; color: #fecaca; }
+.revision-chip.current { background: var(--accent); color: #071313; }
+.revision-chip.locked { background: #42230f; color: #fed7aa; }
+.revisions-compare { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
+.revisions-compare-target { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; color: var(--muted); font-size: 12px; }
+.revisions-compare-target select { flex: 1 1 160px; min-width: 0; }
+.revisions-diff { flex: 1 1 auto; min-height: 120px; overflow: auto; margin: 0; border: 1px solid var(--line); border-radius: 9px; }
+.revisions-annotate { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-top: 12px; }
+.revisions-annotate label { flex: 1 1 220px; min-width: 0; }
+.revision-feed { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.revision-feed.empty { padding: 14px; border: 1px dashed var(--line); border-radius: 9px; color: var(--muted); font-size: 12px; }
+.revision-feed-day { margin: 6px 0 2px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 .builder-jobs { max-height: 240px; overflow: auto; border-top: 1px solid var(--line); padding: 12px 16px; background: var(--surface); }
 .builder-jobs-heading, .builder-job { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .builder-jobs-heading { margin-bottom: 8px; }
@@ -784,6 +872,10 @@ dialog::backdrop { background: #03070bc7; }
   .mcp-token-scopes { grid-template-columns: 1fr; }
   .mcp-token-row { grid-template-columns: minmax(0, 1fr); }
   .mcp-token-row > .button { justify-self: start; }
+  .revisions-body { grid-template-columns: minmax(0, 1fr); }
+  .external-change-banner { margin: 0 14px 10px; }
+  .viewer-history-switch { margin-left: 0; }
+  .revision-row { grid-template-columns: minmax(0, 1fr); }
 
   /* Base rule positions this via right:-1px/bottom:-1px with no left/top, so
      (unlike .glow-handle) the enlarged hit area is centered by adjusting

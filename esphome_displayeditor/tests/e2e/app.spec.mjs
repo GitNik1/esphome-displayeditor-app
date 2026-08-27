@@ -1,67 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-const project = {
-  format_version: 2,
-  canvas: { width: 320, height: 240 },
-  widgets: [], pages: [], top_layer: [], bottom_layer: [],
-  styles: [], colors: [], fonts: [], images: [], msgboxes: [], glow_strokes: [],
-  background: {}, extra_lvgl: {}, extra: {},
-};
+import { mockApi, openStoredProject, project } from "./mock-api.mjs";
 
-async function mockApi(page) {
-  const mcpClients = [];
-  await page.route("**/api/v1/**", async (route) => {
-    const path = new URL(route.request().url()).pathname.replace(/^.*\/api\/v1\//, "");
-    const method = route.request().method();
-    if (path === "admin/mcp/test" && method === "POST") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ reachable: true, status: "ok", latency_ms: 4 }) });
-      return;
-    }
-    if (path === "admin/mcp/tokens" && method === "POST") {
-      const input = route.request().postDataJSON();
-      const client = {
-        id: "0123456789abcdef01234567",
-        name: input.name,
-        scopes: input.scopes,
-        created_at: "2026-08-21T10:00:00+00:00",
-        expires_at: "2026-09-20T10:00:00+00:00",
-        revoked_at: null,
-        status: "active",
-      };
-      mcpClients.push(client);
-      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ client, token: "mcp_one-time-secret" }) });
-      return;
-    }
-    if (path.startsWith("admin/mcp/tokens/") && method === "DELETE") {
-      const id = decodeURIComponent(path.slice("admin/mcp/tokens/".length));
-      const client = mcpClients.find((item) => item.id === id);
-      Object.assign(client, { status: "revoked", revoked_at: "2026-08-21T10:05:00+00:00" });
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ client }) });
-      return;
-    }
-    const payloads = {
-      health: { status: "ok" },
-      system: { access_level: "write", user: { role: "administrator", name: "smoke" } },
-      capabilities: { capabilities: { "designer.project": true, "designer.project_write": true, "mcp.manage": true } },
-      "designer/schemas": { widgets: [{ type_key: "label", label: "Label", category: "display", default_size: [100, 40], allows_children: false, properties: [] }], grid_cell_properties: [], states: [] },
-      "designer/projects": { projects: [] },
-      "admin/mcp/tokens": {
-        clients: mcpClients,
-        allowed_scopes: ["server:read", "project:read", "configuration:read", "device:read", "project:write", "changeset:read", "changeset:apply"],
-        maximum: 100,
-      },
-      "admin/mcp/status": {
-        mode: "lan", access: "project_write", port: 8100, path: "/mcp",
-        health_path: "/health", allowed_hosts: ["localhost"], configured: true,
-      },
-    };
-    const key = path.startsWith("designer/schemas") ? "designer/schemas" : path;
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payloads[key] || {}) });
-  });
-}
+let apiControl;
 
 test.beforeEach(async ({ page }) => {
-  await mockApi(page);
+  apiControl = await mockApi(page);
   await page.goto("/");
   await expect(page.locator("#health")).toHaveClass(/ok/);
 });
@@ -105,6 +49,272 @@ test("adds a widget and supports undo and redo", async ({ page }) => {
   await expect(page.locator("#canvas .canvas-widget")).toHaveCount(0);
   await page.locator("#redo").click();
   await expect(page.locator("#canvas .canvas-widget")).toHaveCount(1);
+});
+
+test("inspects, names, locks and restores an earlier version", async ({ page }) => {
+  page.on("dialog", (dialog) => dialog.accept());
+  // The project toolbar lives in a collapsed <details>.
+  await page.locator("#server-projects").evaluate((select) => {
+    select.closest("details").open = true;
+  });
+  await page.locator("#server-projects").selectOption("display.lvgldesign");
+  await page.locator("#open-revisions").click();
+  await expect(page.locator("#revisions-dialog")).toBeVisible();
+
+  // Newest first, and the version on disk is marked as such.
+  await expect(page.locator("#revisions-list .revision-row")).toHaveCount(2);
+  const rows = page.locator("#revisions-list .revision-row");
+  await expect(rows.first()).toHaveClass(/selected/);
+  await expect(rows.first().locator(".revision-chip.current")).toBeVisible();
+  await expect(rows.nth(1).locator(".revision-chip.mcp")).toBeVisible();
+  // The current version cannot be restored onto itself.
+  await expect(page.locator("#restore-revision")).toBeDisabled();
+
+  // Selecting the older MCP-authored version shows the diff.
+  await rows.nth(1).click();
+  await expect(page.locator("#revisions-diff .diff-line")).not.toHaveCount(0);
+  // The shared renderer pairs an adjacent -/+ run into changed-old/changed-new.
+  await expect(page.locator("#revisions-diff .diff-changed-old")).toBeVisible();
+  await expect(page.locator("#revisions-diff .diff-changed-new")).toBeVisible();
+  await expect(page.locator("#restore-revision")).toBeEnabled();
+
+  // Naming and locking are independent actions.
+  await page.locator("#revision-label").fill("vor dem Umbau");
+  await page.locator("#save-revision-label").click();
+  await expect(rows.nth(1).locator("strong")).toHaveText("vor dem Umbau");
+  await expect(rows.nth(1)).not.toHaveClass(/locked/);
+  await page.locator("#toggle-revision-lock").click();
+  await expect(rows.nth(1)).toHaveClass(/locked/);
+  await expect(rows.nth(1).locator(".revision-chip.locked")).toBeVisible();
+
+  // Restoring adds a new entry on top; the displaced version stays put.
+  await page.locator("#restore-revision").click();
+  await expect(page.locator("#revisions-list .revision-row")).toHaveCount(3);
+  await expect(rows.first().locator(".revision-chip.restore")).toBeVisible();
+  await expect(rows.first().locator(".revision-chip.current")).toBeVisible();
+  await expect(rows.nth(1).locator(".revision-chip.ui")).toBeVisible();
+});
+
+test("a feed entry opens the version it refers to", async ({ page }) => {
+  await page.getByRole("button", { name: "System" }).click();
+  const feedRows = page.locator("#revision-feed .revision-row");
+  await expect(feedRows).toHaveCount(2);
+
+  // The older, MCP-authored entry - the dialog must preselect exactly it.
+  await feedRows.nth(1).click();
+
+  await expect(page.locator("#revisions-dialog")).toBeVisible();
+  const rows = page.locator("#revisions-list .revision-row");
+  await expect(rows.nth(1)).toHaveClass(/selected/);
+  await expect(rows.nth(1).locator(".revision-chip.mcp")).toBeVisible();
+});
+
+test("a change made elsewhere raises a banner that leads to the versions", async ({ page }) => {
+  await openStoredProject(page);
+  await expect(page.locator("#external-change-banner")).toBeHidden();
+
+  // Someone else - another session or the MCP server - writes the project.
+  apiControl.currentRevision = "sha256:ccc";
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+
+  const banner = page.locator("#external-change-banner");
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("display.lvgldesign");
+
+  await page.locator("#external-change-open").click();
+  await expect(page.locator("#revisions-dialog")).toBeVisible();
+  await expect(banner).toBeHidden();
+});
+
+test("a dismissed banner stays dismissed until the next change", async ({ page }) => {
+  await openStoredProject(page);
+  apiControl.currentRevision = "sha256:ccc";
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.locator("#external-change-banner")).toBeVisible();
+
+  await page.locator("#external-change-dismiss").click();
+  await expect(page.locator("#external-change-banner")).toBeHidden();
+
+  // Polling again on the same revision must not nag.
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await page.waitForTimeout(300);
+  await expect(page.locator("#external-change-banner")).toBeHidden();
+
+  // A further change is a new fact and shows again.
+  apiControl.currentRevision = "sha256:ddd";
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.locator("#external-change-banner")).toBeVisible();
+});
+
+test("a project deleted elsewhere is reported as deleted", async ({ page }) => {
+  await openStoredProject(page);
+  apiControl.exists = false;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+
+  await expect(page.locator("#external-change-banner")).toBeVisible();
+  // The suite runs in whichever locale the browser reports, so match both.
+  await expect(page.locator("#external-change-message")).toContainText(/deleted|gelöscht/);
+});
+
+test("an earlier version can be viewed and compared against the current state", async ({ page }) => {
+  await openStoredProject(page);
+  await page.locator("#open-revisions").click();
+  const rows = page.locator("#revisions-list .revision-row");
+  await rows.nth(1).click();
+
+  await page.locator("#preview-revision").click();
+
+  // The viewer takes over from the dialog and says what is on screen.
+  await expect(page.locator("#viewer-dialog")).toBeVisible();
+  await expect(page.locator("#revisions-dialog")).toBeHidden();
+  const bar = page.locator("#viewer-history-bar");
+  await expect(bar).toBeVisible();
+  await expect(page.locator("#viewer-history-version")).toHaveClass(/active/);
+  await expect(page.locator("#viewer-title")).toContainText("display.lvgldesign");
+  await expect(page.locator("#viewer-display")).toContainText("Alt");
+
+  // Flipping to the current state swaps what is rendered, in place.
+  await page.locator("#viewer-history-compare").click();
+  await expect(page.locator("#viewer-history-compare")).toHaveClass(/active/);
+  await expect(page.locator("#viewer-history-version")).not.toHaveClass(/active/);
+  await expect(page.locator("#viewer-display")).not.toContainText("Alt");
+
+  // And back to the history, with the same version still selected.
+  await page.locator("#viewer-history-back").click();
+  await expect(page.locator("#viewer-dialog")).toBeHidden();
+  await expect(page.locator("#revisions-dialog")).toBeVisible();
+  await expect(rows.nth(1)).toHaveClass(/selected/);
+});
+
+test("a deleted project falls back to comparing two of its versions", async ({ page }) => {
+  await openStoredProject(page);
+  apiControl.exists = false;
+  await page.locator("#open-revisions").click();
+  await page.locator("#revisions-list .revision-row").nth(1).click();
+
+  // There is no current state to offer, so only the other version remains.
+  const options = page.locator("#revision-compare option");
+  await expect(options).toHaveCount(1);
+  await expect(options.first()).not.toHaveValue("current");
+
+  await page.locator("#preview-revision").click();
+  await expect(page.locator("#viewer-history-bar")).toBeVisible();
+  // Still comparable - just against a sibling version rather than "current".
+  await expect(page.locator("#viewer-history-compare")).toBeEnabled();
+  await expect(page.locator('#viewer-history-compare option[value="current"]')).toHaveCount(0);
+});
+
+test("the ordinary live preview never inherits the history bar", async ({ page }) => {
+  await openStoredProject(page);
+  await page.locator("#open-revisions").click();
+  await page.locator("#revisions-list .revision-row").nth(1).click();
+  await page.locator("#preview-revision").click();
+  await expect(page.locator("#viewer-history-bar")).toBeVisible();
+
+  await page.locator("#viewer-history-back").click();
+  await page.locator("#close-revisions").click();
+  await page.locator("#open-viewer").click();
+
+  await expect(page.locator("#viewer-dialog")).toBeVisible();
+  await expect(page.locator("#viewer-history-bar")).toBeHidden();
+});
+
+test("compares two earlier versions, not only against the current state", async ({ page }) => {
+  await openStoredProject(page);
+  await page.locator("#open-revisions").click();
+  const rows = page.locator("#revisions-list .revision-row");
+  await rows.nth(1).click();
+
+  // Default target is the current state, and the selected version is not
+  // offered as a target for itself.
+  await expect(page.locator("#revision-compare")).toHaveValue("current");
+  await expect(page.locator("#revision-compare option")).toHaveCount(2);
+  await expect(page.locator('#revision-compare option[value="1"]')).toHaveCount(0);
+
+  // Pick the other version as the comparison target.
+  await page.locator("#revision-compare").selectOption("2");
+  await expect.poll(() => apiControl.lastDiff).toEqual({ id: 1, against: "2" });
+
+  // The viewer inherits that choice instead of falling back to "current".
+  await page.locator("#preview-revision").click();
+  await expect(page.locator("#viewer-history-compare")).toHaveValue("2");
+  await page.locator("#viewer-history-compare").click();
+  await expect(page.locator("#viewer-history-compare")).toHaveClass(/active/);
+  await expect(page.locator("#viewer-display")).toContainText("Alt");
+});
+
+test("a target that becomes the selection gives way", async ({ page }) => {
+  await openStoredProject(page);
+  await page.locator("#open-revisions").click();
+  const rows = page.locator("#revisions-list .revision-row");
+  await rows.nth(1).click();
+  await page.locator("#revision-compare").selectOption("2");
+
+  // Selecting the version that was the target must not compare it with itself.
+  await rows.nth(0).click();
+  await expect(page.locator("#revision-compare")).toHaveValue("current");
+  await expect(page.locator('#revision-compare option[value="2"]')).toHaveCount(0);
+});
+
+test("the comparison target can be changed inside the viewer", async ({ page }) => {
+  await openStoredProject(page);
+  await page.locator("#open-revisions").click();
+  await page.locator("#revisions-list .revision-row").nth(1).click();
+  await page.locator("#preview-revision").click();
+
+  // Inherited from the dialog, and the inspected version is not offered as a
+  // target for itself.
+  await expect(page.locator("#viewer-history-compare")).toHaveValue("current");
+  await expect(page.locator('#viewer-history-compare option[value="1"]')).toHaveCount(0);
+
+  // Choosing a target shows it straight away - no second click needed.
+  await page.locator("#viewer-history-compare").selectOption("2");
+  await expect(page.locator("#viewer-history-compare")).toHaveClass(/active/);
+  await expect(page.locator("#viewer-history-version")).not.toHaveClass(/active/);
+  await expect(page.locator("#viewer-display")).toContainText("Alt");
+
+  // And the dialog picks the choice back up on the way out.
+  await page.locator("#viewer-history-back").click();
+  await expect(page.locator("#revision-compare")).toHaveValue("2");
+});
+
+test("the graph lays out every version oldest-first and navigates between them", async ({ page }) => {
+  await openStoredProject(page);
+  await page.locator("#open-revisions").click();
+  await page.locator("#revisions-list .revision-row").nth(1).click();
+  await page.locator("#preview-revision").click();
+
+  const nodes = page.locator("#revision-graph-nodes .revision-node");
+  await expect(nodes).toHaveCount(2);
+  // Oldest on the left, so the graph reads in the direction time runs.
+  await expect(nodes.first()).toHaveAttribute("data-revision-id", "1");
+  await expect(nodes.last()).toHaveAttribute("data-revision-id", "2");
+  await expect(nodes.first()).toHaveClass(/showing/);
+  await expect(page.locator("#viewer-display")).toContainText("Alt 1");
+
+  // Clicking a node moves the inspected version without leaving the viewer.
+  await nodes.last().click();
+  await expect(nodes.last()).toHaveClass(/showing/);
+  await expect(nodes.first()).not.toHaveClass(/showing/);
+  await expect(page.locator("#viewer-display")).toContainText("Alt 2");
+  // And it becomes the version the bar names, so the target list drops it.
+  await expect(page.locator('#viewer-history-compare option[value="2"]')).toHaveCount(0);
+});
+
+test("a restore is drawn as an edge back to the version it came from", async ({ page }) => {
+  page.on("dialog", (dialog) => dialog.accept());
+  await openStoredProject(page);
+  await page.locator("#open-revisions").click();
+  const rows = page.locator("#revisions-list .revision-row");
+  await rows.nth(1).click();
+  await page.locator("#restore-revision").click();
+  await expect(rows).toHaveCount(3);
+
+  // The restored version sits on top and points back at its source.
+  await rows.first().click();
+  await page.locator("#preview-revision").click();
+  await expect(page.locator("#revision-graph-nodes .revision-node")).toHaveCount(3);
+  await expect(page.locator("#revision-graph-edges path")).toHaveCount(1);
 });
 
 test("creates a fresh project", async ({ page }) => {

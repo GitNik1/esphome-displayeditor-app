@@ -33,6 +33,11 @@ YAML.
   overwrites your active ESPHome files.
 - **Persistent designer projects** with per-user roles, so multiple Home
   Assistant users can work on separate or shared display projects.
+- **Version history with preview and restore** — the last 10 versions of every
+  project are kept, whoever wrote them: the editor, another session, or the
+  MCP server. Compare any version against the current state, name and lock the
+  ones worth keeping, and restore with one click — the replaced state stays in
+  the list, so a restore is itself undoable.
 - **Live entity bindings and a read-only Viewer** — map labels, sliders,
   bars, arcs and switches to Home Assistant/ESPHome entities and preview a
   running dashboard, plus optional bidirectional device bindings that are

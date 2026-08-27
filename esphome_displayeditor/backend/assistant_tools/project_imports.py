@@ -272,7 +272,13 @@ class ProjectImportMutationService:
                 if source["revision"] != record["base_revision"]:
                     self._conflict(record["base_revision"], source["revision"])
             try:
-                saved = self.projects.save(name, record["project"], None)
+                saved = self.projects.save(
+                    name,
+                    record["project"],
+                    None,
+                    actor=identity,
+                    origin="mcp_import",
+                )
             except ApiError as exc:
                 if exc.error == "project_exists":
                     latest = self.projects.read(name)

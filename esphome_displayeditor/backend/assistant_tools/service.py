@@ -481,3 +481,15 @@ class AssistantToolService:
 
     def validate_project(self, name: str) -> dict[str, Any]:
         return self.query.validate_project(name)
+
+    def list_project_revisions(self, name: str, limit: int = 10) -> dict[str, Any]:
+        return self.query.list_revisions(name, limit)
+
+    def read_project_revision(
+        self,
+        name: str,
+        revision_id: int,
+        view: str = "summary",
+        against: str = "current",
+    ) -> dict[str, Any]:
+        return self.query.read_revision(name, revision_id, view, against)

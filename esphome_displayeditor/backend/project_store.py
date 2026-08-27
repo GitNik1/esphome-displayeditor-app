@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import tempfile
@@ -14,18 +15,29 @@ from .designer import DesignerService
 from .errors import ApiError
 from .filesystem import revision_for
 from .project_locks import locked_project_write
+from .project_revisions import ProjectRevisionStore
+
+_LOGGER = logging.getLogger(__name__)
 
 _PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.lvgldesign$")
 
 
 class ProjectStore:
     def __init__(
-        self, data_root: Path, designer: DesignerService, max_size: int
+        self,
+        data_root: Path,
+        designer: DesignerService,
+        max_size: int,
+        *,
+        revisions: ProjectRevisionStore | None = None,
     ) -> None:
         self.root = data_root / "projects"
         self.root.mkdir(parents=True, exist_ok=True)
         self.designer = designer
         self.max_size = max_size
+        self.revisions = (
+            revisions if revisions is not None else ProjectRevisionStore(data_root)
+        )
 
     def _path(self, name: str) -> Path:
         if not _PROJECT_NAME.fullmatch(name):
@@ -96,12 +108,31 @@ class ProjectStore:
             "size": len(raw),
         }
 
+    def current_bytes(self, name: str) -> bytes | None:
+        """Stored bytes, or ``None`` when the project does not exist.
+
+        Deliberately does not go through :meth:`read`, which validates and can
+        reject exactly the project a user wants to roll back or diff against.
+        """
+        path = self._path(name)
+        if not path.exists():
+            return None
+        return self._read_bytes(path)
+
+    def current_revision(self, name: str) -> str | None:
+        raw = self.current_bytes(name)
+        return revision_for(raw) if raw is not None else None
+
     @locked_project_write
     def save(
         self,
         name: str,
         payload: dict[str, Any],
         expected_revision: str | None,
+        *,
+        actor: str = "unknown",
+        origin: str = "unknown",
+        restored_from: int | None = None,
     ) -> dict:
         path = self._path(name)
         _project, issues, raw = self._prepare(payload)
@@ -141,15 +172,34 @@ class ProjectStore:
             raise ApiError(
                 "save_verification_failed", "Saved project could not be verified.", 500
             )
+        # Recorded only once the bytes are durably on disk, so a save that ends
+        # in a 409 or 422 never leaves a history entry behind.
+        snapshot = self._snapshot(
+            name,
+            raw,
+            revision=new_revision,
+            action="save",
+            actor=actor,
+            origin=origin,
+            restored_from=restored_from,
+        )
         return {
             "name": name,
             "old_revision": old_revision,
             "revision": new_revision,
             "issues": issues,
+            "snapshot": snapshot,
         }
 
     @locked_project_write
-    def delete(self, name: str, expected_revision: str) -> dict:
+    def delete(
+        self,
+        name: str,
+        expected_revision: str,
+        *,
+        actor: str = "unknown",
+        origin: str = "unknown",
+    ) -> dict:
         path = self._path(name)
         current_revision = revision_for(self._read_bytes(path))
         if expected_revision != current_revision:
@@ -163,7 +213,45 @@ class ProjectStore:
                 },
             )
         path.unlink()
+        # A tombstone: the content itself is still in the row above it, which
+        # is what makes a deleted project restorable.
+        self._snapshot(
+            name,
+            b"",
+            revision=current_revision,
+            action="delete",
+            actor=actor,
+            origin=origin,
+        )
         return {"name": name, "revision": current_revision}
+
+    def _snapshot(
+        self,
+        name: str,
+        content: bytes,
+        *,
+        revision: str,
+        action: str,
+        actor: str,
+        origin: str,
+        restored_from: int | None = None,
+    ) -> bool:
+        """Record one written version. Never raises - history is best effort."""
+        try:
+            return self.revisions.record(
+                project_name=name,
+                content=content,
+                revision=revision,
+                actor=actor,
+                origin=origin,
+                action=action,
+                restored_from=restored_from,
+            )
+        except Exception:  # noqa: BLE001 - a history problem is not a save problem
+            _LOGGER.warning(
+                "Project revision snapshot failed for %s", name, exc_info=True
+            )
+            return False
 
     def _prepare(
         self, payload: dict[str, Any]

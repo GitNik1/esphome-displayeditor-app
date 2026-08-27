@@ -63,7 +63,13 @@ def create_designer_projects_router(
     ) -> dict:
         user_id = require_capability(request, "designer.project_write")
         try:
-            result = projects.save(name, body.project, body.expected_revision)
+            result = projects.save(
+                name,
+                body.project,
+                body.expected_revision,
+                actor=f"ha:{user_id}",
+                origin="ui",
+            )
         except ApiError as exc:
             _record(audit, user_id, "designer.project.save", name,
                     body.expected_revision, None, exc.error)
@@ -80,7 +86,9 @@ def create_designer_projects_router(
     ) -> dict:
         user_id = require_capability(request, "designer.project_write")
         try:
-            result = projects.delete(name, expected_revision)
+            result = projects.delete(
+                name, expected_revision, actor=f"ha:{user_id}", origin="ui"
+            )
         except ApiError as exc:
             _record(audit, user_id, "designer.project.delete", name,
                     expected_revision, None, exc.error)
