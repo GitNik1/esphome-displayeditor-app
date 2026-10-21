@@ -154,6 +154,7 @@
                   <label><span data-i18n="fontlib.size">Größe</span> <input id="font-library-size" type="number" min="1" max="255" value="16"></label>
                   <label><span data-i18n="fontlib.bpp">Bpp</span>
                     <select id="font-library-bpp">
+                      <option value="" data-i18n="fontlib.bppDefault">Standard (ESPHome: 1)</option>
                       <option value="1">1</option>
                       <option value="2">2</option>
                       <option value="4" selected>4</option>
@@ -188,6 +189,7 @@
               <button id="save-server-project" class="button primary" data-i18n="project.saveToApp">In App speichern</button>
               <button id="delete-server-project" class="button danger compact" data-i18n="project.delete" disabled>Löschen</button>
               <button id="open-revisions" class="button subtle compact" data-i18n="revisions.open" disabled>Versionen …</button>
+              <button id="check-source" class="button subtle compact" data-i18n="resync.open" data-i18n-attr="title:resync.openTitle" title="Die ESPHome-Konfiguration erneut einlesen und Änderungen anzeigen" disabled>Quelle prüfen …</button>
             </div>
           </details>
 
@@ -1027,8 +1029,31 @@
       </div>
       <div class="dialog-actions">
         <button id="preview-revision" type="button" class="button subtle" data-i18n="revisions.preview" disabled>Ansehen</button>
+        <button id="undo-import" type="button" class="button warning hidden" data-i18n="revisions.undoImport" disabled>Import zurücknehmen</button>
         <button id="restore-revision" type="button" class="button warning" data-i18n="revisions.restore" disabled>Wiederherstellen</button>
         <button id="close-revisions-footer" type="button" class="button subtle" data-i18n="revisions.closeButton">Schließen</button>
+      </div>
+    </dialog>
+
+    <dialog id="resync-dialog" class="resync-dialog" aria-labelledby="resync-title">
+      <div class="dialog-heading"><h2 id="resync-title" data-i18n="resync.title">Quelle hat sich geändert</h2><button id="close-resync" type="button" class="icon-button" data-i18n-attr="aria-label:resync.close" aria-label="Dialog schließen">×</button></div>
+      <p class="hint" id="resync-source"></p>
+      <div id="resync-groups" class="resync-groups"></div>
+      <section id="resync-losses-section" class="resync-section hidden">
+        <h3 data-i18n="resync.lossesTitle">Geht dabei verloren</h3>
+        <div id="resync-losses" class="resync-list"></div>
+      </section>
+      <section id="resync-unsupported-section" class="resync-section hidden">
+        <h3 data-i18n="resync.unsupportedTitle">Kann nicht übernommen werden</h3>
+        <p class="hint" data-i18n="resync.unsupportedHint">Diese Stellen der Konfiguration versteht der Designer nicht. Sie bleiben in der YAML-Datei, sind im Editor aber nicht sichtbar.</p>
+        <div id="resync-unsupported" class="resync-list"></div>
+      </section>
+      <label class="resync-lock"><input id="resync-lock-previous" type="checkbox"> <span data-i18n="resync.lockPrevious">Fassung vor dem Import sperren</span></label>
+      <p class="hint" data-i18n="resync.lockPreviousHint">Nimmt sie aus dem 10er-Fenster heraus, damit der Rückweg auch in Wochen noch da ist.</p>
+      <div class="dialog-actions">
+        <span id="resync-status" class="hint"></span>
+        <button id="resync-later" type="button" class="button subtle" data-i18n="resync.later">Später</button>
+        <button id="resync-apply" type="button" class="button primary" data-i18n="resync.apply">Übernehmen</button>
       </div>
     </dialog>
 
@@ -1230,6 +1255,24 @@
             <div id="revision-graph-nodes" class="revision-graph-nodes"></div>
           </div>
         </div>
+        <section id="viewer-scenarios" class="viewer-scenarios" data-i18n-attr="aria-label:viewer.scenario.title" aria-label="Szenarien">
+          <div class="viewer-scenario-row">
+            <strong data-i18n="viewer.scenario.title">Szenarien</strong>
+            <div id="viewer-scenario-list" class="viewer-scenario-list"></div>
+            <button id="viewer-scenario-edit" type="button" class="button subtle compact" data-i18n="viewer.scenario.edit">Bearbeiten …</button>
+          </div>
+          <div id="viewer-condition-prompt" class="viewer-condition-prompt" role="alert" hidden></div>
+          <div id="viewer-scenario-editor" class="viewer-scenario-editor hidden">
+            <p class="hint" data-i18n="viewer.scenario.editorHint">Je Szenario ein Name und die LVGL-Aktionen, die den Gerätezustand herstellen. „Zurücksetzen“ stellt den Startzustand wieder her. Szenarien werden mit dem Projekt gespeichert, aber nie nach ESPHome exportiert.</p>
+            <textarea id="viewer-scenario-yaml" spellcheck="false" rows="12" data-i18n-attr="aria-label:viewer.scenario.title" aria-label="Szenarien"></textarea>
+            <p id="viewer-scenario-error" class="error hidden"></p>
+            <div class="viewer-scenario-actions">
+              <button id="viewer-scenario-suggestions" type="button" class="button subtle compact hidden"></button>
+              <button id="viewer-scenario-cancel" type="button" class="button subtle compact" data-i18n="viewer.scenario.cancel">Abbrechen</button>
+              <button id="viewer-scenario-apply" type="button" class="button primary compact" data-i18n="viewer.scenario.apply">Übernehmen</button>
+            </div>
+          </div>
+        </section>
         <div id="viewer-stage" class="viewer-stage">
           <div id="viewer-frame" class="viewer-frame">
             <div id="viewer-display" class="viewer-display" data-i18n-attr="aria-label:viewer.displayAria" aria-label="Schreibgeschützte LVGL-Vorschau"></div>

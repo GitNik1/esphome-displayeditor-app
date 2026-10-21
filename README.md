@@ -38,6 +38,12 @@ YAML.
   MCP server. Compare any version against the current state, name and lock the
   ones worth keeping, and restore with one click — the replaced state stays in
   the list, so a restore is itself undoable.
+- **Source re-sync on open** — a project imported from an ESPHome
+  configuration re-reads that file when you open it and shows what changed
+  since, line by line, grouped into entities, resources and layout. Tick what
+  to adopt; the dialog states beforehand what would be removed and which
+  bindings that would break. Sensors added in the ESPHome Device Builder
+  therefore reach the designer instead of failing the next save.
 - **Live entity bindings and a read-only Viewer** — map labels, sliders,
   bars, arcs and switches to Home Assistant/ESPHome entities and preview a
   running dashboard, plus optional bidirectional device bindings that are

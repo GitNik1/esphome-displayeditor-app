@@ -472,7 +472,10 @@ def _import_fonts(doc: dict[str, Any], issues: list[ImportIssue]) -> list[FontLi
             continue
         entry = FontLibraryEntry(id=str(raw.get("id", "")))
         entry.size = int(raw.get("size", 16) or 16)
-        entry.bpp = int(raw.get("bpp", 4) or 4)
+        # Unset stays unset: ESPHome's own default is 1, the designer's
+        # default for new fonts is 4, and substituting either would change
+        # how the imported font renders.
+        entry.bpp = int(raw["bpp"]) if raw.get("bpp") is not None else None
         entry.glyphs = list(raw.get("glyphs", []) or [])
         entry.glyphsets = list(raw.get("glyphsets", []) or [])
         entry.external = True
@@ -674,9 +677,21 @@ def import_esphome_yaml(text: str, *, source_name: str = "",
         if entry.id:
             registry.claim(entry.id, f"resource '{entry.id}'")
 
-    displays = lvgl.get("displays") or []
-    if displays:
+    # A config with one display usually states no `displays:` at all - LVGL
+    # then binds to that display on its own. Absence has to survive the round
+    # trip: the placeholder's "my_display" default refers to an id the source
+    # never defined, and writing it back breaks ESPHome's id() resolution.
+    # More than one display has no single-placeholder model, so that list is
+    # kept verbatim instead of quietly dropping all but the first entry.
+    displays = lvgl.get("displays")
+    if isinstance(displays, list) and len(displays) == 1:
         project.display_id_placeholder = str(displays[0])
+    elif isinstance(displays, str) and displays:
+        project.display_id_placeholder = displays
+    else:
+        project.display_id_placeholder = ""
+        if displays:
+            project.extra_lvgl["displays"] = displays
     project.default_font = str(lvgl.get("default_font", "") or "")
 
     theme = lvgl.get("theme")

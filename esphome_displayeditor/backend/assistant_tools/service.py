@@ -17,6 +17,7 @@ from ..version import APP_VERSION
 from ..viewer_bindings import ViewerBindingStore
 from ..workflow import WorkflowStore
 from .binding_operations import ProjectBindingOperation
+from .viewer_scenario_service import read_viewer_scenarios
 from .limits import (
     MCP_ACTIVE_CHANGESET_LIMIT,
     MCP_ACTIVE_TOKEN_LIMIT,
@@ -90,6 +91,7 @@ class AssistantToolService:
             self.audit,
             self.changesets,
         )
+        self.propose_viewer_scenarios = self.mutations.propose_scenarios
         self.viewer_mutations = ViewerBindingMutationService(
             settings,
             self.projects,
@@ -230,6 +232,9 @@ class AssistantToolService:
             identity=identity,
         )
 
+    def read_viewer_scenarios(self, name: str) -> dict[str, Any]:
+        return read_viewer_scenarios(self.projects.read(name), name)
+
     def apply_changeset(self, change_set_id: str, *, identity: str) -> dict[str, Any]:
         record = self.changesets.read(change_set_id, identity)
         if record["target_kind"] == "viewer_bindings":
@@ -247,8 +252,7 @@ class AssistantToolService:
         configuration_name: str,
         configuration_revision: str,
         draft_revision: str | None,
-        *,
-        identity: str,
+        *, identity: str, confirm_display_takeover: bool = False,
     ) -> dict[str, Any]:
         return self.configuration_drafts.propose(
             project_name,
@@ -256,7 +260,7 @@ class AssistantToolService:
             configuration_name,
             configuration_revision,
             draft_revision,
-            identity=identity,
+            identity=identity, confirm_display_takeover=confirm_display_takeover,
         )
 
     def propose_viewer_bindings(

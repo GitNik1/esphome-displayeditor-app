@@ -6,6 +6,7 @@ import { applyRuntimeBinding } from "./runtime.js";
 import { allWidgetItems, surfaceProject, viewerSurfaces, viewerWidgetRoots } from "./surfaces.js";
 import { findViewerWidget as findWidget, navigateViewerPage as navigatePage } from "./action-model.js";
 import { applyViewerAction } from "./action-interpreter.js";
+import { ViewerSimulation } from "./simulation.js";
 import { VIEWER_FONT_LOADED_EVENT } from "./assets.js";
 import {
   applyViewerStyle as applyStyle,
@@ -37,7 +38,8 @@ export { effectiveViewerPartStyle, effectiveViewerStyle, resolveViewerColor, vie
  * display: HTMLElement, title: HTMLElement, status: HTMLElement, zoomLabel: HTMLElement,
  * rotationControl: HTMLInputElement, eventLog: HTMLElement, eventCount: HTMLElement,
  * pageControls: HTMLElement, pageSelect: HTMLSelectElement, pagePrevious: HTMLButtonElement,
- * pageNext: HTMLButtonElement, rendererControl?: HTMLSelectElement}} ViewerElements */
+ * pageNext: HTMLButtonElement, rendererControl?: HTMLSelectElement,
+ * conditionPrompt?: HTMLElement}} ViewerElements */
 
 /** @param {any} project @returns {any} */
 export function cloneViewerProject(project) {
@@ -71,6 +73,7 @@ export class ViewerController {
   constructor({
     dialog, stage, frame, display, title, status, zoomLabel, rotationControl,
     eventLog, eventCount, pageControls, pageSelect, pagePrevious, pageNext, rendererControl,
+    conditionPrompt,
   }) {
     this.dialog = dialog;
     this.stage = stage;
@@ -87,6 +90,10 @@ export class ViewerController {
     this.pagePrevious = pagePrevious;
     this.pageNext = pageNext;
     this.rendererControl = rendererControl || null;
+    this.conditionPrompt = conditionPrompt || null;
+    /** Scenarios, condition answers, switch and transition state. */
+    this.simulation = new ViewerSimulation();
+    this.triggerDepth = 0;
     this.rendererMode = "html";
     this.wasmRenderer = null;
     this.wasmMetrics = null;
@@ -102,6 +109,7 @@ export class ViewerController {
     /** @type {ViewerLogEntry[]} */ this.logEntries = [];
     /** @type {Set<string>} */ this.renderWarnings = new Set();
     /** @type {ViewerRuntime} */ this.runtime = { activePageId: "", activeTiles: {}, activeTabs: {} };
+    /** Page the HTML renderer last drew. */ this.renderedPageId = "";
     /** @type {any[]} */ this.runtimeBindings = [];
     /** @type {Map<string, any>} */ this.runtimeStates = new Map();
     /** @type {Map<string, any>} */ this.runtimeDevices = new Map();
@@ -142,6 +150,8 @@ export class ViewerController {
     this.fitMode = true;
     this.logEntries = [];
     this.runtime = { activePageId: activeProject.pages?.[0]?.id || "", activeTiles: {}, activeTabs: {} };
+    this.simulation.reset();
+    this.hideConditionPrompt();
     this.runtimeBindings = cloneViewerProject(runtimeBindings);
     this.runtimeStates = new Map();
     this.runtimeDevices = new Map();
@@ -178,6 +188,8 @@ export class ViewerController {
     (activeProject.msgboxes || []).forEach((/** @type {any} */ msgbox) => { msgbox.hidden = true; });
     this.runtime = { activePageId: activeProject.pages?.[0]?.id || "", activeTiles: {}, activeTabs: {} };
     this.logEntries = [];
+    this.simulation.reset();
+    this.hideConditionPrompt();
     this.applyAllRuntimeBindings({ render: false });
     this.renderEventLog();
     this.render();
@@ -327,16 +339,152 @@ export class ViewerController {
     const actions = Array.isArray(raw) ? raw : [raw];
     this.recordEvent("trigger", `${widget.id || widget.widget_type}: ${eventName}`);
     let changed = false;
-    actions.forEach((action) => {
-      const result = applyViewerAction(this.project, action, this.runtime, context);
+    for (const action of actions) {
+      const result = applyViewerAction(this.project, action, this.runtime, this.simulationContext(context));
       changed ||= result.changed;
       this.recordEvent(result.handled && !result.warning ? "action" : "warning", result.message);
-    });
+      if (result.pending) {
+        // Re-run the whole event once answered: the actions before the
+        // condition are idempotent display updates in practice.
+        this.askCondition(result.pending, () => this.runEvent(widget, eventName, context));
+        break;
+      }
+    }
     return changed;
+  }
+
+  // --- simulation (frontend/viewer/simulation.js) ---------------------------
+
+  /** @param {{name: string, actions: any[]}[]} scenarios */
+  setScenarios(scenarios) {
+    this.simulation.setScenarios(/** @type {any} */ (scenarios));
+  }
+
+  /** @param {Record<string, any>} context */
+  simulationContext(context) {
+    return {
+      ...context,
+      resolveCondition: (/** @type {any} */ condition) => this.simulation.resolveCondition(condition),
+      onUnsupportedAction: (/** @type {string} */ name, /** @type {any} */ payload) => this.playTriggered(name, payload),
+    };
+  }
+
+  /** Play a scenario's actions; stops at a condition still to be answered.
+   * @param {any} scenario @returns {{changed: boolean, pending?: {key: string, label: string}}} */
+  playScenarioActions(scenario) {
+    this.recordEvent("trigger", t("viewer.scenario.ran", { name: scenario.name }));
+    let changed = false;
+    for (const action of scenario.actions || []) {
+      const result = applyViewerAction(this.project, action, this.runtime, this.simulationContext({}));
+      changed ||= result.changed;
+      this.recordEvent(result.handled && !result.warning ? "action" : "warning", result.message);
+      if (result.pending) return { changed, pending: result.pending };
+    }
+    this.simulation.played(scenario);
+    return { changed };
+  }
+
+  /** An action the browser cannot run, answered by the scenarios' `on:`.
+   * @param {string} name @param {any} payload
+   * @returns {{handled: boolean, changed: boolean, warning?: boolean, message: string,
+   *   pending?: {key: string, label: string}} | null} */
+  playTriggered(name, payload) {
+    if (this.triggerDepth > 8) {
+      return { handled: false, changed: false, warning: true, message: t("viewer.scenario.loop", { name }) };
+    }
+    const { plays, ignored } = this.simulation.triggered(name, payload);
+    const target = typeof payload === "string" ? payload : JSON.stringify(payload);
+    if (!plays.length) {
+      if (ignored.length) {
+        return { handled: true, changed: false,
+          message: t("viewer.scenario.noTransition", { name: `${name}: ${target}`, state: this.simulation.state }) };
+      }
+      if (name.startsWith("switch.")) {
+        return { handled: true, changed: false, message: t("viewer.scenario.switchNoted", { name: `${name}: ${target}` }) };
+      }
+      return null;
+    }
+    let changed = false;
+    this.triggerDepth += 1;
+    try {
+      for (const { scenario } of plays) {
+        const result = this.playScenarioActions(scenario);
+        changed ||= result.changed;
+        if (result.pending) {
+          return { handled: false, changed, pending: result.pending,
+            message: t("viewer.event.conditionPending", { condition: result.pending.label }) };
+        }
+      }
+    } finally {
+      this.triggerDepth -= 1;
+    }
+    return { handled: true, changed,
+      message: `${name}: ${target} → ${plays.map(({ scenario }) => scenario.name).join(", ")}` };
+  }
+
+  /** A scenario button: a trigger scenario fires its trigger, any other
+   * plays its own actions.
+   * @param {any} scenario */
+  runScenario(scenario) {
+    if (!this.project) return;
+    if (scenario.on) {
+      const result = this.playTriggered(scenario.on.name, scenario.on.payload);
+      if (result) this.recordEvent(result.handled && !result.warning ? "action" : "warning", result.message);
+      if (result?.pending) this.askCondition(result.pending, () => this.runScenario(scenario));
+    } else {
+      const result = this.playScenarioActions(scenario);
+      if (result.pending) this.askCondition(result.pending, () => this.runScenario(scenario));
+    }
+    this.render();
+  }
+
+  /** Ask the user to decide a condition the browser cannot evaluate.
+   * @param {{key: string, label: string}} pending @param {() => void} retry */
+  askCondition(pending, retry) {
+    const prompt = this.conditionPrompt;
+    if (!prompt) return;
+    const text = document.createElement("span");
+    text.className = "viewer-condition-text";
+    text.textContent = t("viewer.scenario.ask");
+    const code = document.createElement("code");
+    code.textContent = pending.label;
+    const answer = (/** @type {boolean} */ value) => {
+      this.simulation.answer(pending.key, value);
+      this.recordEvent("state", `${pending.label} = ${value ? t("viewer.event.true") : t("viewer.event.false")}`);
+      this.hideConditionPrompt();
+      retry();
+      this.render();
+    };
+    const yes = document.createElement("button");
+    yes.type = "button";
+    yes.className = "button primary compact";
+    yes.textContent = t("viewer.event.true");
+    yes.addEventListener("click", () => answer(true));
+    const no = document.createElement("button");
+    no.type = "button";
+    no.className = "button subtle compact";
+    no.textContent = t("viewer.event.false");
+    no.addEventListener("click", () => answer(false));
+    const hint = document.createElement("small");
+    hint.textContent = t("viewer.scenario.askHint");
+    prompt.replaceChildren(text, code, yes, no, hint);
+    prompt.hidden = false;
+  }
+
+  hideConditionPrompt() {
+    if (!this.conditionPrompt) return;
+    this.conditionPrompt.hidden = true;
+    this.conditionPrompt.replaceChildren();
   }
 
   /** @param {ViewerWidget | null} [transientWidget] @param {string[]} [transientStates] */
   refreshActionVisuals(transientWidget = null, transientStates = []) {
+    // A press/release action may have switched the page (lvgl.page.show);
+    // restyling the nodes of the old page would leave it on screen.
+    if (this.runtime.activePageId !== this.renderedPageId) {
+      this.render();
+      return;
+    }
     this.display.querySelectorAll("[data-widget-id]").forEach((rawNode) => {
       const node = /** @type {HTMLElement} */ (rawNode);
       const widget = findWidget(this.project, node.dataset.widgetId);
@@ -700,6 +848,7 @@ export class ViewerController {
     }
     this.wasmRenderer?.stop();
     this.stopAnimations();
+    this.renderedPageId = this.runtime.activePageId;
     const warnings = new Set();
     const width = Number(this.project.canvas?.width) || 480;
     const height = Number(this.project.canvas?.height) || 480;

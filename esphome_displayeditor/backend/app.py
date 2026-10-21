@@ -24,6 +24,7 @@ from .api.routers.admin_mcp import create_admin_mcp_router
 from .api.routers.runtime_events import create_runtime_events_router
 from .api.routers.designer_projects import create_designer_projects_router
 from .api.routers.project_revisions import create_project_revisions_router
+from .api.routers.project_resync import create_project_resync_router
 from .api.routers.configuration_files import create_configuration_files_router
 from .api.routers.firmware_workflow import create_firmware_workflow_router
 from .api.routers.designer_transform import create_designer_transform_router
@@ -459,6 +460,16 @@ def create_app(
             settings=settings,
             audit=audit,
             ensure_capability_available=ensure_capability_available,
+            require_capability=require_capability,
+        )
+    )
+    application.include_router(
+        create_project_resync_router(
+            projects=projects,
+            revisions=revisions,
+            designer=designer,
+            filesystem=filesystem,
+            audit=audit,
             require_capability=require_capability,
         )
     )

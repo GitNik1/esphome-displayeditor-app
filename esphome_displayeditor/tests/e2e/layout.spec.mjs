@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-import { mockApi, openStoredProject } from "./mock-api.mjs";
+import { mockApi, openStoredProject, sourcePlanWithChanges } from "./mock-api.mjs";
+
+let apiControl;
 
 // Geometry, not behaviour. Every case here encodes a layout bug that shipped
 // past the behavioural suite because nothing asserted where things sit:
@@ -24,7 +26,7 @@ function boxOf(page, selector) {
 }
 
 test.beforeEach(async ({ page }) => {
-  await mockApi(page);
+  apiControl = await mockApi(page);
 });
 
 // 620 is below any real laptop; if the layout holds there it holds anywhere.
@@ -52,6 +54,36 @@ for (const height of [620, 768, 900]) {
     expect(diff.scrolls).toBe(true);
   });
 }
+
+test("a long source diff squeezes the group list, not the buttons", async ({ page }) => {
+  // A config that grew fifty entities is the case that pushed the confirm
+  // button off screen before .resync-groups was allowed to take the squeeze.
+  const many = Array.from({ length: 50 }, (_unused, index) => ({
+    kind: "added", label: `sensor.probe_${index}`, line: index + 10,
+  }));
+  apiControl.sourcePlan = {
+    ...sourcePlanWithChanges,
+    groups: [
+      { ...sourcePlanWithChanges.groups[0], changed: many.length, changes: many },
+      sourcePlanWithChanges.groups[1],
+    ],
+  };
+  await page.setViewportSize({ width: 1280, height: 620 });
+  await page.goto("/");
+  await expect(page.locator("#health")).toHaveClass(/ok/);
+  await openStoredProject(page);
+  await expect(page.locator("#resync-dialog")).toBeVisible();
+
+  const actions = await boxOf(page, "#resync-dialog .dialog-actions");
+  const dialog = await boxOf(page, "#resync-dialog");
+  const groups = await boxOf(page, "#resync-groups");
+
+  expect(actions.top).toBeGreaterThanOrEqual(0);
+  expect(actions.bottom).toBeLessThanOrEqual(actions.viewport);
+  expect(dialog.scrolls).toBe(false);
+  expect(dialog.height).toBeLessThanOrEqual(620);
+  expect(groups.scrolls).toBe(true);
+});
 
 test("the viewer stacks toolbar, history bar and stage without gaps", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });

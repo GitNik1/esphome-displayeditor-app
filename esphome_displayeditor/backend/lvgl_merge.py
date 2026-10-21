@@ -35,6 +35,14 @@ from .designer_core.yamlexport import (
 )
 from .designer_core.yamlimport import TaggedScalar, load_lvgl_yaml
 from .entity_bindings import compile_bindings
+from .display_targets import (
+    DisplayCommentError,
+    comment_out_display_conflicts,
+    display_source_note,
+    find_display_conflicts,
+    resolve_display_placeholder,
+)
+from .yaml_patch import patch_top_level_block
 
 #: The four top-level keys a Designer project can contribute, in the order
 #: they are considered - matches yamlexport.export_project()'s own order.
@@ -68,12 +76,28 @@ class MergeError(Exception):
     """Raised when the existing file's structure can't be safely edited."""
 
 
+class DisplayTakeoverRequired(MergeError):
+    """The target display draws by itself (``lambda:``, ``pages:``, ...),
+    which ESPHome refuses next to LVGL. The user has to agree before those
+    keys are commented out; ``conflicts`` names them."""
+
+    def __init__(self, conflicts: list[dict[str, Any]]) -> None:
+        names = ", ".join(
+            f"'{c['display_id'] or 'display'}' ({', '.join(c['keys'])})" for c in conflicts)
+        super().__init__(
+            f"Display {names} draws by itself, which LVGL cannot share. Confirm to comment "
+            "these keys out - the code stays in the file and can be deleted by hand.")
+        self.conflicts = conflicts
+
+
 @dataclass
 class MergeResult:
     content: str
     replaced_keys: list[str] = field(default_factory=list)
     appended_keys: list[str] = field(default_factory=list)
     issues: list[ExportIssue] = field(default_factory=list)
+    #: Displays whose drawing keys were commented out for LVGL.
+    display_takeover: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _image_block_for_merge(project: Project) -> list[dict[str, Any]] | None:
@@ -230,7 +254,12 @@ def _find_top_level_block(lines: list[str], key: str) -> tuple[int, int] | None:
     return start, end
 
 
-def merge_project_into_yaml(project: Project, existing_content: str) -> MergeResult:
+def merge_project_into_yaml(
+    project: Project,
+    existing_content: str,
+    *,
+    display_takeover: str = "ask",
+) -> MergeResult:
     """Merge a Designer project's color/font/image/lvgl blocks into an
     existing ESPHome YAML file's text, replacing only the matching
     top-level keys' own line ranges (or appending a key that isn't present
@@ -241,13 +270,36 @@ def merge_project_into_yaml(project: Project, existing_content: str) -> MergeRes
     block under that key in the target file is left exactly as it is - a
     merge only ever adds or updates, consistent with never surprising a
     human by deleting something they did not touch in the Designer.
+
+    The ``lvgl: displays:`` entry is resolved against the target file (see
+    ``display_targets.py``). A display that draws by itself raises
+    DisplayTakeoverRequired unless ``display_takeover="comment"``, which
+    comments its drawing keys out instead - the caller passes that only
+    after the user agreed, or for a read-only preview.
     """
+    project, display_issues = resolve_display_placeholder(project, existing_content)
+    conflicts = find_display_conflicts(existing_content, project.display_id_placeholder)
+    if note := display_source_note(existing_content):
+        display_issues.append(ExportIssue("B", note))
+    if conflicts:
+        if display_takeover != "comment":
+            raise DisplayTakeoverRequired([c.to_dict() for c in conflicts])
+        try:
+            existing_content = comment_out_display_conflicts(existing_content, conflicts)
+        except DisplayCommentError as exc:
+            raise MergeError(str(exc)) from exc
+        display_issues.extend(
+            ExportIssue("B", f"Display '{c.display_id or 'display'}': "
+                             f"{', '.join(c.keys)} commented out for LVGL.")
+            for c in conflicts
+        )
     compiled = compile_bindings(project)
     issues = [
         ExportIssue("A" if issue.severity == "error" else "B", issue.message)
         for issue in compiled.issues
     ]
     generated_doc, export_issues = _build_merge_doc(compiled.project)
+    issues.extend(display_issues)
     issues.extend(export_issues)
     lines = existing_content.splitlines(keepends=True)
     if lines and not lines[-1].endswith(("\n", "\r\n")):
@@ -259,21 +311,32 @@ def merge_project_into_yaml(project: Project, existing_content: str) -> MergeRes
     for key in MERGE_KEYS:
         if key not in generated_doc:
             continue
-        block_text = _dump_block(key, _materialize_lambdas(generated_doc[key]))
+        value = _materialize_lambdas(generated_doc[key])
         found = _find_top_level_block(lines, key)
         if found is None:
-            to_append.append(block_text)
+            to_append.append(_dump_block(key, value))
             appended.append(key)
             continue
         start, end = found
-        lines[start:end] = block_text.splitlines(keepends=True)
+        # Edit only what changed, so comments and the author's formatting
+        # inside the block survive; a block the patcher cannot handle safely
+        # is rewritten as a whole, as before.
+        patched = patch_top_level_block(lines[start:end], key, value)
+        if patched is None:
+            patched = _dump_block(key, value).splitlines(keepends=True)
+            issues.append(ExportIssue(
+                "C", f"'{key}:' was rewritten as a whole; comments inside it were not kept."))
+        lines[start:end] = patched
         replaced.append(key)
 
     result_text = "".join(lines)
     if to_append:
         if not result_text.endswith("\n"):
             result_text += "\n"
-        result_text += "\n" + "\n".join(to_append)
+        appended_text = "\n" + "\n".join(to_append)
+        if lines and lines[0].endswith("\r\n"):
+            appended_text = appended_text.replace("\n", "\r\n")  # keep the file's line endings
+        result_text += appended_text
     if compiled.entity_actions:
         result_text, changed_domains = _merge_entity_binding_actions(
             result_text,
@@ -287,6 +350,7 @@ def merge_project_into_yaml(project: Project, existing_content: str) -> MergeRes
         replaced_keys=replaced,
         appended_keys=appended,
         issues=issues,
+        display_takeover=[c.to_dict() for c in conflicts],
     )
 
 

@@ -2,6 +2,96 @@
 
 ## Unreleased
 
+- Opening a stored project now re-reads the ESPHome configuration it was
+  imported from and reports what changed since - grouped into entities,
+  resources and layout, each with the line numbers it came from, and each with
+  its own tick box. Nothing is adopted without confirmation.
+- The dialog states what adopting costs: the entities, resources and widgets
+  that would be removed, and the bindings that would lose their entity or
+  widget (those are dropped as part of adopting, because a project that keeps
+  them cannot be saved). Groups that remove something start unticked.
+- Parts of the configuration the importer does not model are listed separately
+  with their line numbers. They stay in the YAML file and are still carried
+  through on export - they are simply not editable here.
+- Adopting is an ordinary revision-checked save, so it appears in the version
+  history as *Quellabgleich* and can be rolled back. **Quelle prüfen …** next
+  to the project list runs the same check on demand.
+- Closes the gap that made sensors added in the ESPHome Device Builder
+  invisible to the designer: binding to one of them used to fail the whole
+  project save with `invalid_project`.
+- An import version now records what it did — source file, its revision before
+  and after, the adopted groups, the dropped bindings, and the revision of the
+  state it replaced. The version list shows the configuration's move as
+  `display.yaml: ccc → ddd`, and the graph in the historical Viewer flags the
+  versions that carried a YAML change in, so one timeline shows both the
+  project's versions and the configuration moving underneath them.
+- **Import zurücknehmen** on such a version restores the state it replaced —
+  an ordinary restore underneath, so it is itself undoable. Offered only while
+  that version is still in the history.
+- The import dialog can **pin the pre-import version**, keeping it out of the
+  rolling window of 10 for an import whose damage shows up much later. A full
+  lock quota is reported and never fails the import.
+- Saving into an existing configuration no longer re-dumps the whole `lvgl:`
+  and `font:` block. Only entries that actually changed are rewritten;
+  everything else - comments, commented-out widgets, quoting, flow lists,
+  indentation - stays byte for byte. Widgets are matched by id, so deleting,
+  adding or reordering one touches only its own lines. A block the patcher
+  cannot edit safely is still rewritten as a whole, with a note.
+- An imported configuration without `displays:` no longer gets
+  `displays: [my_display]` written into it - an id the configuration never
+  defined, which made ESPHome reject the saved file. Several displays are
+  kept verbatim instead of being cut down to the first.
+- Fonts imported without `bpp:` stay without it (ESPHome's default is 1);
+  previously every one was saved with `bpp: 4`, changing how it renders and
+  how much flash it takes. The font dialog offers **Standard (ESPHome: 1)**.
+- `!lambda` (and any other tag) in imported widget actions survives the trip
+  through the browser; an edited multi-line lambda is written as a `|-` block
+  instead of one escaped string.
+- **Viewer scenarios** simulate what the browser cannot run - C++ lambdas,
+  SPI drivers, state machines. A scenario names a device state and lists the
+  LVGL actions that produce it; the Viewer plays it from the new
+  **Szenarien** row. Scenarios are saved with the project, never exported.
+- A scenario with `on:` stands in for an action the browser would skip
+  (`state_machine.transition: NEXT`, `script.execute`, `switch.turn_on`);
+  with `transitions:` it walks a state table, so a test sequence runs from
+  the simulated display's own buttons. `switch.turn_on/off` are remembered,
+  so `switch.is_on` conditions answer themselves.
+- Conditions the browser cannot check (a C++ lambda) are asked once - true
+  or false - and the answer holds until **Zurücksetzen**. `and`/`or`/`not`
+  are evaluated, and a known part that already decides is not asked.
+- Importing a configuration suggests scenarios from every automation outside
+  `lvgl:` that changes the display: template switches, buttons, scripts,
+  `state_machine:` states and inputs, and other `on_*`/`then` blocks.
+- Fixed: a page change from `on_press`/`on_release` (`lvgl.page.show`) was
+  executed but the Viewer kept showing the old page.
+- MCP: `display_viewer_scenarios_read` (every access mode) returns a
+  project's scenarios, the import suggestions and the format;
+  `display_viewer_scenarios_propose` (`project_write`) creates, replaces,
+  renames and deletes scenarios or adopts suggestions as a reviewed project
+  changeset, keeping comments in the scenario YAML. The new
+  `display_simulate_device` prompt guides a client through it.
+- Fixed the MCP tool-registry test, which had not been updated for the
+  revision tools.
+- Merging into a configuration resolves `lvgl: displays:` against the target
+  file: a project placeholder the file does not define (a new project's
+  `my_display`) becomes the real display id, and a display without an id gets
+  no `displays:` entry at all.
+- A target display that draws by itself - `lambda:`, `pages:`,
+  `auto_clear_enabled: true` or `show_test_card: true`, all refused by ESPHome
+  next to LVGL - stops the merge with a warning. Only after confirming are
+  those keys commented out in the draft, under a marker line; the code stays
+  in the file and can be deleted by hand. MCP: `display_configuration_draft_propose`
+  answers `display_takeover_required` until called with
+  `confirm_display_takeover=true`; the merge preview shows the result, flagged.
+  A drawing key that opens its list entry (`- lambda: ...`) keeps the dash,
+  which carries the marker; a flow-style display (`- {platform: ..., lambda: ...}`)
+  is rewritten in block style with the drawing keys commented above. A display
+  in a flow list or one that is nothing but a lambda is refused with a reason.
+- A display defined outside the merged file (`packages:`, `!include`, `<<:`)
+  is flagged, and `displays:` is left out rather than naming an id the file
+  cannot confirm - unless the file's own `lvgl:` already names it.
+- Blocks appended to a file with CRLF line endings now use CRLF as well.
+
 ## 0.400.0
 
 - Designer projects now keep a version history. Every write is recorded —

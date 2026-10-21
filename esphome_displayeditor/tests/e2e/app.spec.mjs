@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { mockApi, openStoredProject, project } from "./mock-api.mjs";
+import { mockApi, openStoredProject, project, sourcePlanWithChanges } from "./mock-api.mjs";
 
 let apiControl;
 
@@ -124,6 +124,88 @@ test("a change made elsewhere raises a banner that leads to the versions", async
   await page.locator("#external-change-open").click();
   await expect(page.locator("#revisions-dialog")).toBeVisible();
   await expect(banner).toBeHidden();
+});
+
+test("opening a project reports what its source config changed", async ({ page }) => {
+  apiControl.sourcePlan = sourcePlanWithChanges;
+  await openStoredProject(page);
+
+  const dialog = page.locator("#resync-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("display.yaml");
+  // The suite runs in the browser default locale, which the app resolves to en.
+  await expect(page.locator("#resync-groups")).toContainText("Line 12 · sensor.pump_state");
+  // Adding a sensor is free; replacing the layout drops a widget, so only the
+  // first group is ticked for the user.
+  await expect(page.locator("#resync-groups input[data-group='entities']")).toBeChecked();
+  await expect(page.locator("#resync-groups input[data-group='layout']")).not.toBeChecked();
+  // What the importer cannot take over is named with the line it sits on.
+  await expect(page.locator("#resync-unsupported")).toContainText("Line 31");
+  await expect(page.locator("#resync-unsupported")).toContainText("spinbox");
+});
+
+test("ticking a destructive group states its cost before anything is applied", async ({ page }) => {
+  apiControl.sourcePlan = sourcePlanWithChanges;
+  await openStoredProject(page);
+  await expect(page.locator("#resync-losses")).toContainText("Nothing");
+
+  await page.locator("#resync-groups input[data-group='layout']").check();
+  await expect(page.locator("#resync-losses")).toContainText("label title");
+  await expect(page.locator("#resync-losses")).toContainText("show_level");
+  expect(apiControl.lastResync).toBeNull();
+
+  await page.locator("#resync-groups input[data-group='layout']").uncheck();
+  await page.locator("#resync-apply").click();
+  await expect(page.locator("#resync-dialog")).toBeHidden();
+  expect(apiControl.lastResync).toEqual({
+    groups: ["entities"], expected_revision: "sha256:bbb", lock_previous: false,
+  });
+});
+
+test("adopting nothing is refused, and an unchanged source says so", async ({ page }) => {
+  apiControl.sourcePlan = sourcePlanWithChanges;
+  await openStoredProject(page);
+  await page.locator("#resync-groups input[data-group='entities']").uncheck();
+  await expect(page.locator("#resync-apply")).toBeDisabled();
+
+  await page.locator("#resync-later").click();
+  apiControl.sourcePlan = { available: true, changed: false, groups: [] };
+  await page.locator("#check-source").click();
+  await expect(page.locator("#toast")).toContainText("unchanged");
+  await expect(page.locator("#resync-dialog")).toBeHidden();
+});
+
+test("an import is marked in the history and can be taken back", async ({ page }) => {
+  apiControl.sourcePlan = sourcePlanWithChanges;
+  await openStoredProject(page);
+  await page.locator("#resync-lock-previous").check();
+  await page.locator("#resync-apply").click();
+  await expect(page.locator("#resync-dialog")).toBeHidden();
+  expect(apiControl.lastResync.lock_previous).toBe(true);
+
+  await page.locator("#open-revisions").click();
+  const newest = page.locator("#revisions-list .revision-row").first();
+  // The version says which configuration moved, and from where to where.
+  await expect(newest).toContainText("display.yaml: ccc → ddd");
+  await expect(newest).toContainText("Entities");
+  // The version it displaced was pinned, so the way back cannot rotate out.
+  await expect(page.locator("#revisions-list .revision-row").nth(1)).toContainText("locked");
+
+  await newest.click();
+  await expect(page.locator("#undo-import")).toBeVisible();
+  await expect(page.locator("#undo-import")).toBeEnabled();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("#undo-import").click();
+  // Undoing restores the version the import replaced - id 2, not the import.
+  await expect(page.locator("#revisions-list .revision-row").first()).toContainText("Restored");
+  await expect(page.locator("#toast")).toContainText("restored");
+});
+
+test("an ordinary version offers no undo-import button", async ({ page }) => {
+  await openStoredProject(page);
+  await page.locator("#open-revisions").click();
+  await page.locator("#revisions-list .revision-row").nth(1).click();
+  await expect(page.locator("#undo-import")).toBeHidden();
 });
 
 test("a dismissed banner stays dismissed until the next change", async ({ page }) => {

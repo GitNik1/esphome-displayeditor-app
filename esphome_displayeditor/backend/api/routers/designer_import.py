@@ -18,28 +18,34 @@ def create_designer_import_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/api/v1/designer/import", tags=["designer import"])
 
-    def source(body: ImportRequest) -> tuple[str, str]:
+    def source(body: ImportRequest) -> tuple[str, str, str]:
         if body.configuration:
             ensure_capability_available("configuration.read")
             configuration = filesystem.read_config(body.configuration)
-            return configuration["content"], configuration["name"]
+            return configuration["content"], configuration["name"], configuration["revision"]
         if body.content is None:
             raise ApiError(
                 "invalid_request",
                 "Provide either a configuration name or file content.",
                 422,
             )
-        return body.content, ""
+        return body.content, "", ""
 
     @router.post("/probe")
     async def probe(body: ImportRequest) -> dict:
-        text, _name = source(body)
+        text, _name, _revision = source(body)
         return designer.probe_yaml(text)
 
     @router.post("")
     async def import_configuration(body: ImportRequest) -> dict:
-        text, name = source(body)
+        text, name, revision = source(body)
         canvas = (body.canvas.width, body.canvas.height) if body.canvas else None
-        return designer.import_yaml(text, canvas=canvas, source_name=name)
+        result = designer.import_yaml(text, canvas=canvas, source_name=name)
+        if revision:
+            # The baseline a later re-sync compares against: without it, the
+            # source-change dialog can still diff, but cannot tell an untouched
+            # config from one that changed and changed back.
+            result["project"].setdefault("import_source", {})["revision"] = revision
+        return result
 
     return router

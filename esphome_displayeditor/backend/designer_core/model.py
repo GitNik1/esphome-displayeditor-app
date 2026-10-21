@@ -237,7 +237,9 @@ class FontLibraryEntry:
     file_path: str = ""
     web_url: str = ""
     size: int = 16
-    bpp: int = 4
+    #: None = not stated in the source; the export then omits ``bpp:`` and
+    #: ESPHome applies its own default.
+    bpp: int | None = 4
     glyphs: list[str] = field(default_factory=list)
     glyphsets: list[str] = field(default_factory=list)
     extras: list[dict] = field(default_factory=list)
@@ -271,7 +273,8 @@ class FontLibraryEntry:
         f.file_path = d.get("file_path", "")
         f.web_url = d.get("web_url", "")
         f.size = int(d.get("size", 16))
-        f.bpp = int(d.get("bpp", 4))
+        bpp = d.get("bpp", 4)
+        f.bpp = None if bpp is None else int(bpp)
         f.glyphs = list(d.get("glyphs", []))
         f.glyphsets = list(d.get("glyphsets", []))
         f.extras = _copy(d.get("extras", []))

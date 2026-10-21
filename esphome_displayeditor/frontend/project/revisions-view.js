@@ -5,7 +5,7 @@
  *   restored_from: number | null, label: string | null, locked: boolean,
  *   is_current?: boolean, project_name?: string}} RevisionEntry */
 
-const ORIGINS = new Set(["ui", "mcp", "mcp_import", "restore", "unknown"]);
+const ORIGINS = new Set(["ui", "mcp", "mcp_import", "restore", "resync", "unknown"]);
 const ACTIONS = new Set(["save", "delete"]);
 
 /** Which kind of writer an actor id names.

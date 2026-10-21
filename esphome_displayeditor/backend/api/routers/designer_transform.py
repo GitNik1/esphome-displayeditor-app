@@ -10,10 +10,21 @@ from ...designer import DesignerService
 from ...errors import ApiError
 from ...filesystem import FilesystemBackend
 from ...lvgl_bundle import build_project_zip
-from ...lvgl_merge import MergeError, build_project_yaml_for_bundle, merge_project_into_yaml
+from ...lvgl_merge import (
+    DisplayTakeoverRequired,
+    MergeError,
+    build_project_yaml_for_bundle,
+    merge_project_into_yaml,
+)
 from ...entity_bindings import parse_custom_binding_yaml
+from ...viewer_scenarios import parse_viewer_scenarios
 from ...designer_core.yamlimport import LvglImportError
-from ..schemas import CustomBindingYamlRequest, DesignerProjectRequest, MergeDraftRequest
+from ..schemas import (
+    CustomBindingYamlRequest,
+    DesignerProjectRequest,
+    MergeDraftRequest,
+    ViewerScenariosRequest,
+)
 
 
 def create_designer_transform_router(
@@ -43,6 +54,14 @@ def create_designer_transform_router(
         except LvglImportError as exc:
             raise ApiError("invalid_custom_binding_yaml", str(exc), 422) from exc
         return {"valid": True, "action": action, "yaml": normalized}
+
+    @router.post("/viewer-scenarios/validate")
+    async def validate_viewer_scenarios(body: ViewerScenariosRequest) -> dict:
+        try:
+            scenarios = parse_viewer_scenarios(body.content)
+        except LvglImportError as exc:
+            raise ApiError("invalid_viewer_scenarios", str(exc), 422) from exc
+        return {"valid": True, "scenarios": scenarios}
 
     @router.post("/projects/export-yaml")
     async def export_yaml(body: DesignerProjectRequest) -> dict:
@@ -84,7 +103,13 @@ def create_designer_transform_router(
                 raise
             existing = filesystem.read_config(body.target)["content"]
         try:
-            merged = merge_project_into_yaml(project, existing)
+            merged = merge_project_into_yaml(
+                project, existing,
+                display_takeover="comment" if body.confirm_display_takeover else "ask",
+            )
+        except DisplayTakeoverRequired as exc:
+            raise ApiError("display_takeover_required", str(exc), 409,
+                           {"displays": exc.conflicts}) from exc
         except MergeError as exc:
             raise ApiError("merge_failed", str(exc), 422) from exc
         blocking = [issue for issue in merged.issues if issue.severity == "A"]
@@ -105,7 +130,8 @@ def create_designer_transform_router(
             raise
         _record(audit, user_id, body.target, old_revision, result["revision"], "success")
         return {"revision": result["revision"], "replaced": merged.replaced_keys,
-                "appended": merged.appended_keys}
+                "appended": merged.appended_keys,
+                "display_takeover": merged.display_takeover}
 
     return router
 

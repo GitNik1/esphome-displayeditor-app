@@ -194,6 +194,74 @@ the app. Stored projects are included in Home Assistant app backups. Saving
 and deleting use SHA-256 revisions so a stale browser cannot silently
 overwrite a project changed by another session.
 
+### Keeping up with the source configuration
+
+A project imported from an ESPHome configuration is a snapshot of that file:
+its entities, colours, fonts, images, styles and its `lvgl:` tree are read
+once, at import. Sensors added afterwards - in the ESPHome Device Builder, or
+by hand - were previously invisible here, and a binding onto one of them made
+the whole project fail validation on save.
+
+Opening a stored project now re-reads that configuration and, if it moved,
+shows what changed **before** anything is adopted. Nothing is applied without
+confirmation, and the dialog only appears when there is something to decide.
+**Quelle prüfen …** next to the project list runs the same check on demand.
+
+- Changes are grouped, each with its own tick box: **Entitäten** (everything
+  outside the `lvgl:` block, plus the reserved ids), **Farben, Schriften,
+  Bilder, Styles**, and **Widgets und Seiten** (the `lvgl:` block itself).
+  Every entry names the line in the configuration it came from.
+- A group that only adds and updates starts ticked. A group that would
+  **remove** something starts unticked, because the designer may hold work
+  that was never published back to the YAML - and that work is what the
+  removal would take with it.
+- *Geht dabei verloren* lists, for the current ticks, exactly what goes: the
+  removed entities, resources and widgets, plus every binding that loses its
+  entity or its widget. Those bindings are dropped as part of adopting, since
+  a project that keeps them cannot be saved at all.
+- *Kann nicht übernommen werden* lists the parts the importer does not model,
+  with their line numbers. These are **not** deleted - unknown `lvgl:` keys
+  and unknown widget properties stay in the file and are carried through
+  unchanged on export - but they are not visible or editable in the editor.
+- The canvas size is never overwritten: the re-import runs at the project's
+  own resolution.
+- Adopting goes through the ordinary revision-checked save, so it lands in the
+  version history as *Quellabgleich* and can be rolled back like any other
+  version. Reading the comparison needs the `viewer` role; adopting needs
+  `editor`.
+- *Fassung vor dem Import sperren* pins the state the import is about to
+  replace, so it stays out of the rolling window of 10 - worth ticking for an
+  import whose damage might only become obvious weeks later. A full lock quota
+  is reported afterwards; it never fails the import itself.
+
+#### Taking an import back
+
+Both states are kept: the version the import wrote, and the one it replaced.
+That makes an unwanted import an ordinary rollback, and the history says
+enough for the UI to offer it directly.
+
+- An import version carries what it did: the configuration's name, its
+  revision **before and after**, the groups that were adopted, the bindings
+  that were dropped, and the revision of the state it displaced. The version
+  list shows this as `display.yaml: ccc → ddd` next to the origin chip.
+- The graph in the historical Viewer marks those versions with a flag above
+  the node - a filled one where the configuration actually moved, a hollow one
+  where an import adopted a file that had not changed. So one timeline carries
+  both kinds of event: the project's versions, and the configuration moving.
+- **Import zurücknehmen** appears on an import version and restores the state
+  it replaced. It is an ordinary restore underneath: the import is not erased,
+  its reversal is added on top, so taking back the taking back is one more
+  click. The button is offered only while the replaced version is still in the
+  history - once it has rotated out, ordinary restore is all that is left.
+- Undoing is whole-project, not per group: it restores everything as it stood
+  before the import, so anything saved after it gives way too (those versions
+  stay in the list). There is no "undo only the layout part of that import".
+
+The comparison is against the file as it is now, not against a stored copy of
+it. A project imported before this existed therefore still gets a full
+comparison; only the "unchanged since the last sync" shortcut needs the
+source revision that imports now record.
+
 ### Version history
 
 Every write to a stored project is kept as a version - from the editor, from
@@ -319,7 +387,7 @@ content and never writes a draft or active configuration.
 MCP clients with prompt support can use `display_analyze_project` and
 `display_review_yaml` in every access mode. In `project_write`, the server also
 offers the reviewed workflows `display_create_project_from_yaml`,
-`display_edit_layout` and `display_bind_entities`. Prompt and resource-template
+`display_edit_layout`, `display_bind_entities` and `display_simulate_device`. Prompt and resource-template
 arguments have context-aware completions for projects, configurations, widgets,
 entities, direction and binding kind. Completion results are deterministic and
 limited to 50 values; clients can narrow them with a partial value.
@@ -349,7 +417,8 @@ or filesystem access.
 In `project_write` mode, the same MCP Apps binding covers every tool that
 creates a changeset - `display_project_propose`, `display_project_import_propose`,
 `display_project_import_yaml_propose`, `display_configuration_draft_propose`,
-`display_binding_propose` and `display_viewer_binding_propose` - pointing at a
+`display_binding_propose`, `display_viewer_binding_propose` and
+`display_viewer_scenarios_propose` - pointing at a
 second bundled view, `ui://display-editor/changeset-review`. It renders the
 changeset's `preview` generically by shape (widget/issue counts and added or
 removed IDs for project and binding proposals, a unified diff for
@@ -400,6 +469,31 @@ sidecar. Applying one of these change sets requires both the unchanged project
 revision and the unchanged Viewer-sidecar revision. Use the
 `viewer_bindings` view of `display_project_read` to obtain the latter; it is
 `null` before the first sidecar save.
+
+When a project is merged into a configuration, `lvgl: displays:` follows the
+target file: a display id the file does not define is replaced by the real
+one, and a display without an id gets no `displays:` entry. If that display
+draws by itself (`lambda:`, `pages:`, `auto_clear_enabled: true`,
+`show_test_card: true`), ESPHome would refuse LVGL on it, so the merge stops
+and asks first. Confirmed, those keys are commented out in the draft below a
+marker line rather than deleted. Over MCP, `display_configuration_draft_propose`
+returns `display_takeover_required` until it is called again with
+`confirm_display_takeover=true` - after asking the user.
+
+Viewer scenarios - the device states the browser Viewer cannot compute itself
+(C++ lambdas, SPI, state machines) - are readable in every access mode with
+`display_viewer_scenarios_read`. It returns the scenario YAML, the parsed
+scenarios, the scenarios suggested at import, a short format description and
+the project revision. In `project_write`, `display_viewer_scenarios_propose`
+accepts `upsert_scenario` (create or replace by name; `rename_to` also renames
+the references in transition tables), `delete_scenario`, `adopt_suggestions`
+(all, or the listed names; existing names are skipped) and
+`set_scenarios_yaml`. It is an ordinary project changeset: same base revision,
+review view and version history, applied with `display_changeset_apply`.
+Edits go through the structural YAML patcher, so comments a person wrote in
+the scenario YAML survive. The preview lists added, updated and removed
+scenarios and any `unknown_widget_ids` the actions point at. The
+`display_simulate_device` prompt walks a client through the whole job.
 
 To create a project from an existing configuration, call
 `display_configurations`, then `display_configuration_read`, and pass its exact

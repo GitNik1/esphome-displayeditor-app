@@ -81,7 +81,10 @@ def transform_yaml(
                 {"issues": issues},
             )
         try:
-            merged = merge_project_into_yaml(project, configuration["content"])
+            # A preview writes nothing: show the takeover the draft would
+            # need, flagged, rather than refusing to preview at all.
+            merged = merge_project_into_yaml(
+                project, configuration["content"], display_takeover="comment")
         except MergeError as exc:
             raise ApiError("merge_failed", str(exc), 422) from exc
         content = merged.content
@@ -92,6 +95,7 @@ def transform_yaml(
                 "replaced": merged.replaced_keys,
                 "appended": merged.appended_keys,
                 "issues": [asdict(issue) for issue in merged.issues],
+                "display_takeover_required": merged.display_takeover,
             }
         )
 
