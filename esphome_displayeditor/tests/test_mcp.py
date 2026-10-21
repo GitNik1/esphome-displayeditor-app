@@ -755,6 +755,9 @@ def test_mcp_registers_only_read_only_tools(tmp_path: Path) -> None:
         "display_projects",
         "display_project_read",
         "display_project_validate",
+        "display_project_revisions",
+        "display_project_revision_read",
+        "display_viewer_scenarios_read",
         "display_yaml_transform",
     }
     assert all(tool.annotations.read_only_hint for tool in tools)
@@ -874,6 +877,7 @@ def test_mcp_apps_changeset_review_binds_all_propose_tools(tmp_path: Path) -> No
         "display_configuration_draft_propose",
         "display_binding_propose",
         "display_viewer_binding_propose",
+        "display_viewer_scenarios_propose",
     }
     for name in review_bound_tools:
         assert tools[name].meta == {
@@ -992,6 +996,7 @@ def test_project_write_mode_registers_and_executes_changeset_tools(tmp_path: Pat
         "display_create_project_from_yaml",
         "display_edit_layout",
         "display_bind_entities",
+        "display_simulate_device",
     }
 
     proposed = asyncio.run(

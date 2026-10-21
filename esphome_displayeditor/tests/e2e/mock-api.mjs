@@ -16,13 +16,13 @@ const revisionVersions = [
     id: 2, revision: "sha256:bbb", created_at: "2026-08-27T10:00:00+00:00",
     actor: "ha:smoke", origin: "ui", action: "save", byte_size: 900,
     encoding: "zlib", restored_from: null, label: null, locked: false,
-    is_current: true, restorable: null,
+    is_current: true, restorable: null, details: null,
   },
   {
     id: 1, revision: "sha256:aaa", created_at: "2026-08-27T09:00:00+00:00",
     actor: "mcp:lan:abcdef", origin: "mcp", action: "save", byte_size: 880,
     encoding: "zlib", restored_from: null, label: null, locked: false,
-    is_current: false, restorable: null,
+    is_current: false, restorable: null, details: null,
   },
 ];
 
@@ -40,10 +40,53 @@ function longDiff() {
 ${context}`;
 }
 
+/** What the source config says beyond the stored project. Off by default:
+ * a plan with changes opens a modal on load, which every other spec would
+ * then have to dismiss before it could touch the editor. */
+export const sourcePlanWithChanges = {
+  available: true,
+  changed: true,
+  source: {
+    name: "display.yaml",
+    revision: "sha256:ddd",
+    known_revision: "sha256:ccc",
+  },
+  groups: [
+    {
+      key: "entities", changed: 1, removes: 0,
+      changes: [{ kind: "added", label: "sensor.pump_state", line: 12 }],
+      changes_truncated: 0, losses: [], losses_truncated: 0, binding_losses: [],
+    },
+    {
+      key: "layout", changed: 1, removes: 1,
+      changes: [{ kind: "removed", label: "label title", line: null }],
+      changes_truncated: 0,
+      losses: [{ kind: "removed", label: "label title", line: null }],
+      losses_truncated: 0,
+      binding_losses: [{ id: "show_level", missing: ["title"] }],
+    },
+  ],
+  unsupported: [
+    { severity: "B", message: "widget type 'spinbox' is not supported.",
+      path: "lvgl.widgets[4]", line: 31 },
+  ],
+  unsupported_truncated: 0,
+  binding_losses: [{ id: "show_level", missing: ["title"] }],
+};
+
 export async function mockApi(page) {
   const mcpClients = [];
   const versions = revisionVersions.map((item) => ({ ...item }));
-  const control = { currentRevision: "sha256:bbb", exists: true, lastDiff: null };
+  // Shared by the resync and the restore handler: both append a version, and
+  // a hardcoded id in either would collide once a test does both.
+  let nextVersionId = versions.length + 1;
+  const control = {
+    currentRevision: "sha256:bbb",
+    exists: true,
+    lastDiff: null,
+    sourcePlan: { available: false, reason: "no_source" },
+    lastResync: null,
+  };
   await page.route("**/api/v1/**", async (route) => {
     const path = new URL(route.request().url()).pathname.replace(/^.*\/api\/v1\//, "");
     const method = route.request().method();
@@ -71,6 +114,50 @@ export async function mockApi(page) {
       const client = mcpClients.find((item) => item.id === id);
       Object.assign(client, { status: "revoked", revoked_at: "2026-08-21T10:05:00+00:00" });
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ client }) });
+      return;
+    }
+    const sourceMatch = path.match(/^designer\/projects\/([^/]+)\/source(\/apply)?$/);
+    if (sourceMatch) {
+      if (!sourceMatch[2]) {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+          name: "display.lvgldesign", revision: control.currentRevision,
+          ...control.sourcePlan,
+        }) });
+        return;
+      }
+      control.lastResync = route.request().postDataJSON();
+      const displaced = versions.find((item) => item.is_current);
+      versions.forEach((item) => { item.is_current = false; });
+      versions.unshift({
+        id: nextVersionId++, revision: "sha256:eee",
+        created_at: "2026-08-27T12:00:00+00:00", actor: "ha:smoke",
+        origin: "resync", action: "save", byte_size: 950, encoding: "zlib",
+        restored_from: null, label: null, locked: false, is_current: true,
+        restorable: null,
+        details: {
+          source: { name: "display.yaml", revision: "sha256:ddd",
+                    previous_revision: "sha256:ccc" },
+          groups: control.lastResync.groups,
+          dropped_bindings: [],
+          replaced_revision: displaced?.revision || null,
+        },
+      });
+      if (control.lastResync.lock_previous && displaced) displaced.locked = true;
+      control.currentRevision = "sha256:eee";
+      control.sourcePlan = { available: true, changed: false, groups: [] };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        name: "display.lvgldesign", revision: "sha256:eee", issues: [],
+        groups: control.lastResync.groups,
+        dropped_bindings: control.lastResync.groups.includes("layout")
+          ? [{ id: "show_level", missing: ["title"] }] : [],
+        previous_locked: control.lastResync.lock_previous
+          ? { locked: true, id: displaced?.id } : null,
+        source: { name: "display.yaml", revision: "sha256:ddd",
+                  previous_revision: "sha256:ccc" },
+        project: { ...project, widgets: [{ id: "from_source", widget_type: "label",
+          x: 10, y: 10, width: 100, height: 20, properties: { text: "Aus der Quelle" },
+          style_tree: {}, children: [] }] },
+      }) });
       return;
     }
     // Strict on the project name on purpose: a permissive pattern here once
@@ -122,9 +209,11 @@ export async function mockApi(page) {
       if (suffix === "/restore") {
         versions.forEach((item) => { item.is_current = false; });
         versions.unshift({
-          ...version, id: 3, origin: "restore", actor: "ha:smoke",
+          ...version, id: nextVersionId++, origin: "restore", actor: "ha:smoke",
           created_at: "2026-08-27T11:00:00+00:00", restored_from: id,
-          label: null, locked: false, is_current: true,
+          // A restore describes itself through restored_from; carrying the
+          // restored version's import details along would claim the YAML moved.
+          label: null, locked: false, is_current: true, details: null,
         });
         await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
           name: "display.lvgldesign", revision: version.revision, issues: [],

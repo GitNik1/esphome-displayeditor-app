@@ -33,6 +33,7 @@ _READ_ONLY_TOOL_NAMES = frozenset(
         "display_configuration_read",
         "display_project_read",
         "display_project_validate",
+        "display_viewer_scenarios_read",
         "display_project_revisions",
         "display_project_revision_read",
         "display_binding_targets",
@@ -49,7 +50,9 @@ _READ_ONLY_TOOL_NAMES = frozenset(
 # separate, still-bounded MCP_LARGE_TOOL_ARGUMENTS_MAX_BYTES ceiling instead;
 # each tool's own handler independently enforces its real content-size limit
 # (e.g. settings.max_file_size), so this is only the outer transport bound.
-_LARGE_ARGUMENT_TOOL_NAMES = frozenset({"display_project_import_yaml_propose"})
+_LARGE_ARGUMENT_TOOL_NAMES = frozenset(
+    {"display_project_import_yaml_propose", "display_viewer_scenarios_propose"}
+)
 
 
 class BearerTokenMiddleware(BaseHTTPMiddleware):

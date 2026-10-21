@@ -1,0 +1,329 @@
+# Excerpt of a hand-written device config (ls2550 transmitter tester):
+# no displays: key, fonts without bpp:, a multi-line !lambda action and
+# commented-out widgets inside lvgl: - everything a save must not lose.
+esphome:
+  name: transmitter-tester
+
+display:
+  - platform: mipi_spi
+    model: ST7789V
+    spi_id: spi_display
+    cs_pin: GPIO12      # LCD_CS
+    dc_pin: GPIO11      # LCD_DC
+    reset_pin: GPIO9    # LCD_RST
+    dimensions:
+      height: 170
+      width: 320
+      offset_height: 35
+      offset_width: 0
+    color_order: bgr
+    invert_colors: true
+    data_rate: 80MHz
+    transform:
+      swap_xy: true
+      mirror_x: false
+      mirror_y: true
+
+font:
+  - file: "gfonts://Roboto+Mono"
+    id: stdfont
+    size: 28
+  - file: "gfonts://Roboto+Mono"
+    id: stdfontsmall
+    size: 20
+  - file: "fonts/SIUS FONT.TTF"
+    id: siusfont
+    size: 60
+
+lvgl:
+  style_definitions:
+    - id: sius_style
+      text_font: siusfont
+      align: center
+      text_color: 0x000000
+      bg_opa: cover
+      radius: 4
+      pad_all: 2
+    - id: button_lable_style
+      text_font: stdfont
+      align: center
+      text_color: 0x000000
+      radius: 4
+      pad_all: 2
+    - id: lable_style
+      text_font: stdfontsmall
+      text_color: 0x000000
+
+  pages:
+    - id: main_page
+      layout:
+        type: grid
+        grid_rows: [FR(1), FR(1), FR(1), FR(1), FR(1), FR(1)]
+        grid_columns: [FR(1), FR(1), FR(1)]
+        pad_row: 2px
+        pad_column: 2px
+      widgets:
+        - label:
+            id: version_1_label
+            grid_cell_row_pos: 1
+            grid_cell_column_pos: 2
+            grid_cell_x_align: STRETCH
+            grid_cell_y_align: STRETCH
+            text: "Keine Kommunikation"
+            bg_opa: COVER
+            styles: lable_style
+            long_mode: SCROLL_CIRCULAR
+            text_align: RIGHT
+            radius: 5
+        - label:
+            id: version_0_label
+            grid_cell_row_pos: 0
+            grid_cell_column_pos: 2
+            grid_cell_x_align: STRETCH
+            grid_cell_y_align: STRETCH
+            text: "Keine Kommunikation"
+            styles: lable_style
+            long_mode: SCROLL_CIRCULAR
+            bg_opa: COVER
+            text_align: RIGHT
+            radius: 5
+        - label:
+            id: article_label
+            grid_cell_row_pos: 0
+            grid_cell_row_span: 2
+            grid_cell_column_pos: 1
+            grid_cell_x_align: STRETCH
+            grid_cell_y_align: STRETCH
+            text_letter_space: 1
+            text: ""
+            styles: lable_style
+            bg_opa: COVER
+            text_align: LEFT
+            radius: 5
+        - label:
+            id: sensortext_label
+            grid_cell_row_pos: 3
+            grid_cell_column_pos: 1
+            grid_cell_x_align: STRETCH
+            grid_cell_y_align: STRETCH
+            text: ""
+            styles: lable_style
+            long_mode: SCROLL_CIRCULAR
+            bg_opa: COVER
+            text_align: CENTER
+            radius: 5
+        - label:
+            id: sensorvalue_label
+            grid_cell_row_pos: 2
+            grid_cell_column_pos: 1
+            grid_cell_x_align: STRETCH
+            grid_cell_y_align: STRETCH
+            text: ""
+            styles: lable_style
+            bg_opa: COVER
+            text_align: RIGHT
+            radius: 5
+
+        - button:
+            id: mode_button
+            grid_cell_row_pos: 0
+            grid_cell_row_span: 2
+            grid_cell_column_pos: 0
+            grid_cell_x_align: STRETCH
+            grid_cell_y_align: STRETCH
+            hidden: true
+            widgets:
+              - label:
+                  id: mode_button_label
+                  styles: button_lable_style
+                  align: center
+                  text: "TEST"
+        - button:
+            id: start_next_button
+            grid_cell_row_pos: 2
+            grid_cell_row_span: 4
+            grid_cell_column_pos: 2
+            grid_cell_x_align: STRETCH
+            grid_cell_y_align: STRETCH
+            hidden: true
+            widgets:
+              - label:
+                  id: start_next_button_label
+                  styles: button_lable_style
+                  align: center
+                  text: "START"
+                  text_letter_space: 1
+            on_release:
+              - if:
+                  condition:
+                    and:
+                     - lambda: 'return id(light_level_state).state == "gut";'
+                     - lambda: 'return (millis() - id(last_press_time)) > 2000;'
+                  then:
+                    - lambda: 'id(last_press_time) = millis();'
+                    - state_machine.transition: NEXT
+        - button:
+            id: stop_button
+            grid_cell_row_pos: 2
+            grid_cell_row_span: 4
+            grid_cell_column_pos: 0
+            grid_cell_x_align: STRETCH
+            grid_cell_y_align: STRETCH
+            hidden: true
+            widgets:
+              - label:
+                  styles: button_lable_style
+                  align: center
+                  text: "STOP"
+            on_release:
+              - state_machine.transition: STOP
+        # - button:
+        #     id: tr0_button
+        #     grid_cell_row_pos: 4
+        #     grid_cell_row_span: 2
+        #     grid_cell_column_pos: 0
+        #     grid_cell_x_align: STRETCH
+        #     grid_cell_y_align: STRETCH
+        #     widgets:
+        #       - label:
+        #           styles: button_lable_style
+        #           align: center
+        #           text: "TR0"
+        #     on_release:
+        #       - state_machine.transition: TR0
+        # - button:
+        #     id: tr1_button
+        #     grid_cell_row_pos: 4
+        #     grid_cell_row_span: 2
+        #     grid_cell_column_pos: 1
+        #     grid_cell_x_align: STRETCH
+        #     grid_cell_y_align: STRETCH
+        #     widgets:
+        #       - label:
+        #           styles: button_lable_style
+        #           align: center
+        #           text: "TR1"
+        #           text_line_space: 1
+        #     on_release:
+        #       - state_machine.transition: TR1
+        # - button:
+        #     id: tr2_button
+        #     grid_cell_row_pos: 4
+        #     grid_cell_row_span: 2
+        #     grid_cell_column_pos: 2
+        #     grid_cell_x_align: STRETCH
+        #     grid_cell_y_align: STRETCH
+        #     widgets:
+        #       - label:
+        #           styles: button_lable_style
+        #           align: center
+        #           text: "TR2"
+        #     on_release:
+        #       - state_machine.transition: TR2
+    - id: messagebox
+      layout:
+        type: grid
+        grid_rows: [FR(1), FR(1), FR(1), FR(1), FR(1), FR(1)]
+        grid_columns: [FR(1), FR(1)]
+        pad_row: 2px
+        pad_column: 2px
+      widgets:
+        - label:
+            id: msgbox_title
+            grid_cell_row_pos: 0
+            grid_cell_row_span: 2
+            grid_cell_column_pos: 0
+            grid_cell_column_span: 1
+            grid_cell_x_align: STRETCH
+            grid_cell_y_align: STRETCH
+            text: "Transmitter \nTest:"
+            bg_opa: COVER
+            styles: lable_style
+            long_mode: SCROLL_CIRCULAR
+            text_align: LEFT
+            radius: 5
+        - button:
+            id: msgbox_retest
+            grid_cell_row_pos: 0
+            grid_cell_row_span: 3
+            grid_cell_column_pos: 1
+            grid_cell_x_align: STRETCH
+            grid_cell_y_align: STRETCH
+            bg_color: 0xff0000
+            bg_grad_color: 0xFFAA42
+            bg_grad_dir: VER
+            widgets:
+              - label:
+                  id: msgbox_retest_button_label
+                  styles: button_lable_style
+                  align: center
+                  text: "Abbruch"
+            on_release:
+              - state_machine.transition: STOP
+              - lvgl.page.show: main_page
+        - button:
+            id: msgbox_ok
+            grid_cell_row_pos: 3
+            grid_cell_row_span: 3
+            grid_cell_column_pos: 0
+            grid_cell_x_align: STRETCH
+            grid_cell_y_align: STRETCH
+            bg_color: 0x0bff00
+            bg_grad_color: 0x86ff80
+            bg_grad_dir: VER
+            widgets:
+              - label:
+                  id: msgbox_ok_button_label
+                  styles: button_lable_style
+                  align: center
+                  text: "Gut"
+            on_release:
+              - lambda: !lambda |-
+                      id(ambient_value).publish_state(id(amb_value));
+                      if(id(board_connected).active_index().value() == 3)
+                      {
+                        id(tr0_heliosd006_right_value).publish_state(id(tr0_value));
+                        id(tr1_heliosd006_right_value).publish_state(id(tr1_value));
+                        id(tr2_heliosd006_right_value).publish_state(id(tr2_value));
+                      } 
+                      else
+                      {
+                        id(tr0_heliosd006_left_value).publish_state(id(tr0_value));
+                        id(tr2_heliosd006_left_value).publish_state(id(tr2_value));
+                      }
+              - state_machine.transition: NEXT
+              - lvgl.page.show: main_page
+              - homeassistant.action:
+                  action: counter.increment
+                  data:
+                    entity_id: counter.ls2550_transmittertest_pass
+              - binary_sensor.template.publish:
+                  id: test_result
+                  state: false
+        - button:
+            id: msgbox_nok
+            grid_cell_row_pos: 3
+            grid_cell_row_span: 3
+            grid_cell_column_pos: 1
+            grid_cell_x_align: STRETCH
+            grid_cell_y_align: STRETCH
+            bg_color: 0xff0000
+            bg_grad_color: 0xff8c8c
+            bg_grad_dir: VER
+            widgets:
+              - label:
+                  id: msgbox_nok_button_label
+                  styles: button_lable_style
+                  align: center
+                  text: "Schlecht"
+            on_release:
+              - state_machine.transition: STOP
+              - lvgl.page.show: main_page
+              - homeassistant.action:
+                  action: counter.increment
+                  data:
+                    entity_id: counter.ls2550_transmittertest_fail
+              - binary_sensor.template.publish:
+                  id: test_result
+                  state: true
+

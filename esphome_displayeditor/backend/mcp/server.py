@@ -147,6 +147,20 @@ def create_mcp_server(
             lambda _authorization: service.read_project(name, view, widget_id),
         )
 
+    @server.tool(name="display_viewer_scenarios_read", annotations=READ_ONLY)
+    def display_viewer_scenarios_read(name: str) -> dict[str, Any]:
+        """Read a project's Viewer scenarios, the import suggestions and the format.
+
+        Scenarios simulate in the browser Viewer what the device computes in C++
+        or in components the Viewer cannot run (state machines, scripts). The
+        returned ``revision`` is the base for display_viewer_scenarios_propose.
+        """
+        return scoped_tool_result(
+            ("project:read",),
+            fallback,
+            lambda _authorization: service.read_viewer_scenarios(name),
+        )
+
     @server.tool(name="display_project_validate", annotations=READ_ONLY)
     def display_project_validate(name: str) -> dict[str, Any]:
         """Validate a stored project and return its current revision and issues."""

@@ -277,8 +277,18 @@ def _restorable(metadata: dict[str, Any], issues: list[dict]) -> bool:
     return not any(issue["severity"] == "error" for issue in issues)
 
 
+#: What a version may say about itself beyond the columns. Whitelisted rather
+#: than passed through, so a future writer cannot leak a field into the API by
+#: accident - and so the response shape stays stable when one is added.
+_PUBLIC_DETAILS = ("source", "groups", "dropped_bindings", "replaced_revision")
+
+
 def _public(item: dict[str, Any], *, expose_actor: bool) -> dict[str, Any]:
+    details = item.get("metadata") or {}
     public = {key: value for key, value in item.items() if key != "metadata"}
+    public["details"] = {
+        key: details[key] for key in _PUBLIC_DETAILS if key in details
+    } or None
     if not expose_actor:
         public["actor"] = None
         public["locked_by"] = None

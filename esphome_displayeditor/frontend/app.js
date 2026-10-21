@@ -4,6 +4,19 @@ import { computeLayout, contentOrigin, fontFamilyId, resolvedFontFamily } from "
 import { createApiClient, encodedName } from "./api/client.js";
 import { renderUnifiedDiff } from "./configurations/diff-view.js";
 import { createRevisionsController } from "./controllers/revisions-controller.js";
+import { createResyncController } from "./controllers/resync-controller.js";
+import {
+  canApply as canApplyResync,
+  canUndoImport,
+  changeText as resyncChangeText,
+  defaultGroups as defaultResyncGroups,
+  groupSummary as resyncGroupSummary,
+  hasChanges as sourceHasChanges,
+  replacedVersion,
+  selectedLosses as selectedResyncLosses,
+  sourceMove,
+  unavailableKey as resyncUnavailableKey,
+} from "./project/resync-view.js";
 import {
   actionKey as revisionActionKey,
   actorLabel as revisionActorLabel,
@@ -24,7 +37,8 @@ import {
 } from "./actions/model.js";
 import { describeWidgetAction as describeAction } from "./actions/describe.js";
 import { buildWidgetAction, wrapValueCondition } from "./actions/build.js";
-import { createCustomActionEditor } from "./actions/custom-editor.js";
+import { createCustomActionView } from "./actions/view.js";
+import { createCustomActionController } from "./controllers/custom-action-controller.js";
 import { buildFlowAction } from "./actions/flow.js";
 import { nearestSegment } from "./glowline/geometry.js";
 import { drawDocument, hasFlow } from "./glowline/renderer.js";
@@ -113,6 +127,12 @@ import {
 } from "./controllers/assistant-controller.js";
 import { createJsonSocket } from "./services/websocket.js";
 import {
+  countSuggestedScenarios,
+  renderViewerScenarioButtons,
+  viewerScenarioSet,
+  viewerScenarioTemplate,
+} from "./viewer/scenarios.js";
+import {
   applyRuntimeEvent,
   deviceTableColumns,
   formatDeviceLogs as formatLogs,
@@ -169,11 +189,11 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 // Shared "name + parameters + live preview + raw YAML fallback" editors -
 // one for the widget Actions builder's "Custom-Aktion", one for the device
 // Custom-YAML binding editor. Both wrap the same backend validation endpoint
-// (see frontend/actions/custom-editor.js). Created once DOM elements exist,
-// in bindDesigner().
-/** @type {ReturnType<typeof createCustomActionEditor>} */
+// (see frontend/controllers/custom-action-controller.js). Created once DOM
+// elements exist, in bindDesigner().
+/** @type {ReturnType<typeof createCustomActionController>} */
 let widgetActionCustomEditor;
-/** @type {ReturnType<typeof createCustomActionEditor>} */
+/** @type {ReturnType<typeof createCustomActionController>} */
 let deviceBindingCustomEditor;
 
 // Mirrors backend/designer_core/model.py's STATES_KEY - both sides need
@@ -257,6 +277,9 @@ const builderController = createBuilderController(api);
 const mcpTokensController = createMcpTokensController(api);
 const assistantController = createAssistantController(api);
 const revisionsController = createRevisionsController(api);
+const resyncController = createResyncController(api);
+/** @type {{name: string | null, plan: any, selected: string[]}} */
+let resyncState = { name: null, plan: null, selected: [] };
 /** @typedef {"current" | number | null} CompareTarget */
 /** @type {{name: string | null, listing: any, selectedId: number | null,
  *   compareTo: CompareTarget}} */
@@ -363,6 +386,7 @@ async function initialize() {
   bindDevices();
   bindMcpTokens();
   bindRevisions();
+  bindResync();
   bindAssistant();
   offerAutosaveRecovery();
   startAutosaveLoop();
@@ -1111,7 +1135,59 @@ async function openLiveViewer() {
     runtimeBindings: state.viewerBindings,
     runtimeSnapshot: snapshot,
   });
+  closeViewerScenarioEditor();
+  renderViewerScenarios();
   if (state.viewerBindings.length && state.capabilities["device.states"]) connectViewerRuntimeEvents();
+}
+
+// --- Viewer scenarios: hand-written device states (backend/viewer_scenarios.py)
+
+function renderViewerScenarios() {
+  $("#viewer-scenarios").classList.remove("hidden");
+  const { scenarios, suggestions } = viewerScenarioSet(state.project.viewer_scenarios);
+  viewer.setScenarios(scenarios);
+  renderViewerScenarioButtons(
+    $("#viewer-scenario-list"), scenarios, (scenario) => viewer.runScenario(scenario),
+    countSuggestedScenarios(suggestions),
+  );
+}
+
+function openViewerScenarioEditor() {
+  const { yaml, suggestions } = viewerScenarioSet(state.project.viewer_scenarios);
+  // A first edit starts from what the import found in the configuration.
+  $("#viewer-scenario-yaml").value = yaml || suggestions || viewerScenarioTemplate();
+  const count = countSuggestedScenarios(suggestions);
+  const insert = $("#viewer-scenario-suggestions");
+  insert.textContent = t("viewer.scenario.insertSuggestions", { count });
+  insert.classList.toggle("hidden", !count || !yaml);
+  $("#viewer-scenario-error").classList.add("hidden");
+  $("#viewer-scenario-editor").classList.remove("hidden");
+  $("#viewer-scenario-yaml").focus();
+}
+
+function closeViewerScenarioEditor() {
+  $("#viewer-scenario-editor").classList.add("hidden");
+}
+
+async function applyViewerScenarios() {
+  const yaml = $("#viewer-scenario-yaml").value;
+  const error = $("#viewer-scenario-error");
+  try {
+    const result = await api("designer/viewer-scenarios/validate", {
+      method: "POST",
+      body: JSON.stringify({ content: yaml }),
+    });
+    pushUndo();
+    const { suggestions } = viewerScenarioSet(state.project.viewer_scenarios);
+    state.project.viewer_scenarios = { yaml, scenarios: result.scenarios, suggestions };
+    markProjectDirty();
+    closeViewerScenarioEditor();
+    renderViewerScenarios();
+    toast(t("viewer.scenario.saved"));
+  } catch (/** @type {any} */ validationError) {
+    error.textContent = validationError.message;
+    error.classList.remove("hidden");
+  }
 }
 
 function connectViewerRuntimeEvents() {
@@ -1198,10 +1274,20 @@ function bindDesigner() {
     pagePrevious: $("#viewer-page-previous"),
     pageNext: $("#viewer-page-next"),
     rendererControl: $("#viewer-renderer"),
+    conditionPrompt: $("#viewer-condition-prompt"),
   });
   $("#open-viewer").addEventListener("click", openLiveViewer);
   $("#viewer-close").addEventListener("click", closeViewer);
   $("#viewer-reset").addEventListener("click", () => viewer.reset());
+  $("#viewer-scenario-edit").addEventListener("click", openViewerScenarioEditor);
+  $("#viewer-scenario-cancel").addEventListener("click", closeViewerScenarioEditor);
+  $("#viewer-scenario-suggestions").addEventListener("click", () => {
+    const area = $("#viewer-scenario-yaml");
+    const { suggestions } = viewerScenarioSet(state.project.viewer_scenarios);
+    area.value = `${area.value.replace(/\s*$/, "")}\n\n${suggestions}`;
+    $("#viewer-scenario-suggestions").classList.add("hidden");
+  });
+  $("#viewer-scenario-apply").addEventListener("click", applyViewerScenarios);
   $("#viewer-page-select").addEventListener("change", (/** @type {any} */ event) => {
     viewer.setActivePage(event.target.value);
   });
@@ -1324,7 +1410,7 @@ function bindDesigner() {
   $("#widget-action-target").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-flow-stroke").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-indicator-trigger-value").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
-  widgetActionCustomEditor = createCustomActionEditor({
+  widgetActionCustomEditor = createCustomActionController(createCustomActionView(document, {
     nameField: $("#widget-action-custom-name-field"),
     nameInput: $("#widget-action-custom-name"),
     paramsContainer: $("#widget-action-custom-params"),
@@ -1334,7 +1420,7 @@ function bindDesigner() {
     rawTextarea: $("#widget-action-custom-yaml"),
     preview: $("#widget-action-custom-preview"),
     error: $("#widget-action-custom-error"),
-  }, t, api);
+  }, t), api);
   $("#widget-action-custom-name").addEventListener("input", () => widgetActionCustomEditor.schedulePreview());
   $("#widget-action-custom-yaml").addEventListener("input", () => widgetActionCustomEditor.schedulePreview());
   $("#widget-action-custom-add-param").addEventListener("click", () => widgetActionCustomEditor.addParamRow());
@@ -1342,7 +1428,7 @@ function bindDesigner() {
     widgetActionCustomEditor.setRawMode($("#widget-action-custom-raw-toggle").checked);
     widgetActionCustomEditor.schedulePreview();
   });
-  deviceBindingCustomEditor = createCustomActionEditor({
+  deviceBindingCustomEditor = createCustomActionController(createCustomActionView(document, {
     nameField: $("#device-binding-custom-name-field"),
     nameInput: $("#device-binding-custom-name"),
     paramsContainer: $("#device-binding-custom-params"),
@@ -1352,7 +1438,7 @@ function bindDesigner() {
     rawTextarea: $("#device-binding-custom-yaml"),
     preview: $("#device-binding-custom-preview"),
     error: $("#device-binding-custom-error"),
-  }, t, api);
+  }, t), api);
   $("#device-binding-custom-name").addEventListener("input", () => deviceBindingCustomEditor.schedulePreview());
   $("#device-binding-custom-yaml").addEventListener("input", () => deviceBindingCustomEditor.schedulePreview());
   $("#device-binding-custom-add-param").addEventListener("click", () => deviceBindingCustomEditor.addParamRow());
@@ -1854,6 +1940,10 @@ function updateServerProjectButtons() {
   $("#save-server-project").disabled = !canWrite;
   $("#save-server-project").title = writeHint;
   $("#open-revisions").disabled = !selected;
+  // Bound to the project in the editor, not to the dropdown: a re-sync adopts
+  // into the open document, so offering it for a merely highlighted name would
+  // apply the change somewhere the user cannot see it.
+  $("#check-source").disabled = !state.projectName;
 }
 
 async function loadSelectedServerProject() {
@@ -1865,6 +1955,8 @@ async function loadSelectedServerProject() {
     await loadViewerBindings(name);
     renderDesigner();
     toast(t("toast.project.loadedFromStorage"));
+    // Silent: a config that did not move must not interrupt opening a project.
+    await checkSourceChanges(true);
   } catch (/** @type {any} */ error) {
     toast(error.message, true, error.details);
   }
@@ -1890,6 +1982,7 @@ function adoptLoadedProject(result) {
   resetHistory();
   externalChangeSeen = null;
   hideExternalChangeBanner();
+  updateServerProjectButtons();
 }
 
 async function saveServerProject() {
@@ -1930,6 +2023,198 @@ async function deleteServerProject() {
     toast(t("toast.project.deletedFromStorage"));
   } catch (/** @type {any} */ error) {
     toast(error.message, true, error.details);
+  }
+}
+
+// --- Quellabgleich ---------------------------------------------------------
+
+// The project is a snapshot of the config it was imported from, and nothing
+// re-reads that config on its own: a sensor added in the Device Builder stays
+// invisible here, and a binding onto it fails validation on save. So every
+// load asks the server what the source says now - and shows it before
+// anything is adopted.
+
+function bindResync() {
+  $("#check-source").addEventListener("click", () => checkSourceChanges(false));
+  $("#close-resync").addEventListener("click", () => $("#resync-dialog").close());
+  $("#resync-later").addEventListener("click", () => $("#resync-dialog").close());
+  $("#resync-apply").addEventListener("click", applySourceChanges);
+  $("#resync-dialog").addEventListener("close", () => {
+    resyncState = { name: null, plan: null, selected: [] };
+  });
+}
+
+/** @param {boolean} silent Loading a project must not toast about a config
+ * that is simply unchanged - only an explicit check reports the boring cases. */
+async function checkSourceChanges(silent) {
+  const name = state.projectName;
+  if (!name || !state.capabilities["designer.project"]) return;
+  let plan;
+  try {
+    plan = await resyncController.preview(name);
+  } catch (/** @type {any} */ error) {
+    if (!silent) toast(error.message, true, error.details);
+    return;
+  }
+  if (!plan.available) {
+    if (!silent) toast(t(resyncUnavailableKey(plan)));
+    return;
+  }
+  if (!sourceHasChanges(plan)) {
+    if (!silent) toast(t("toast.resync.upToDate"));
+    return;
+  }
+  openResyncDialog(name, plan);
+}
+
+/** @param {string} name @param {any} plan */
+function openResyncDialog(name, plan) {
+  resyncState = { name, plan, selected: defaultResyncGroups(plan) };
+  $("#resync-source").textContent = t("resync.source", { name: plan.source.name });
+  $("#resync-status").textContent = "";
+  $("#resync-lock-previous").checked = false;
+  renderResyncGroups();
+  renderResyncUnsupported();
+  $("#resync-dialog").showModal();
+  $("#close-resync").focus();
+}
+
+function renderResyncGroups() {
+  const container = $("#resync-groups");
+  container.replaceChildren();
+  const plan = resyncState.plan;
+  (plan?.groups || [])
+    .filter((/** @type {any} */ group) => group.changed > 0)
+    .forEach((/** @type {any} */ group) => container.append(resyncGroupBlock(group)));
+  renderResyncLosses();
+}
+
+/** @param {any} group */
+function resyncGroupBlock(group) {
+  const block = document.createElement("section");
+  block.className = "resync-group";
+  const head = document.createElement("label");
+  head.className = "resync-group-head";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.dataset.group = group.key;
+  checkbox.checked = resyncState.selected.includes(group.key);
+  checkbox.addEventListener("change", () => {
+    resyncState.selected = checkbox.checked
+      ? [...resyncState.selected, group.key]
+      : resyncState.selected.filter((/** @type {string} */ key) => key !== group.key);
+    renderResyncLosses();
+  });
+  const title = document.createElement("span");
+  title.className = "resync-group-title";
+  title.textContent = t(`resync.group.${group.key}`);
+  const summary = document.createElement("span");
+  summary.className = "resync-group-summary";
+  summary.textContent = resyncGroupSummary(group, t);
+  head.append(checkbox, title, summary);
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = t(`resync.group.${group.key}Hint`);
+
+  const list = document.createElement("div");
+  list.className = "resync-list";
+  group.changes.forEach((/** @type {any} */ change) => {
+    const row = document.createElement("div");
+    row.className = `resync-change resync-change-${change.kind}`;
+    row.textContent = resyncChangeText(change, t);
+    list.append(row);
+  });
+  if (group.changes_truncated) list.append(moreItemsRow(group.changes_truncated));
+  block.append(head, hint, list);
+  return block;
+}
+
+/** @param {number} count */
+function moreItemsRow(count) {
+  const row = document.createElement("div");
+  row.className = "hint";
+  row.textContent = t("resync.moreItems", { count });
+  return row;
+}
+
+function renderResyncLosses() {
+  const plan = resyncState.plan;
+  const section = $("#resync-losses-section");
+  const list = $("#resync-losses");
+  list.replaceChildren();
+  if (!plan) return;
+  const { removals, bindings, truncated } = selectedResyncLosses(plan, resyncState.selected);
+  if (!removals.length && !bindings.length) {
+    const row = document.createElement("div");
+    row.className = "hint";
+    row.textContent = t("resync.lossNone");
+    list.append(row);
+  }
+  removals.forEach((/** @type {any} */ entry) => {
+    const row = document.createElement("div");
+    row.className = "resync-change resync-change-removed";
+    row.textContent = `${t(`resync.group.${entry.group}`)} · ${entry.change.label}`;
+    list.append(row);
+  });
+  bindings.forEach((/** @type {any} */ loss) => {
+    const row = document.createElement("div");
+    row.className = "resync-change resync-change-removed";
+    row.textContent = t("resync.lossBinding", {
+      id: loss.id, missing: loss.missing.join(", "),
+    });
+    list.append(row);
+  });
+  if (truncated) list.append(moreItemsRow(truncated));
+  section.classList.remove("hidden");
+  $("#resync-apply").disabled = !canApplyResync(resyncState.selected);
+  $("#resync-status").textContent = canApplyResync(resyncState.selected)
+    ? "" : t("resync.nothingSelected");
+}
+
+function renderResyncUnsupported() {
+  const plan = resyncState.plan;
+  const entries = plan?.unsupported || [];
+  const list = $("#resync-unsupported");
+  list.replaceChildren();
+  $("#resync-unsupported-section").classList.toggle("hidden", !entries.length);
+  entries.forEach((/** @type {any} */ entry) => {
+    const row = document.createElement("div");
+    row.className = entry.severity === "A" ? "issue-error" : "import-warning";
+    const where = entry.line
+      ? t("resync.line", { line: entry.line })
+      : (entry.path || t("resync.lineUnknown"));
+    row.textContent = `${where} · ${entry.message}`;
+    list.append(row);
+  });
+  if (plan?.unsupported_truncated) list.append(moreItemsRow(plan.unsupported_truncated));
+}
+
+async function applySourceChanges() {
+  const { name, selected } = resyncState;
+  if (!name || !canApplyResync(selected)) return;
+  if (state.projectDirty && !confirm(t("confirm.discardUnsaved"))) return;
+  const expectedRevision = state.projectName === name ? state.projectRevision : null;
+  $("#resync-apply").disabled = true;
+  try {
+    const result = await resyncController.apply(
+      name, selected, expectedRevision, $("#resync-lock-previous").checked,
+    );
+    adoptLoadedProject({ name, project: result.project, revision: result.revision });
+    await loadViewerBindings(name);
+    renderDesigner();
+    $("#resync-dialog").close();
+    const dropped = result.dropped_bindings?.length || 0;
+    // The lock is a nicety on top of a save that already happened, so a full
+    // quota is worth saying out loud rather than swallowing.
+    const lockFailed = result.previous_locked && !result.previous_locked.locked;
+    toast(t("toast.resync.applied")
+      + (dropped ? t("toast.resync.appliedDropped", { count: dropped }) : "")
+      + (lockFailed ? t("toast.resync.lockFailed") : ""), lockFailed);
+    await loadRevisionFeed();
+  } catch (/** @type {any} */ error) {
+    toast(error.message, true, error.details);
+    $("#resync-apply").disabled = false;
   }
 }
 
@@ -2066,6 +2351,11 @@ function openHistoricProject() {
   const { zoom, rotation, fitMode } = viewer;
   const showingCompare = viewerHistory.side === "compare";
   const key = String(showingCompare ? viewerHistory.compareTo : viewerHistory.inspectedId);
+  // Like runtime bindings below: today's scenarios on a past layout would
+  // show a state that never existed.
+  viewer.setScenarios([]);
+  closeViewerScenarioEditor();
+  $("#viewer-scenarios").classList.add("hidden");
   viewer.open(viewerHistory.cache[key], {
     name: t("viewer.history.versionTitle", {
       name: viewerHistory.name,
@@ -2235,6 +2525,18 @@ function revisionGraphNode(version, index, history) {
   node.classList.toggle("locked", Boolean(version.locked));
   node.disabled = !carriesContent(version);
 
+  // The configuration's own track: a flag above the node marks the version
+  // that carried a YAML change in, so the graph shows two kinds of event on
+  // one timeline rather than only the project following along. Rendered
+  // inside the node so it needs no second measuring pass.
+  const move = sourceMove(version);
+  if (move) {
+    const flag = document.createElement("span");
+    flag.className = `revision-node-source${move.changed ? " moved" : ""}`;
+    flag.textContent = move.changed ? "▲" : "▵";
+    node.append(flag);
+  }
+
   const dot = document.createElement("span");
   dot.className = "revision-node-dot";
   node.append(dot);
@@ -2250,6 +2552,9 @@ function revisionGraphNode(version, index, history) {
     t(version.action === "delete" ? revisionActionKey(version.action) : revisionOriginKey(version.origin)),
     version.locked ? t("revisions.lockedBadge") : "",
     version.restored_from ? t("revisions.restoredFrom", { id: version.restored_from }) : "",
+    move && (move.changed
+      ? t("revisions.sourceMoved", { name: move.name, from: move.from, to: move.to })
+      : t("revisions.sourceSame", { name: move.name })),
   ].filter(Boolean).join(" · ");
 
   if (!node.disabled) {
@@ -2299,6 +2604,7 @@ function bindRevisions() {
   $("#close-revisions").addEventListener("click", () => $("#revisions-dialog").close());
   $("#close-revisions-footer").addEventListener("click", () => $("#revisions-dialog").close());
   $("#restore-revision").addEventListener("click", restoreSelectedRevision);
+  $("#undo-import").addEventListener("click", undoSelectedImport);
   $("#save-revision-label").addEventListener("click", saveRevisionLabel);
   $("#toggle-revision-lock").addEventListener("click", toggleRevisionLock);
   $("#refresh-revision-feed").addEventListener("click", loadRevisionFeed);
@@ -2426,6 +2732,21 @@ function revisionMeta(entry, options = {}) {
     from.textContent = t("revisions.restoredFrom", { id: entry.restored_from });
     meta.append(from);
   }
+  const move = sourceMove(entry);
+  if (move) {
+    const source = document.createElement("span");
+    source.className = "revision-chip source";
+    source.textContent = move.changed
+      ? t("revisions.sourceMoved", { name: move.name, from: move.from, to: move.to })
+      : t("revisions.sourceSame", { name: move.name });
+    meta.append(source);
+    if (move.groups.length) {
+      const groups = document.createElement("span");
+      groups.textContent = move.groups
+        .map((/** @type {string} */ key) => t(`resync.group.${key}`)).join(", ");
+      meta.append(groups);
+    }
+  }
   if (options.missingProject) {
     const gone = document.createElement("span");
     gone.className = "revision-chip delete";
@@ -2518,6 +2839,14 @@ function updateRevisionControls() {
   $("#preview-revision").disabled = !version || !carriesContent(version);
   $("#restore-revision").disabled = !restorable || !canWrite;
   $("#restore-revision").title = version && !carriesContent(version) ? t("revisions.noContent") : "";
+  const versions = revisionState.listing?.versions || [];
+  const undoable = canUndoImport(version, versions);
+  // Shown only where it means something: an import whose predecessor is still
+  // in the history. Once that has rotated out, ordinary restore is all there is.
+  $("#undo-import").classList.toggle("hidden", version?.origin !== "resync");
+  $("#undo-import").disabled = !undoable || !canWrite;
+  $("#undo-import").title = version?.origin === "resync" && !undoable
+    ? t("revisions.undoImportGone") : "";
 }
 
 async function loadRevisionDiff() {
@@ -2587,13 +2916,32 @@ async function toggleRevisionLock() {
 }
 
 async function restoreSelectedRevision() {
-  const name = revisionState.name;
   const version = selectedRevision();
+  const exists = Boolean(revisionState.listing?.exists);
+  await restoreVersion(version, exists
+    ? t("confirm.revisions.restore", { date: formatRevisionDate(version?.created_at) })
+    : t("confirm.revisions.restoreDeleted", { name: revisionState.name }));
+}
+
+/** Take back the import the selected version made, by restoring the state it
+ * displaced. Ordinary restore underneath - the import is not rewound, it is
+ * followed by its own reversal, which stays as undoable as anything else. */
+async function undoSelectedImport() {
+  const version = selectedRevision();
+  const target = replacedVersion(version, revisionState.listing?.versions || []);
+  const move = sourceMove(version);
+  if (!target || !move) return;
+  await restoreVersion(target, t("confirm.revisions.undoImport", {
+    name: move.name,
+    date: formatRevisionDate(target.created_at),
+  }));
+}
+
+/** @param {any} version @param {string} question */
+async function restoreVersion(version, question) {
+  const name = revisionState.name;
   if (!name || !version || !state.capabilities["designer.project_write"]) return;
   const exists = Boolean(revisionState.listing?.exists);
-  const question = exists
-    ? t("confirm.revisions.restore", { date: formatRevisionDate(version.created_at) })
-    : t("confirm.revisions.restoreDeleted", { name });
   if (!confirm(question)) return;
   // A project open in the editor may be further along than the listing, so
   // prefer its revision - the freshness rule deleteServerProject uses.
@@ -6772,12 +7120,20 @@ function editFontLibraryEntry(/** @type {any} */ id) {
   }
   $("#font-library-refresh").value = refresh;
   $("#font-library-size").value = entry.size || 16;
-  $("#font-library-bpp").value = String(entry.bpp || 4);
+  // null = no bpp: in the source (ESPHome's default applies) - shown as such
+  // rather than as the designer's own default of 4.
+  $("#font-library-bpp").value = entry.bpp == null ? "" : String(entry.bpp);
   $("#font-library-error").classList.add("hidden");
   $("#save-font-library-entry").textContent = t("fontlib.form.save");
   $("#cancel-font-library-edit").classList.remove("hidden");
   updateFontSourceFieldsVisibility();
   $("#font-library-id").focus();
+}
+
+/** The bpp form value; "" means "not stated", exported without bpp:. */
+function fontBppFromForm() {
+  const raw = $("#font-library-bpp").value;
+  return raw === "" ? null : Number(raw);
 }
 
 function saveFontLibraryEntry(/** @type {any} */ event) {
@@ -6817,7 +7173,7 @@ function saveFontLibraryEntry(/** @type {any} */ event) {
     const candidate = {
       source_kind: source,
       size: clamp(Number($("#font-library-size").value) || 16, 1, 255),
-      bpp: Number($("#font-library-bpp").value) || 4,
+      bpp: fontBppFromForm(),
       builtin_name: source === "builtin" ? $("#font-library-builtin-name").value.trim() : "",
       gfonts_family: source === "gfonts" ? currentGfontsFamilyInput() : "",
       gfonts_weight: source === "gfonts" ? (Number($("#font-library-gfonts-weight").value) || 400) : 400,
@@ -6872,7 +7228,7 @@ function saveFontLibraryEntry(/** @type {any} */ event) {
     delete metadata[id];
   }
   entry.size = clamp(Number($("#font-library-size").value) || 16, 1, 255);
-  entry.bpp = Number($("#font-library-bpp").value) || 4;
+  entry.bpp = fontBppFromForm();
   fontSourceStatuses.delete(state.editingFontId || id);
   fontSourceStatuses.delete(id);
 
@@ -8177,7 +8533,15 @@ function renderExtraKeys(/** @type {any} */ widget) {
   const keys = Object.keys(widget.extra || {});
   section.classList.toggle("hidden", keys.length === 0);
   if (!keys.length) return;
-  $("#extra-keys").textContent = JSON.stringify(widget.extra, null, 2);
+  // Tagged values travel as {__esphome_lambda__} / {__esphome_tag__, value};
+  // show them the way the YAML spells them.
+  $("#extra-keys").textContent = JSON.stringify(widget.extra, (_key, value) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (typeof value.__esphome_lambda__ === "string") return `!lambda ${value.__esphome_lambda__}`;
+      if (typeof value.__esphome_tag__ === "string") return `${value.__esphome_tag__} ${value.value}`;
+    }
+    return value;
+  }, 2);
 }
 
 const ADD_IMAGE_OPTION = "__add_image__";
@@ -8206,7 +8570,7 @@ function fontLibrary() {
 function findEquivalentFontEntry(/** @type {any} */ candidate) {
   return fontLibrary().find((/** @type {any} */ entry) => {
     if (entry.source_kind !== candidate.source_kind) return false;
-    if (Number(entry.size) !== candidate.size || Number(entry.bpp) !== candidate.bpp) return false;
+    if (Number(entry.size) !== candidate.size || (entry.bpp ?? null) !== candidate.bpp) return false;
     if (candidate.source_kind === "builtin") return entry.builtin_name === candidate.builtin_name;
     if (candidate.source_kind === "gfonts") {
       return entry.gfonts_family === candidate.gfonts_family
@@ -9170,9 +9534,23 @@ async function saveMergeDraft() {
   const button = $("#merge-draft-save");
   button.disabled = true;
   try {
-    const result = await api("designer/projects/merge-draft", {
-      method: "POST", body: JSON.stringify({ project: state.project, target }),
+    const merge = (/** @type {boolean} */ confirmDisplayTakeover) => api("designer/projects/merge-draft", {
+      method: "POST",
+      body: JSON.stringify({ project: state.project, target, confirm_display_takeover: confirmDisplayTakeover }),
     });
+    let result;
+    try {
+      result = await merge(false);
+    } catch (/** @type {any} */ error) {
+      // The target display draws by itself (lambda:, pages:, ...): LVGL can
+      // only take it over once that is commented out - the user decides.
+      if (error.code !== "display_takeover_required") throw error;
+      const displays = (error.details?.displays || [])
+        .map((/** @type {any} */ item) => `${item.display_id || "display"} (${item.keys.join(", ")})`)
+        .join(", ");
+      if (!confirm(t("confirm.mergeDraft.displayTakeover", { target, displays }))) return;
+      result = await merge(true);
+    }
     const changed = [...result.replaced, ...result.appended];
     toast(t("toast.mergeDraft.saved", { target, keys: changed.join(", ") }));
     $("#yaml-dialog").close();

@@ -22,10 +22,13 @@ from .limits import MCP_OPERATIONS_PER_CHANGESET
 from .operations import PlacementOperation, operation_payload
 from .placement import PlacementService
 from .project_bindings import ProjectBindingService
+from .scenario_operations import ScenarioOperation, scenario_operation_payload
+from .viewer_scenario_service import ViewerScenarioService
 
 _REVISION = re.compile(r"^sha256:[0-9a-f]{64}$")
 _OPERATIONS = TypeAdapter(list[PlacementOperation])
 _BINDING_OPERATIONS = TypeAdapter(list[ProjectBindingOperation])
+_SCENARIO_OPERATIONS = TypeAdapter(list[ScenarioOperation])
 
 
 class ProjectMutationService:
@@ -42,6 +45,7 @@ class ProjectMutationService:
         self.changesets = changesets
         self.placement = PlacementService()
         self.project_bindings = ProjectBindingService()
+        self.viewer_scenarios = ViewerScenarioService()
 
     def propose(
         self,
@@ -177,6 +181,65 @@ class ProjectMutationService:
                 "operation_count": len(normalized),
             },
         )
+        return result
+
+    def propose_scenarios(
+        self,
+        name: str,
+        base_revision: str,
+        operations: list[ScenarioOperation | dict[str, Any]],
+        *,
+        identity: str,
+    ) -> dict[str, Any]:
+        """Viewer scenarios ride the ordinary project changeset: same
+        revision check, same review, same version history on apply."""
+        self._require_write_access()
+        if not _REVISION.fullmatch(base_revision):
+            raise ApiError("invalid_revision", "base_revision is malformed.", 422)
+        if not isinstance(operations, list) or not operations:
+            raise ApiError("empty_changeset", "At least one operation is required.", 422)
+        if len(operations) > MCP_OPERATIONS_PER_CHANGESET:
+            raise ApiError("operation_limit_exceeded", "The changeset contains too many operations.",
+                           413, {"maximum": MCP_OPERATIONS_PER_CHANGESET})
+        try:
+            validated = _SCENARIO_OPERATIONS.validate_python(operations)
+        except ValidationError as exc:
+            errors = [
+                {"location": list(error["loc"]), "type": error["type"], "message": error["msg"]}
+                for error in exc.errors(include_url=False, include_input=False)[:20]
+            ]
+            raise ApiError("invalid_operation_schema", "One or more scenario operations are malformed.",
+                           422, {"errors": errors}) from exc
+        normalized = [scenario_operation_payload(operation) for operation in validated]
+        try:
+            loaded = self.projects.read(name)
+            if loaded["revision"] != base_revision:
+                raise ApiError(
+                    "revision_conflict",
+                    "The project changed after the supplied base revision.",
+                    409,
+                    {"expected_revision": base_revision, "actual_revision": loaded["revision"]},
+                )
+            proposed, scenario_preview = self.viewer_scenarios.apply(loaded["project"], normalized)
+            prepared = self.projects.prepare(proposed)
+            preview = self._preview(
+                loaded["project"], prepared["project"], scenario_preview,
+                prepared["issues"], prepared["size"],
+            )
+            result = self.changesets.create(
+                identity=identity,
+                project_name=name,
+                base_revision=base_revision,
+                operations=normalized,
+                project=prepared["project"],
+                preview=preview,
+            )
+        except ApiError as exc:
+            self._audit(identity, "mcp.scenario.propose", name, base_revision, None, exc.error,
+                        {"operation_count": len(normalized)})
+            raise
+        self._audit(identity, "mcp.scenario.propose", name, base_revision, None, "success",
+                    {"change_set_id": result["change_set_id"], "operation_count": len(normalized)})
         return result
 
     def read(self, change_set_id: str, *, identity: str) -> dict[str, Any]:

@@ -43,6 +43,7 @@ export function freshProject() {
     reserved_ids: [],
     entities: [],
     bindings: [],
+    viewer_scenarios: { yaml: "", scenarios: [] },
   };
 }
 

@@ -21,11 +21,13 @@ from .designer_core.yamlexport import (
 )
 from .designer_core.yamlimport import (
     LvglImportError,
+    TaggedScalar,
     import_esphome_yaml,
     load_lvgl_yaml,
 )
 from .errors import ApiError
 from .entity_bindings import (
+    _portable_yaml_value,
     binding_schemas,
     compile_bindings,
     discover_entities,
@@ -33,6 +35,8 @@ from .entity_bindings import (
     validate_project_bindings,
 )
 from .msgbox_support import apply_msgbox_payload, materialize_msgboxes
+from .viewer_scenario_suggestions import suggest_viewer_scenarios_yaml
+from .viewer_scenarios import normalise_viewer_scenarios
 from .page_support import (
     apply_surface_payload,
     materialize_surfaces,
@@ -63,12 +67,39 @@ def _materialize_action_lambdas(payload: dict[str, Any]) -> None:
         if isinstance(value, dict):
             if set(value) == {"__esphome_lambda__"}:
                 return _ActionLambda(str(value["__esphome_lambda__"]))
+            if set(value) == {"__esphome_tag__", "value"}:
+                return TaggedScalar(str(value["value"]), str(value["__esphome_tag__"]))
             return {key: visit(item) for key, item in value.items()}
         return value
 
     converted = visit(payload)
     payload.clear()
     payload.update(converted)
+
+
+#: Payload keys holding YAML exactly as the source wrote it - action lists and
+#: preserved, unmodelled keys - where an ESPHome tag must survive the trip
+#: through JSON.
+_VERBATIM_YAML_KEYS = frozenset({"events", "extra", "extra_lvgl"})
+
+
+def _portable_import_tags(value: Any) -> Any:
+    """Encode tagged scalars (``!lambda``, ``!secret``, ...) inside verbatim
+    YAML as the portable ``__esphome_lambda__``/``__esphome_tag__`` objects.
+
+    A TaggedScalar is a str subclass, so JSON would otherwise keep its text
+    and silently drop the tag - a ``!lambda`` action argument then comes back
+    as a plain string. The export paths turn the objects back into tags.
+    """
+    if isinstance(value, list):
+        return [_portable_import_tags(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _portable_yaml_value(item) if key in _VERBATIM_YAML_KEYS
+            else _portable_import_tags(item)
+            for key, item in value.items()
+        }
+    return value
 
 
 def _normalise_meter_payload(payload: dict[str, Any], *, for_export: bool) -> None:
@@ -355,6 +386,9 @@ class DesignerService:
             if isinstance(payload.get("bindings", []), list)
             else []
         )
+        project.viewer_scenarios = normalise_viewer_scenarios(
+            payload.get("viewer_scenarios")
+        )
         if not (
             1 <= project.canvas_width <= 4096 and 1 <= project.canvas_height <= 4096
         ):
@@ -610,6 +644,12 @@ class DesignerService:
         payload["msgboxes"], msgbox_stats = materialize_msgboxes(
             result.project, result.issues
         )
+        payload = _portable_import_tags(payload)
+        payload["viewer_scenarios"] = {
+            "yaml": "",
+            "scenarios": [],
+            "suggestions": suggest_viewer_scenarios_yaml(document, source_name),
+        }
         _normalise_meter_payload(payload, for_export=False)
         # Run the normal validation too, so the caller gets one issue list and
         # the same failure modes as any other project.
@@ -724,4 +764,7 @@ class DesignerService:
         payload["msgboxes"] = materialize_msgboxes(project)[0]
         payload["entities"] = copy.deepcopy(getattr(project, "entities", []))
         payload["bindings"] = copy.deepcopy(getattr(project, "bindings", []))
+        payload["viewer_scenarios"] = normalise_viewer_scenarios(
+            getattr(project, "viewer_scenarios", None)
+        )
         return payload

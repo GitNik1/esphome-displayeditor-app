@@ -43,7 +43,7 @@ PROJECT_REVISION_FEED_LIMIT = 200
 PROJECT_REVISION_COMPRESSION_LEVEL = 6
 _EVICTION_BATCH = 32
 
-ORIGINS = frozenset({"ui", "mcp", "mcp_import", "restore", "unknown"})
+ORIGINS = frozenset({"ui", "mcp", "mcp_import", "restore", "resync", "unknown"})
 ACTIONS = frozenset({"save", "delete"})
 
 _METADATA_COLUMNS = (

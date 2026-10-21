@@ -29,6 +29,7 @@ from ..assistant_tools import AssistantToolService
 from ..assistant_tools.binding_operations import ProjectBindingOperation
 from ..assistant_tools.limits import MCP_APP_BUNDLE_MAX_BYTES
 from ..assistant_tools.operations import PlacementOperation
+from ..assistant_tools.scenario_operations import ScenarioOperation
 from ..assistant_tools.viewer_binding_operations import ViewerBindingOperation
 from .identity import MCPAuthorization
 from .support import PROPOSAL, READ_ONLY, scoped_tool_result
@@ -203,8 +204,15 @@ def _register_changeset_review(
         configuration_name: str,
         configuration_revision: str,
         draft_revision: str | None = None,
+        confirm_display_takeover: bool = False,
     ) -> dict[str, Any]:
-        """Propose merging an exact project revision into a YAML draft."""
+        """Propose merging an exact project revision into a YAML draft.
+
+        If the target display draws by itself (lambda:, pages:, ...), the
+        proposal is refused with display_takeover_required: ask the user and
+        retry with confirm_display_takeover=true, which comments those keys
+        out in the draft instead of deleting them.
+        """
         return scoped_tool_result(
             ("project:read", "configuration:draft"),
             fallback,
@@ -215,6 +223,7 @@ def _register_changeset_review(
                 configuration_revision,
                 draft_revision,
                 identity=authorization.identity,
+                confirm_display_takeover=confirm_display_takeover,
             ),
         )
 
@@ -233,6 +242,36 @@ def _register_changeset_review(
             ("project:write",),
             fallback,
             lambda authorization: service.propose_project_bindings(
+                name,
+                base_revision,
+                operations,
+                identity=authorization.identity,
+            ),
+        )
+
+    @apps.tool(
+        resource_uri=_REVIEW_RESOURCE_URI,
+        name="display_viewer_scenarios_propose",
+        annotations=PROPOSAL,
+    )
+    def display_viewer_scenarios_propose(
+        name: str,
+        base_revision: str,
+        operations: list[ScenarioOperation],
+    ) -> dict[str, Any]:
+        """Propose Viewer-scenario changes without saving.
+
+        Operations: upsert_scenario (create or replace by name, optional
+        rename_to), delete_scenario, adopt_suggestions (copy import
+        suggestions; names empty = all) and set_scenarios_yaml (replace the
+        whole YAML). Read display_viewer_scenarios_read first for the format
+        and the base revision; apply with display_changeset_apply after the
+        user approved. Comments in the scenario YAML are kept where possible.
+        """
+        return scoped_tool_result(
+            ("project:write",),
+            fallback,
+            lambda authorization: service.propose_viewer_scenarios(
                 name,
                 base_revision,
                 operations,

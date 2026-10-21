@@ -133,6 +133,7 @@ class ProjectStore:
         actor: str = "unknown",
         origin: str = "unknown",
         restored_from: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict:
         path = self._path(name)
         _project, issues, raw = self._prepare(payload)
@@ -182,6 +183,12 @@ class ProjectStore:
             actor=actor,
             origin=origin,
             restored_from=restored_from,
+            # The state this write displaced, recorded only for writers that
+            # describe themselves at all: it is what "undo this" has to aim at,
+            # and an id would be wrong here - the row is written after this one.
+            metadata=(
+                {**metadata, "replaced_revision": old_revision} if metadata else None
+            ),
         )
         return {
             "name": name,
@@ -235,6 +242,7 @@ class ProjectStore:
         actor: str,
         origin: str,
         restored_from: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> bool:
         """Record one written version. Never raises - history is best effort."""
         try:
@@ -246,6 +254,7 @@ class ProjectStore:
                 origin=origin,
                 action=action,
                 restored_from=restored_from,
+                metadata=metadata,
             )
         except Exception:  # noqa: BLE001 - a history problem is not a save problem
             _LOGGER.warning(
@@ -265,6 +274,7 @@ class ProjectStore:
         stored_payload = project.to_dict()
         stored_payload["entities"] = getattr(project, "entities", [])
         stored_payload["bindings"] = getattr(project, "bindings", [])
+        stored_payload["viewer_scenarios"] = getattr(project, "viewer_scenarios", None)
         raw = (json.dumps(stored_payload, ensure_ascii=False, indent=2) + "\n").encode(
             "utf-8"
         )

@@ -146,12 +146,26 @@ input:focus-visible, select:focus-visible, button:focus-visible, textarea:focus-
    selection, pointer capture and resize rules can never leak into preview. */
 .viewer-dialog { width: 100vw; max-width: none; height: 100vh; max-height: none; margin: 0; padding: 0; border: 0; background: #080d13; color: var(--text); }
 .viewer-dialog::backdrop { background: #000d; }
-.viewer-shell { width: 100%; height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.viewer-shell { width: 100%; height: 100%; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
 /* Rows are assigned explicitly so the optional history bar cannot shift
    the stage out of its 1fr row; hidden, its auto row collapses to 0. */
 .viewer-toolbar { grid-row: 1; }
 .viewer-history-bar { grid-row: 2; }
-.viewer-statusline { grid-row: 4; }
+.viewer-scenarios { grid-row: 3; }
+.viewer-statusline { grid-row: 5; }
+.viewer-scenarios { padding: 8px 18px; border-bottom: 1px solid var(--line); background: #101a26; font-size: 12px; }
+.viewer-scenario-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.viewer-scenario-list { display: flex; gap: 6px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+.viewer-scenario-empty { color: var(--muted); }
+.viewer-scenario-editor { margin-top: 8px; display: grid; gap: 6px; }
+.viewer-scenario-editor textarea { width: 100%; min-height: 180px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: #080e16; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.viewer-scenario-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.viewer-scenario-actions #viewer-scenario-suggestions { margin-right: auto; }
+.viewer-scenario-run.is-trigger { border-style: dashed; }
+.viewer-condition-prompt { margin-top: 8px; padding: 8px 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border: 1px solid #c9a227; border-radius: 6px; background: #2a2410; }
+.viewer-condition-prompt[hidden] { display: none; }
+.viewer-condition-prompt code { max-width: 100%; padding: 2px 6px; overflow-x: auto; white-space: pre; border-radius: 4px; background: #0008; }
+.viewer-condition-prompt small { flex-basis: 100%; color: var(--muted); }
 .viewer-toolbar { min-height: 64px; padding: 10px 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); background: #0d1520; }
 .viewer-heading { min-width: 0; }
 .viewer-heading small, .viewer-heading strong { display: block; }
@@ -162,7 +176,7 @@ input:focus-visible, select:focus-visible, button:focus-visible, textarea:focus-
 .viewer-page-controls, .viewer-page-controls label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .viewer-page-controls[hidden] { display: none; }
 .viewer-page-controls select { width: auto; min-width: 130px; max-width: 220px; }
-.viewer-stage { grid-row: 3; min-height: 0; overflow: auto; padding: 28px; display: grid; place-items: safe center; background-color: #070b10; background-image: radial-gradient(#223144 1px, transparent 1px); background-size: 20px 20px; }
+.viewer-stage { grid-row: 4; min-height: 0; overflow: auto; padding: 28px; display: grid; place-items: safe center; background-color: #070b10; background-image: radial-gradient(#223144 1px, transparent 1px); background-size: 20px 20px; }
 .viewer-wasm-canvas { display: block; width: 100%; height: 100%; background: #000; image-rendering: pixelated; touch-action: none; }
 .viewer-renderer { display: inline-flex; align-items: center; gap: 6px; }
 .viewer-renderer select { max-width: 210px; }
@@ -635,6 +649,12 @@ input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var
 .revision-node.ui .revision-node-dot { background: #16324a; border-color: #3b7fb8; }
 .revision-node.mcp .revision-node-dot, .revision-node.mcp_import .revision-node-dot { background: #1c3b33; border-color: #29a98c; }
 .revision-node.restore .revision-node-dot { background: #3c2e09; border-color: #f59e0b; }
+.revision-node.resync .revision-node-dot { background: #24304d; border-color: #818cf8; }
+/* The configuration's own track: a flag above the dot on the version that
+   carried a YAML change in. Absolute so it cannot shift the node's baseline
+   and put the dots of an otherwise identical row out of line. */
+.revision-node-source { position: absolute; top: -11px; left: 50%; transform: translateX(-50%); font-size: 9px; line-height: 1; color: #64748b; }
+.revision-node-source.moved { color: #9fd7ee; }
 .revision-node.delete .revision-node-dot { background: #42191d; border-color: #ef4444; }
 .revision-node.locked .revision-node-dot { box-shadow: 0 0 0 2px #42230f, 0 0 0 3px var(--warning); }
 .revision-node.target .revision-node-dot { border-style: dashed; border-color: var(--accent); }
@@ -682,6 +702,8 @@ input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var
 .revision-chip.ui { background: #16324a; color: #b6dcff; }
 .revision-chip.mcp, .revision-chip.mcp_import { background: #1c3b33; color: #8de8cf; }
 .revision-chip.restore { background: #3c2e09; color: #fef3c7; }
+.revision-chip.resync { background: #24304d; color: #c7d2fe; }
+.revision-chip.source { background: #10222e; color: #9fd7ee; font-family: var(--mono, ui-monospace, monospace); }
 .revision-chip.delete { background: #42191d; color: #fecaca; }
 .revision-chip.current { background: var(--accent); color: #071313; }
 .revision-chip.locked { background: #42230f; color: #fed7aa; }
@@ -691,6 +713,29 @@ input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var
 .revisions-diff { flex: 1 1 auto; min-height: 120px; overflow: auto; margin: 0; border: 1px solid var(--line); border-radius: 9px; }
 .revisions-annotate { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-top: 12px; }
 .revisions-annotate label { flex: 1 1 220px; min-width: 0; }
+/* Same flex-column reasoning as .revisions-dialog: the group list is the only
+   part allowed to scroll, so the tick boxes and the actions stay reachable. */
+.resync-dialog { min-width: min(760px, 92vw); max-height: min(90vh, 860px); }
+.resync-dialog[open] { display: flex; flex-direction: column; }
+.resync-dialog > .dialog-heading, .resync-dialog > .hint,
+.resync-dialog > .resync-section, .resync-dialog > .dialog-actions { flex: none; }
+.resync-groups { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+.resync-group { border: 1px solid var(--line); border-radius: 9px; padding: 12px; background: #0c1420; }
+.resync-group-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; cursor: pointer; }
+.resync-group-head input { margin: 0; }
+.resync-group-title { font-weight: 600; }
+.resync-group-summary { color: var(--muted); font-size: 12px; }
+.resync-group .hint { margin: 6px 0 0 24px; }
+.resync-lock { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.resync-lock + .hint { margin: 2px 0 0 24px; }
+.resync-section { margin-top: 12px; }
+.resync-section h3 { margin: 0 0 6px; font-size: 13px; }
+.resync-list { display: flex; flex-direction: column; gap: 3px; max-height: 190px; overflow: auto; margin-top: 8px; margin-left: 24px; }
+.resync-section > .resync-list { margin-left: 0; }
+.resync-change { font-size: 12px; font-family: var(--mono, ui-monospace, monospace); color: var(--muted); }
+.resync-change-added { color: #8de8cf; }
+.resync-change-changed { color: #b6dcff; }
+.resync-change-removed { color: #fecaca; }
 .revision-feed { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
 .revision-feed.empty { padding: 14px; border: 1px dashed var(--line); border-radius: 9px; color: var(--muted); font-size: 12px; }
 .revision-feed-day { margin: 6px 0 2px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }

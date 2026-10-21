@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, SecretStr
 
@@ -23,11 +23,18 @@ class CustomBindingYamlRequest(BaseModel):
     content: str = Field(min_length=1, max_length=128 * 1024)
 
 
+class ViewerScenariosRequest(BaseModel):
+    content: str = Field(max_length=128 * 1024)
+
+
 class MergeDraftRequest(BaseModel):
     """Designer data to merge into an existing configuration draft."""
 
     project: dict[str, Any]
     target: str
+    #: The user agreed to comment out the target display's own drawing
+    #: (lambda:, pages:, ...) so LVGL can take it over.
+    confirm_display_takeover: bool = False
 
 
 class CanvasSize(BaseModel):
@@ -136,3 +143,18 @@ class AssistantAskRequest(BaseModel):
     project_name: str = Field(min_length=1, max_length=255)
     configuration_name: str | None = Field(default=None, max_length=255)
     message: str = Field(min_length=1, max_length=4000)
+
+
+class ApplyProjectResyncRequest(BaseModel):
+    # Which groups of the re-imported config to adopt. Empty is rejected
+    # rather than treated as "all": a re-sync that was confirmed with nothing
+    # ticked is a mistake, not a request to overwrite everything.
+    groups: list[Literal["entities", "resources", "layout"]] = Field(
+        min_length=1, max_length=3
+    )
+    expected_revision: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    # Keeps the pre-import version out of the rolling window, for an import
+    # whose damage only becomes obvious weeks later.
+    lock_previous: bool = False

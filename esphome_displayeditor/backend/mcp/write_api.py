@@ -82,6 +82,26 @@ def register_write_api(
             "Viewer bindings into each other."
         )
 
+    @server.prompt(
+        name="display_simulate_device",
+        title="Simulate device behaviour in the Viewer",
+        description="Create Viewer scenarios for states the browser cannot compute.",
+    )
+    def display_simulate_device(project_name: str, goal: str = "") -> str:
+        return (
+            f"Make the Viewer of project '{project_name}' simulate: "
+            f"{goal or 'the device flow, so it can be clicked through'}. Call "
+            "display_viewer_scenarios_read for the format, the current scenarios, the "
+            "import suggestions and the base revision. Adopt the suggestions that cover "
+            "the flow (adopt_suggestions). Then read the source configuration and add, "
+            "with upsert_scenario, the states only C++ produces - lambdas calling "
+            "lv_label_set_text or lv_obj_set_style_*, SPI or sensor values - as LVGL "
+            "actions on the real widget ids; prefer firing the existing switch, script "
+            "or state-machine action over copying its effect. Propose with "
+            "display_viewer_scenarios_propose, review unknown_widget_ids in the preview, "
+            "and apply with display_changeset_apply only after the user approves."
+        )
+
     # display_project_propose, display_project_import_propose,
     # display_project_import_yaml_propose, display_configuration_draft_propose,
     # display_binding_propose and display_viewer_binding_propose are
