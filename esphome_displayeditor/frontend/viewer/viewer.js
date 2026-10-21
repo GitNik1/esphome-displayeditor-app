@@ -338,14 +338,17 @@ export class ViewerController {
     if (raw === undefined || raw === null) return false;
     const actions = Array.isArray(raw) ? raw : [raw];
     this.recordEvent("trigger", `${widget.id || widget.widget_type}: ${eventName}`);
+    const before = this.simulation.snapshot();
     let changed = false;
     for (const action of actions) {
       const result = applyViewerAction(this.project, action, this.runtime, this.simulationContext(context));
       changed ||= result.changed;
       this.recordEvent(result.handled && !result.warning ? "action" : "warning", result.message);
       if (result.pending) {
-        // Re-run the whole event once answered: the actions before the
-        // condition are idempotent display updates in practice.
+        // Re-run the whole event once answered, from the simulation state it
+        // started in; the display updates before the question repeat
+        // harmlessly.
+        this.simulation.restore(before);
         this.askCondition(result.pending, () => this.runEvent(widget, eventName, context));
         break;
       }
@@ -397,7 +400,7 @@ export class ViewerController {
     if (!plays.length) {
       if (ignored.length) {
         return { handled: true, changed: false,
-          message: t("viewer.scenario.noTransition", { name: `${name}: ${target}`, state: this.simulation.state }) };
+          message: t("viewer.scenario.noTransition", { name: `${name}: ${target}`, state: this.simulation.stateFor(ignored[0]) }) };
       }
       if (name.startsWith("switch.")) {
         return { handled: true, changed: false, message: t("viewer.scenario.switchNoted", { name: `${name}: ${target}` }) };
@@ -427,13 +430,18 @@ export class ViewerController {
    * @param {any} scenario */
   runScenario(scenario) {
     if (!this.project) return;
+    const before = this.simulation.snapshot();
+    let pending;
     if (scenario.on) {
       const result = this.playTriggered(scenario.on.name, scenario.on.payload);
       if (result) this.recordEvent(result.handled && !result.warning ? "action" : "warning", result.message);
-      if (result?.pending) this.askCondition(result.pending, () => this.runScenario(scenario));
+      pending = result?.pending;
     } else {
-      const result = this.playScenarioActions(scenario);
-      if (result.pending) this.askCondition(result.pending, () => this.runScenario(scenario));
+      pending = this.playScenarioActions(scenario).pending;
+    }
+    if (pending) {
+      this.simulation.restore(before);
+      this.askCondition(pending, () => this.runScenario(scenario));
     }
     this.render();
   }
@@ -925,6 +933,7 @@ export class ViewerController {
   async renderWasm() {
     if (!this.project) return;
     this.stopAnimations();
+    this.renderedPageId = this.runtime.activePageId;
     const generation = ++this.renderGeneration;
     const width = Number(this.project.canvas?.width) || 480;
     const height = Number(this.project.canvas?.height) || 480;

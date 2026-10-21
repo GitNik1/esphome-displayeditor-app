@@ -125,17 +125,103 @@ def _construct_tagged(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.Node)
 _ImportLoader.add_multi_constructor("!", _construct_tagged)
 
 
-def load_lvgl_yaml(text: str) -> dict[str, Any]:
+#: Aliases share one parsed node, but every later walk over the result
+#: (normalising, id collection, JSON) expands them - "billion laughs" turns a
+#: few hundred bytes into billions of nodes. A document may expand to this
+#: many nodes plus a generous multiple of its own size, which leaves room for
+#: ordinary anchors such as ``<<: *defaults``.
+MAX_ALIAS_EXPANSION = 100_000
+ALIAS_EXPANSION_FACTOR = 50
+#: Far beyond any real config (a deeply nested LVGL layout stays below ~50),
+#: and low enough that every recursive walk over the loaded data stays well
+#: inside Python's recursion limit.
+MAX_NESTING_DEPTH = 200
+
+
+def _node_children(node: yaml.Node) -> list[yaml.Node]:
+    if isinstance(node, yaml.MappingNode):
+        return [part for pair in node.value for part in pair]
+    if isinstance(node, yaml.SequenceNode):
+        return list(node.value)
+    return []
+
+
+def _check_alias_expansion(root: yaml.Node) -> None:
+    """Expanded size and depth of the node graph in linear time (each shared
+    node is measured once), refusing alias bombs, recursive aliases and
+    documents nested too deeply to walk."""
+    sizes: dict[int, int] = {}
+    heights: dict[int, int] = {}
+    on_path: set[int] = set()
+    stack: list[tuple[yaml.Node, bool]] = [(root, False)]
+    while stack:
+        node, finished = stack.pop()
+        key = id(node)
+        if finished:
+            children = _node_children(node)
+            sizes[key] = 1 + sum(sizes[id(child)] for child in children)
+            heights[key] = 1 + max((heights[id(child)] for child in children), default=0)
+            on_path.discard(key)
+            continue
+        if key in sizes:
+            continue
+        if key in on_path:
+            raise LvglImportError("The file contains a recursive YAML alias.")
+        on_path.add(key)
+        stack.append((node, True))
+        stack.extend((child, False) for child in _node_children(node) if id(child) not in sizes)
+    if heights[id(root)] > MAX_NESTING_DEPTH:
+        raise LvglImportError(
+            f"The file is nested more than {MAX_NESTING_DEPTH} levels deep; "
+            "refusing to process it.")
+    limit = MAX_ALIAS_EXPANSION + ALIAS_EXPANSION_FACTOR * len(sizes)
+    if sizes[id(root)] > limit:
+        raise LvglImportError(
+            "The file expands to too many nodes through YAML aliases "
+            f"({sizes[id(root)]:,} for {len(sizes):,} written); refusing to process it.")
+
+
+def load_yaml_bounded(text: str) -> Any:
+    """Load with ESPHome tags kept and alias expansion bounded."""
+    loader = _ImportLoader(text)
     try:
-        doc = yaml.load(text, Loader=_ImportLoader)
+        node = loader.get_single_node()
+        if node is None:
+            return None
+        _check_alias_expansion(node)
+        return loader.construct_document(node)
     except yaml.YAMLError as exc:
         raise LvglImportError(f"The file is not valid YAML: {exc}") from exc
+    except RecursionError as exc:
+        # PyYAML's composer recurses per nesting level; a file deep enough to
+        # exhaust it is refused like any other unreadable file, not a 500.
+        raise LvglImportError(
+            f"The file is nested more than {MAX_NESTING_DEPTH} levels deep; "
+            "refusing to process it.") from exc
+    finally:
+        loader.dispose()
+
+
+def load_lvgl_yaml(text: str) -> dict[str, Any]:
+    doc = load_yaml_bounded(text)
     if not isinstance(doc, dict):
         raise LvglImportError("The file does not contain a YAML mapping.")
     return doc
 
 
 # --- value normalisation ----------------------------------------------------
+
+def _tag_in(value: Any) -> str:
+    """The first ESPHome tag (``!lambda``, ``!secret``, ...) anywhere in a
+    value, or "" when it has none."""
+    if isinstance(value, TaggedScalar):
+        return value.tag or "!"
+    if isinstance(value, dict):
+        return next((tag for item in value.values() if (tag := _tag_in(item))), "")
+    if isinstance(value, list):
+        return next((tag for item in value if (tag := _tag_in(item))), "")
+    return ""
+
 
 def _normalise_color(value: Any) -> Any:
     """``bg_color: 0x2DD4BF`` is a plain int to any YAML parser, so a colour
@@ -238,6 +324,19 @@ def _classify_widget_body(node: WidgetNode, body: dict[str, Any],
         sub_path = f"{path}.{key}"
 
         if key in _STRUCTURAL_KEYS:
+            continue
+
+        # A tagged value - `text: !lambda 'return ...'`, a colour computed in
+        # C++ - is code, not something the editor can show or edit. As a
+        # property it would be handled as plain text and written back
+        # without its tag, so the device would print the code. Kept
+        # verbatim instead; on_* actions keep their tags in `events`.
+        tag = "" if key.startswith("on_") else _tag_in(value)
+        if tag:
+            issues.append(ImportIssue(
+                "C", f"Key '{key}' is computed at runtime ({tag}); it is preserved "
+                     f"but not editable.", sub_path, node.id))
+            node.extra[key] = value
             continue
 
         if key in _GEOMETRY_KEYS:

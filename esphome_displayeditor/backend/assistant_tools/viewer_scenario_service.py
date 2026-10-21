@@ -13,11 +13,10 @@ import copy
 import re
 from typing import Any
 
-import yaml
 
 from ..api.viewer_projection import project_widget_types
 from ..designer_core.yamlexport import HexColor
-from ..designer_core.yamlimport import LvglImportError, _ImportLoader
+from ..designer_core.yamlimport import LvglImportError, load_yaml_bounded
 from ..entity_bindings import _materialize_portable_yaml
 from ..errors import ApiError
 from ..viewer_scenarios import normalise_viewer_scenarios, parse_viewer_scenarios
@@ -33,9 +32,9 @@ def _load_entries(text: str) -> list[dict[str, Any]]:
     if not text.strip():
         return []
     try:
-        document = yaml.load(_BARE_ON.sub(r"\1'on':", text), Loader=_ImportLoader)
-    except yaml.YAMLError as exc:
-        raise ApiError("invalid_viewer_scenarios", f"Not valid YAML: {exc}", 422) from exc
+        document = load_yaml_bounded(_BARE_ON.sub(r"\1'on':", text))
+    except LvglImportError as exc:
+        raise ApiError("invalid_viewer_scenarios", str(exc), 422) from exc
     if document is None:
         return []
     if not isinstance(document, list) or not all(isinstance(e, dict) for e in document):

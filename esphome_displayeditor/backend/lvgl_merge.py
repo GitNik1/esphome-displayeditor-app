@@ -18,6 +18,7 @@ action. The merge result is always presented as a draft/diff before publish.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,7 +34,7 @@ from .designer_core.yamlexport import (
     build_font_block,
     build_lvgl_tree,
 )
-from .designer_core.yamlimport import TaggedScalar, load_lvgl_yaml
+from .designer_core.yamlimport import LvglImportError, TaggedScalar, load_lvgl_yaml
 from .entity_bindings import compile_bindings
 from .display_targets import (
     DisplayCommentError,
@@ -47,6 +48,24 @@ from .yaml_patch import patch_top_level_block
 #: The four top-level keys a Designer project can contribute, in the order
 #: they are considered - matches yamlexport.export_project()'s own order.
 MERGE_KEYS = ("color", "font", "image", "lvgl")
+
+#: lvgl: keys the generator always states, with ESPHome's own default.
+_LVGL_DEFAULTS = {"color_depth": 16, "page_wrap": True}
+
+
+def _without_restated_defaults(value: Any, existing: Any) -> Any:
+    """Drop what the existing ``lvgl:`` left to ESPHome's defaults and the
+    generated block merely restates - otherwise an unchanged save would add
+    ``color_depth: 16``, ``page_wrap: true`` and an empty ``widgets:``."""
+    if not isinstance(value, dict) or not isinstance(existing, dict):
+        return value
+    value = dict(value)
+    for key, default in _LVGL_DEFAULTS.items():
+        if key not in existing and value.get(key) == default:
+            value.pop(key)
+    if "widgets" not in existing and value.get("widgets") == [] and "pages" in value:
+        value.pop("widgets")
+    return value
 
 
 def _represent_tagged_scalar(dumper, value):
@@ -238,12 +257,23 @@ def _find_top_level_block(lines: list[str], key: str) -> tuple[int, int] | None:
     ``lvgl:``, since its own list values - e.g. ``widgets:`` - are always
     nested *under* another key and therefore genuinely indented).
     """
+    # `lvgl:` may carry trailing blanks or a comment, or its whole value
+    # inline (`lvgl: {...}`). Missing any of these used to append a second
+    # `lvgl:` key, which ESPHome rejects as a duplicate.
+    pattern = re.compile(rf"^{re.escape(key)}:(?:[ \t]+(?P<value>[^#\s][^\r\n]*?))?[ \t]*(?:#[^\r\n]*)?\r?\n?$")
     start = None
     for index, line in enumerate(lines):
-        if line.rstrip("\r\n") == f"{key}:":
-            if start is not None:
-                raise MergeError(f"Found '{key}:' more than once at the top level.")
-            start = index
+        match = pattern.match(line)
+        if not match:
+            continue
+        if start is not None:
+            raise MergeError(f"Found '{key}:' more than once at the top level.")
+        value = match.group("value") or ""
+        if value.startswith(("!", "*", "&", "<<")):
+            raise MergeError(
+                f"'{key}: {value}' comes from another file or anchor; merge into that "
+                "file instead - writing here would replace the reference.")
+        start = index
     if start is None:
         return None
     end = start + 1
@@ -308,10 +338,16 @@ def merge_project_into_yaml(
     replaced: list[str] = []
     to_append: list[str] = []
     appended: list[str] = []
+    try:
+        existing_doc = load_lvgl_yaml(existing_content)
+    except LvglImportError:
+        existing_doc = {}
     for key in MERGE_KEYS:
         if key not in generated_doc:
             continue
         value = _materialize_lambdas(generated_doc[key])
+        if key == "lvgl":
+            value = _without_restated_defaults(value, existing_doc.get("lvgl"))
         found = _find_top_level_block(lines, key)
         if found is None:
             to_append.append(_dump_block(key, value))
@@ -345,6 +381,10 @@ def merge_project_into_yaml(
         for domain in changed_domains:
             if domain not in replaced:
                 replaced.append(domain)
+    # Line handling needs a final newline; a file that had none gets none
+    # back, so an unchanged file stays byte for byte the same.
+    if existing_content and not existing_content.endswith("\n") and not to_append:
+        result_text = result_text.removesuffix("\n").removesuffix("\r")
     return MergeResult(
         content=result_text,
         replaced_keys=replaced,
@@ -465,6 +505,11 @@ def _merge_entity_binding_actions(
         if found is None:
             raise MergeError(f"Binding domain '{domain}:' disappeared during merge.")
         start, end = found
-        block = _dump_block(domain, document[domain])
-        lines[start:end] = block.splitlines(keepends=True)
+        # Like lvgl:/font:, only the bound entity's lines change; the rest of
+        # the domain keeps its comments and formatting. A block the patcher
+        # cannot handle safely is re-dumped as before.
+        patched = patch_top_level_block(lines[start:end], domain, document[domain])
+        if patched is None:
+            patched = _dump_block(domain, document[domain]).splitlines(keepends=True)
+        lines[start:end] = patched
     return "".join(lines), sorted(changed)

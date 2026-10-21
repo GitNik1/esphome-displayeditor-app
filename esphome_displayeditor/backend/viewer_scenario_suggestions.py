@@ -64,6 +64,28 @@ def _is_action_list(value: Any) -> bool:
             and all(isinstance(item, dict) and len(item) == 1 for item in value))
 
 
+def _as_actions(value: Any) -> list | None:
+    """An action list, or a single action written without the list
+    (``then: {lvgl.widget.show: x}``, which ESPHome accepts too)."""
+    if _is_action_list(value):
+        return value
+    if isinstance(value, dict) and len(value) == 1 and "." in str(next(iter(value))):
+        return [value]
+    return None
+
+
+def _is_automation_list(value: Any) -> bool:
+    """A trigger written as a list of automations, each with its own ``then:``."""
+    return (isinstance(value, list) and bool(value)
+            and all(isinstance(item, dict) and "then" in item
+                    and isinstance(item["then"], (list, dict)) for item in value))
+
+
+def _short(value: Any) -> str:
+    text = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
+    return text if len(text) <= 40 else text[:37] + "..."
+
+
 def _label(entry: dict[str, Any], fallback: str) -> str:
     for key in ("id", "name", "interval", "platform"):
         if isinstance(entry.get(key), (str, int)) and str(entry[key]):
@@ -81,8 +103,21 @@ def _candidates(document: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
             return
         label = _label(entry, fallback)
         for key, value in entry.items():
-            if _is_action_list(value) and (key.startswith("on_") or key.endswith("_action")
-                                           or key == "then"):
+            if key.startswith("on_") and _is_automation_list(value):
+                # `on_press: [{then: ...}, {min_length: 1s, then: ...}]` - several
+                # automations on one trigger; each one is its own scenario.
+                for index, automation in enumerate(value, start=1):
+                    actions = automation["then"]
+                    params = ", ".join(f"{k}: {_short(v)}" for k, v in automation.items() if k != "then")
+                    suffix = f" ({params})" if params else (f" #{index}" if len(value) > 1 else "")
+                    automations.append({
+                        "name": f"{domain} {label}: {key}{suffix}",
+                        "on": None,
+                        "actions": actions if isinstance(actions, list) else [actions],
+                    })
+            elif _as_actions(value) is not None and (
+                    key.startswith("on_") or key.endswith("_action") or key == "then"):
+                value = _as_actions(value)
                 trigger = None
                 if domain == "switch" and key in {"turn_on_action", "turn_off_action"} and "id" in entry:
                     trigger = {"switch.turn_on" if key == "turn_on_action" else "switch.turn_off": entry["id"]}

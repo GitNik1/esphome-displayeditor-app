@@ -47,7 +47,7 @@ def test_an_empty_text_means_no_scenarios() -> None:
     ("- actions: [{lvgl.page.next: {}}]", "needs a 'name:'"),
     ("- name: x\n  actions: 5", "must be a list"),
     ("- name: x\n  actions: [{a: 1, b: 2}]", "action 1"),
-    ("- name: [unclosed", "Not valid YAML"),
+    ("- name: [unclosed", "not valid YAML"),
 ])
 def test_malformed_scenarios_name_the_problem(text: str, message: str) -> None:
     with pytest.raises(LvglImportError, match=message):

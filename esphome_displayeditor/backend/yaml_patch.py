@@ -68,8 +68,8 @@ class _IndentedSequenceDumper(ESPHomeDumper):
     """Writes ``key:\n  - item`` instead of PyYAML's ``key:\n- item``, the
     style ESPHome's own documentation (and most hand-written configs) use."""
 
-    def increase_indentation(self, flow=False, indentless=False):
-        return super().increase_indentation(flow, False)
+    def increase_indent(self, flow=False, indentless=False):
+        return super().increase_indent(flow, False)
 
 
 def _dumpable(value: Any) -> Any:
@@ -210,7 +210,8 @@ class _Patcher:
             raise _Unpatchable("duplicate or merged keys")
         entries = list(zip(old, node.value))
         column = entries[0][1][0].start_mark.column
-        for key, (key_node, value_node) in entries:
+        skip = self._delete_list_entry_leader(entries, new, column)
+        for key, (key_node, value_node) in entries[skip:]:
             start = key_node.start_mark.line
             last = self.last_line(value_node)
             if key not in new:
@@ -224,6 +225,36 @@ class _Patcher:
         if added:
             after = self.last_line(entries[-1][1][1]) + 1
             self.insert(after, column, self.dump({key: raw[key] for key in added}))
+
+    def _delete_list_entry_leader(self, entries: list, new: dict, column: int) -> int:
+        """Delete the leading keys of a ``- key: ...`` list entry.
+
+        Their first line carries the entry's dash, so the dash moves to the
+        first key that stays: ``- file: x`` / ``id: f`` becomes ``- id: f``.
+        Comment lines between the deleted keys are kept above the entry.
+        Returns how many leading entries were handled here.
+        """
+        first_key = entries[0][1][0]
+        prefix = self.lines[first_key.start_mark.line][:column]
+        if not prefix.strip() or entries[0][0] in new:
+            return 0
+        kept = next((i for i, (key, _nodes) in enumerate(entries) if key in new), None)
+        if kept is None:
+            raise _Unpatchable("every key of a list entry deleted")
+        keep_line = entries[kept][1][0].start_mark.line
+        deleted = [(key_node.start_mark.line, self.last_line(value_node))
+                   for _key, (key_node, value_node) in entries[:kept]]
+        comments = [
+            self.lines[index] for index in range(first_key.start_mark.line, keep_line)
+            if self.lines[index].strip().startswith("#")
+            and not any(start <= index <= end for start, end in deleted)
+        ]
+        moved = prefix + self.lines[keep_line][column:]
+        # The kept key's own line is rewritten here: if that key changes
+        # too, its edit overlaps this one and the block falls back whole.
+        self.edits.append((first_key.start_mark.line, keep_line + 1, [*comments, moved],
+                           len(self.edits)))
+        return kept
 
     def sequence(self, node: yaml.SequenceNode, old: list, new: list, raw: list) -> bool:
         used: set[int] = set()
@@ -308,7 +339,8 @@ class _Patcher:
         if nested_below is not None and node.start_mark.line <= nested_below:
             return False
         if isinstance(node, yaml.MappingNode) and isinstance(old, dict) and isinstance(new, dict):
-            if not new:
+            # Nothing in common: rewriting this one entry beats patching it.
+            if not new or not set(old) & set(new):
                 return False
             self.mapping(node, old, new, raw)
             return True

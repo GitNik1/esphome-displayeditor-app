@@ -117,3 +117,57 @@ test("trigger payloads match by value, id or input", () => {
   assert.equal(triggerPayloadMatches("NEXT", "STOP"), false);
   assert.equal(describeCondition({ "switch.is_on": "x" }), "switch.is_on: x");
 });
+
+test("independent state machines keep separate states", () => {
+  const sim = new ViewerSimulation();
+  sim.setScenarios([
+    { name: "IDLE", actions: [] }, { name: "RUN", actions: [] },
+    { name: "DAY", actions: [] }, { name: "NIGHT", actions: [] },
+    { name: "go", actions: [], on: { name: "state_machine.transition", payload: "GO" },
+      transitions: { IDLE: "RUN", RUN: "IDLE" } },
+    { name: "light", actions: [], on: { name: "state_machine.transition", payload: "LIGHT" },
+      transitions: { DAY: "NIGHT", NIGHT: "DAY" }, initial: "NIGHT" },
+  ]);
+  const go = sim.triggered("state_machine.transition", "GO").plays[0].scenario;
+  sim.played(go);
+  const light = sim.triggered("state_machine.transition", "LIGHT").plays[0].scenario;
+  sim.played(light);
+
+  assert.equal(go.name, "RUN");
+  assert.equal(light.name, "DAY");  // from its own initial NIGHT, untouched by GO
+  assert.equal(sim.triggered("state_machine.transition", "GO").plays[0].scenario.name, "IDLE");
+});
+
+test("a toggle plays the switch's action for the state it ends in", () => {
+  const sim = new ViewerSimulation();
+  sim.setScenarios([
+    { name: "an", actions: [], on: { name: "switch.turn_on", payload: "relay" } },
+    { name: "aus", actions: [], on: { name: "switch.turn_off", payload: "relay" } },
+  ]);
+  assert.deepEqual(sim.triggered("switch.toggle", "relay").plays.map((p) => p.scenario.name), ["an"]);
+  assert.deepEqual(sim.triggered("switch.toggle", "relay").plays.map((p) => p.scenario.name), ["aus"]);
+});
+
+test("an empty condition is asked about, not a crash", () => {
+  const sim = new ViewerSimulation();
+  const answer = sim.resolveCondition({});
+  assert.equal(answer.known, false);
+  assert.equal(describeCondition({}), "{}");
+});
+
+test("a snapshot undoes switch and machine moves, but keeps answers", () => {
+  const sim = new ViewerSimulation();
+  sim.setScenarios([
+    { name: "A", actions: [] }, { name: "B", actions: [] },
+    { name: "next", actions: [], on: { name: "state_machine.transition", payload: "N" }, transitions: { A: "B" } },
+  ]);
+  const before = sim.snapshot();
+  sim.triggered("switch.toggle", "relay");
+  sim.played(/** @type {any} */ ({ name: "B" }));
+  sim.answer("k", true);
+  sim.restore(before);
+
+  assert.equal(sim.resolveCondition({ "switch.is_on": "relay" }).known, false);
+  assert.equal(sim.state, "A");
+  assert.equal(sim.answers.get("k"), true);
+});

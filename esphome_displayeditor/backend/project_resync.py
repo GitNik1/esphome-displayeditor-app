@@ -22,6 +22,8 @@ from typing import Any
 
 import yaml
 
+from .viewer_scenarios import normalise_viewer_scenarios
+
 #: Adoptable groups, in the order the dialog shows them. Each one is
 #: independent: the user ticks what to take over and leaves the rest alone.
 RESYNC_GROUPS = ("entities", "resources", "layout")
@@ -46,6 +48,11 @@ GROUP_KEYS: dict[str, tuple[str, ...]] = {
 #: Per list, so one wildly different config cannot inflate the response.
 MAX_ITEMS_PER_LIST = 60
 
+#: The Viewer's scenario suggestions are read from the same part of the config
+#: as the entities - the automations outside lvgl: - so they travel with that
+#: group. Only the suggestions: the user's own scenarios are designer-owned.
+SUGGESTIONS_LABEL = "viewer_scenarios.suggestions"
+
 
 # --- source line numbers ----------------------------------------------------
 
@@ -58,30 +65,41 @@ def source_lines(text: str) -> tuple[dict[str, int], dict[str, int]]:
     """
     try:
         root = yaml.compose(text, Loader=yaml.SafeLoader)
-    except yaml.YAMLError:
-        # A config that no longer parses is reported by the import itself; the
-        # line index simply has nothing to offer.
+    except (yaml.YAMLError, RecursionError):
+        # A config that no longer parses - or nests deeper than the parser can
+        # recurse - is reported by the import itself; the line index simply
+        # has nothing to offer.
         return {}, {}
     paths: dict[str, int] = {}
     ids: dict[str, int] = {}
 
-    def walk(node: Any, path: str) -> None:
+    # Depth-first in document order, but iterative and each node expanded only
+    # once. An alias *is* its anchor's node: its own path still gets the
+    # anchor's line, but descending into it again would only repeat that
+    # subtree under a second path - exponentially often for a YAML alias bomb
+    # - and recursion would hit Python's limit on a deeply nested file.
+    seen: set[int] = set()
+    stack: list[tuple[Any, str]] = [(root, "")]
+    while stack:
+        node, path = stack.pop()
         if node is None:
-            return
+            continue
         line = node.start_mark.line + 1
         if path:
             paths.setdefault(path, line)
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        children: list[tuple[Any, str]] = []
         if isinstance(node, yaml.MappingNode):
             for key_node, value_node in node.value:
                 key = str(getattr(key_node, "value", ""))
                 if key == "id" and isinstance(value_node, yaml.ScalarNode):
                     ids.setdefault(str(value_node.value), line)
-                walk(value_node, f"{path}.{key}" if path else key)
+                children.append((value_node, f"{path}.{key}" if path else key))
         elif isinstance(node, yaml.SequenceNode):
-            for index, item in enumerate(node.value):
-                walk(item, f"{path}[{index}]")
-
-    walk(root, "")
+            children = [(item, f"{path}[{index}]") for index, item in enumerate(node.value)]
+        stack.extend(reversed(children))
     return paths, ids
 
 
@@ -211,6 +229,16 @@ def _diff_maps(before: dict[Any, Any], after: dict[Any, Any], label,
     return changes
 
 
+def _suggestions(payload: dict[str, Any]) -> str:
+    return normalise_viewer_scenarios(payload.get("viewer_scenarios"))["suggestions"]
+
+
+def _suggestion_changes(stored: dict, imported: dict) -> list[dict]:
+    if _suggestions(stored) == _suggestions(imported):
+        return []
+    return [{"kind": "changed", "label": SUGGESTIONS_LABEL, "line": None}]
+
+
 def _entity_changes(stored: dict, imported: dict, ids: dict[str, int]) -> list[dict]:
     def keyed(payload: dict) -> dict[tuple[str, str], dict]:
         pairs = ((_entity_key(entity), entity)
@@ -258,7 +286,10 @@ def _group_plan(key: str, stored: dict, imported: dict, paths: dict[str, int],
     belongs to exactly one group, so the union over the ticked groups is exact.
     """
     if key == "entities":
-        changes = _entity_changes(stored, imported, ids)
+        changes = [
+            *_entity_changes(stored, imported, ids),
+            *_suggestion_changes(stored, imported),
+        ]
     elif key == "resources":
         changes = [
             *_list_changes(stored, imported, "colors", "color", ids),
@@ -344,6 +375,10 @@ def merge(stored: dict[str, Any], imported: dict[str, Any],
                 merged[key] = copy.deepcopy(imported[key])
             else:
                 merged.pop(key, None)
+    if "entities" in groups:
+        scenarios = normalise_viewer_scenarios(merged.get("viewer_scenarios"))
+        scenarios["suggestions"] = _suggestions(imported)
+        merged["viewer_scenarios"] = scenarios
     merged["import_source"] = dict(
         imported.get("import_source") or stored.get("import_source") or {}
     )

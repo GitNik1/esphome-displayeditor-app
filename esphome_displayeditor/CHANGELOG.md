@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.401.0
+
 - Opening a stored project now re-reads the ESPHome configuration it was
   imported from and reports what changed since - grouped into entities,
   resources and layout, each with the line numbers it came from, and each with
@@ -25,6 +27,14 @@
   `display.yaml: ccc → ddd`, and the graph in the historical Viewer flags the
   versions that carried a YAML change in, so one timeline shows both the
   project's versions and the configuration moving underneath them.
+- The Viewer's scenario suggestions follow the source like the entities do:
+  a change shows up in that group as `viewer_scenarios.suggestions`, and
+  adopting it refreshes only the suggestions - scenarios the user wrote are
+  never touched.
+- The source line index walks each YAML node once and iteratively, so an
+  alias bomb cannot stall it and a deeply nested file cannot crash it; the
+  import refuses documents nested more than 200 levels deep with a reason
+  instead of failing with HTTP 500.
 - **Import zurücknehmen** on such a version restores the state it replaced —
   an ordinary restore underneath, so it is itself undoable. Offered only while
   that version is still in the history.
@@ -91,6 +101,46 @@
   is flagged, and `displays:` is left out rather than naming an id the file
   cannot confirm - unless the file's own `lvgl:` already names it.
 - Blocks appended to a file with CRLF line endings now use CRLF as well.
+- Fixed: a widget property computed in C++ (`text: !lambda 'return ...'`,
+  `text_color: !lambda ...`) lost its tag on save, so the device printed the
+  code. Such keys are now preserved verbatim (not editable) and shown as
+  `!lambda ...` under the preserved keys.
+- Fixed: `lvgl: ` with a trailing blank or comment, or an inline value, was
+  not recognised, and the merge appended a second `lvgl:` key that ESPHome
+  rejects. `lvgl: !include ...` or an anchor/alias is now refused with a
+  reason instead of being overwritten.
+- YAML alias bombs ("billion laughs") are refused in milliseconds on every
+  path that parses user YAML (import, custom bindings, scenarios); before, a
+  466-byte document hung the request. Ordinary anchors keep working.
+- Saving an unchanged import is now byte for byte identical: ESPHome
+  defaults the source left out (`color_depth: 16`, `page_wrap: true`, an empty
+  `widgets:`) are no longer added, and a missing final newline stays missing.
+- A device binding no longer re-dumps its whole domain (`switch:`,
+  `sensor:`, ...): only the bound entity gains its trigger lines, so comments
+  and formatting elsewhere in that block survive.
+- Fixed: lists the patcher inserts are indented the way the file indents its
+  lists (`key:` / `  - item`); the dumper's override had the wrong method
+  name and never took effect.
+- The structural patcher also handles deleting the first key of a
+  `- key: ...` list entry (the dash moves to the next key) and replaces an
+  entry whose keys all change as a whole, so far fewer saves fall back to
+  rewriting a block without its comments.
+- Viewer: scenarios are hidden in the version-history viewer (like runtime
+  bindings); independent state machines keep separate states; a run that
+  stops at a question is replayed from its starting state, so a toggle does
+  not flip twice; `switch.toggle` plays the matching turn_on/turn_off
+  scenario.
+- The custom-action editor (widget "Custom-Aktion" and device Custom-YAML
+  bindings) follows the frontend architecture again, which makes the
+  architecture check - and with it CI - pass: the YAML spelling is pure
+  (`actions/custom-yaml.js`), the DOM lives in `actions/view.js` with an
+  injected `document`, the preview timer in `services/debounce.js`, and
+  `controllers/custom-action-controller.js` wires them to the validation API.
+  Behaviour is unchanged, except that resetting the editor now drops a
+  preview still waiting.
+- Scenario suggestions also cover triggers written as automation lists
+  (`on_press: [{then: ...}, {min_length: 1s, then: ...}]`, `on_multi_click`)
+  and a single action under `then:`.
 
 ## 0.400.0
 

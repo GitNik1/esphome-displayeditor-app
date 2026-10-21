@@ -27,10 +27,9 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-import yaml
 
 from .designer_core.yamlexport import HexColor
-from .designer_core.yamlimport import LvglImportError, _ImportLoader
+from .designer_core.yamlimport import LvglImportError, load_yaml_bounded
 from .entity_bindings import _portable_yaml_value
 
 MAX_SCENARIOS = 50
@@ -118,10 +117,7 @@ def parse_viewer_scenarios(text: str) -> list[dict[str, Any]]:
     """
     if not text.strip():
         return []
-    try:
-        document = yaml.load(text, Loader=_ImportLoader)
-    except yaml.YAMLError as exc:
-        raise LvglImportError(f"Not valid YAML: {exc}") from exc
+    document = load_yaml_bounded(text)
     if document is None:  # only comments
         return []
     if not isinstance(document, list):

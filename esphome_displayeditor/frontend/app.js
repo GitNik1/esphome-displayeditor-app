@@ -37,7 +37,8 @@ import {
 } from "./actions/model.js";
 import { describeWidgetAction as describeAction } from "./actions/describe.js";
 import { buildWidgetAction, wrapValueCondition } from "./actions/build.js";
-import { createCustomActionEditor } from "./actions/custom-editor.js";
+import { createCustomActionView } from "./actions/view.js";
+import { createCustomActionController } from "./controllers/custom-action-controller.js";
 import { buildFlowAction } from "./actions/flow.js";
 import { nearestSegment } from "./glowline/geometry.js";
 import { drawDocument, hasFlow } from "./glowline/renderer.js";
@@ -188,11 +189,11 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 // Shared "name + parameters + live preview + raw YAML fallback" editors -
 // one for the widget Actions builder's "Custom-Aktion", one for the device
 // Custom-YAML binding editor. Both wrap the same backend validation endpoint
-// (see frontend/actions/custom-editor.js). Created once DOM elements exist,
-// in bindDesigner().
-/** @type {ReturnType<typeof createCustomActionEditor>} */
+// (see frontend/controllers/custom-action-controller.js). Created once DOM
+// elements exist, in bindDesigner().
+/** @type {ReturnType<typeof createCustomActionController>} */
 let widgetActionCustomEditor;
-/** @type {ReturnType<typeof createCustomActionEditor>} */
+/** @type {ReturnType<typeof createCustomActionController>} */
 let deviceBindingCustomEditor;
 
 // Mirrors backend/designer_core/model.py's STATES_KEY - both sides need
@@ -1142,6 +1143,7 @@ async function openLiveViewer() {
 // --- Viewer scenarios: hand-written device states (backend/viewer_scenarios.py)
 
 function renderViewerScenarios() {
+  $("#viewer-scenarios").classList.remove("hidden");
   const { scenarios, suggestions } = viewerScenarioSet(state.project.viewer_scenarios);
   viewer.setScenarios(scenarios);
   renderViewerScenarioButtons(
@@ -1408,7 +1410,7 @@ function bindDesigner() {
   $("#widget-action-target").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-flow-stroke").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
   $("#widget-action-indicator-trigger-value").addEventListener("change", () => renderWidgetActionBuilder(state.selectedWidget));
-  widgetActionCustomEditor = createCustomActionEditor({
+  widgetActionCustomEditor = createCustomActionController(createCustomActionView(document, {
     nameField: $("#widget-action-custom-name-field"),
     nameInput: $("#widget-action-custom-name"),
     paramsContainer: $("#widget-action-custom-params"),
@@ -1418,7 +1420,7 @@ function bindDesigner() {
     rawTextarea: $("#widget-action-custom-yaml"),
     preview: $("#widget-action-custom-preview"),
     error: $("#widget-action-custom-error"),
-  }, t, api);
+  }, t), api);
   $("#widget-action-custom-name").addEventListener("input", () => widgetActionCustomEditor.schedulePreview());
   $("#widget-action-custom-yaml").addEventListener("input", () => widgetActionCustomEditor.schedulePreview());
   $("#widget-action-custom-add-param").addEventListener("click", () => widgetActionCustomEditor.addParamRow());
@@ -1426,7 +1428,7 @@ function bindDesigner() {
     widgetActionCustomEditor.setRawMode($("#widget-action-custom-raw-toggle").checked);
     widgetActionCustomEditor.schedulePreview();
   });
-  deviceBindingCustomEditor = createCustomActionEditor({
+  deviceBindingCustomEditor = createCustomActionController(createCustomActionView(document, {
     nameField: $("#device-binding-custom-name-field"),
     nameInput: $("#device-binding-custom-name"),
     paramsContainer: $("#device-binding-custom-params"),
@@ -1436,7 +1438,7 @@ function bindDesigner() {
     rawTextarea: $("#device-binding-custom-yaml"),
     preview: $("#device-binding-custom-preview"),
     error: $("#device-binding-custom-error"),
-  }, t, api);
+  }, t), api);
   $("#device-binding-custom-name").addEventListener("input", () => deviceBindingCustomEditor.schedulePreview());
   $("#device-binding-custom-yaml").addEventListener("input", () => deviceBindingCustomEditor.schedulePreview());
   $("#device-binding-custom-add-param").addEventListener("click", () => deviceBindingCustomEditor.addParamRow());
@@ -2349,6 +2351,11 @@ function openHistoricProject() {
   const { zoom, rotation, fitMode } = viewer;
   const showingCompare = viewerHistory.side === "compare";
   const key = String(showingCompare ? viewerHistory.compareTo : viewerHistory.inspectedId);
+  // Like runtime bindings below: today's scenarios on a past layout would
+  // show a state that never existed.
+  viewer.setScenarios([]);
+  closeViewerScenarioEditor();
+  $("#viewer-scenarios").classList.add("hidden");
   viewer.open(viewerHistory.cache[key], {
     name: t("viewer.history.versionTitle", {
       name: viewerHistory.name,
@@ -8526,7 +8533,15 @@ function renderExtraKeys(/** @type {any} */ widget) {
   const keys = Object.keys(widget.extra || {});
   section.classList.toggle("hidden", keys.length === 0);
   if (!keys.length) return;
-  $("#extra-keys").textContent = JSON.stringify(widget.extra, null, 2);
+  // Tagged values travel as {__esphome_lambda__} / {__esphome_tag__, value};
+  // show them the way the YAML spells them.
+  $("#extra-keys").textContent = JSON.stringify(widget.extra, (_key, value) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (typeof value.__esphome_lambda__ === "string") return `!lambda ${value.__esphome_lambda__}`;
+      if (typeof value.__esphome_tag__ === "string") return `${value.__esphome_tag__} ${value.value}`;
+    }
+    return value;
+  }, 2);
 }
 
 const ADD_IMAGE_OPTION = "__add_image__";

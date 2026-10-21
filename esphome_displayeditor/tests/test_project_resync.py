@@ -435,3 +435,129 @@ def test_applying_needs_write_access(tmp_path: Path) -> None:
         headers=headers,
         json={"groups": ["entities"], "expected_revision": stored["revision"]},
     ).status_code == 403
+
+
+# --- scenario suggestions ----------------------------------------------------------
+
+#: A template switch whose action changes the display: the import turns it
+#: into a Viewer scenario suggestion.
+WITH_DISPLAY_SWITCH = BASE_YAML.replace(
+    "display:\n  - platform: ili9xxx",
+    "switch:\n  - platform: template\n    id: board_detected\n    turn_on_action:\n"
+    "      - lvgl.widget.show: title\n"
+    "display:\n  - platform: ili9xxx",
+)
+
+OWN_SCENARIOS = {
+    "yaml": "# mein eigenes Szenario\n- name: Mein Szenario\n  actions:\n"
+            "    - lvgl.label.update: {id: title, text: Hallo}\n",
+    "scenarios": [{"name": "Mein Szenario",
+                   "actions": [{"lvgl.label.update": {"id": "title", "text": "Hallo"}}]}],
+    "suggestions": "",
+}
+
+
+def store_own_scenarios(client: TestClient) -> dict:
+    stored = client.get(f"/api/v1/designer/projects/{NAME}", headers=ADMIN).json()
+    project = stored["project"]
+    project["viewer_scenarios"] = OWN_SCENARIOS
+    saved = client.put(
+        f"/api/v1/designer/projects/{NAME}",
+        headers=ADMIN,
+        json={"project": project, "expected_revision": stored["revision"]},
+    )
+    assert saved.status_code == 200, saved.text
+    return saved.json()
+
+
+def test_changed_scenario_suggestions_are_an_entities_change(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    import_and_store(client)
+    write_config(client, tmp_path, WITH_DISPLAY_SWITCH)
+
+    entities = group(source_changes(client), "entities")
+
+    assert {"kind": "changed", "label": "viewer_scenarios.suggestions", "line": None} in (
+        entities["changes"])
+    assert entities["removes"] == 0
+
+
+def test_adopting_entities_refreshes_suggestions_and_keeps_own_scenarios(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    import_and_store(client)
+    stored = store_own_scenarios(client)
+    write_config(client, tmp_path, WITH_DISPLAY_SWITCH)
+
+    applied = client.post(
+        f"/api/v1/designer/projects/{NAME}/source/apply",
+        headers=ADMIN,
+        json={"groups": ["entities"], "expected_revision": stored["revision"]},
+    )
+
+    assert applied.status_code == 200, applied.text
+    scenarios = applied.json()["project"]["viewer_scenarios"]
+    assert "switch board_detected: turn_on_action" in scenarios["suggestions"]
+    assert scenarios["yaml"] == OWN_SCENARIOS["yaml"]
+    assert scenarios["scenarios"] == OWN_SCENARIOS["scenarios"]
+
+
+def test_adopting_only_the_layout_leaves_the_suggestions_alone(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    import_and_store(client)
+    stored = store_own_scenarios(client)
+    write_config(client, tmp_path, WITH_DISPLAY_SWITCH.replace("text: Hallo", "text: Neu"))
+
+    applied = client.post(
+        f"/api/v1/designer/projects/{NAME}/source/apply",
+        headers=ADMIN,
+        json={"groups": ["layout"], "expected_revision": stored["revision"]},
+    )
+
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["project"]["viewer_scenarios"] == OWN_SCENARIOS
+
+
+# --- hostile or broken source files ------------------------------------------------
+
+def _alias_bomb(levels: int = 7) -> str:
+    lines = ['a: &a ["x","x","x","x","x","x","x","x","x"]']
+    previous = "a"
+    for name in "bcdefghij"[:levels]:
+        lines.append(f"{name}: &{name} [" + ",".join([f"*{previous}"] * 9) + "]")
+        previous = name
+    return "\n".join(lines) + "\n"
+
+
+def test_source_lines_walk_each_node_once() -> None:
+    from backend.project_resync import source_lines
+
+    # 9**7 paths if aliases were followed; each node is expanded once instead.
+    paths, _ids = source_lines(_alias_bomb())
+
+    assert len(paths) < 100
+    # An alias's own path still points at its anchor.
+    anchored, _ = source_lines("base: &b {x: 1}\nitems:\n  - *b\n")
+    assert anchored["items[0]"] == 1
+
+
+def test_source_lines_survive_nesting_deeper_than_the_parser() -> None:
+    from backend.project_resync import source_lines
+
+    assert source_lines("x: " + "[" * 3000 + "]" * 3000 + "\n") == ({}, {})
+
+
+def test_a_source_that_cannot_be_read_safely_is_reported_not_a_500(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    import_and_store(client)
+
+    for broken in (BASE_YAML + "bomb:\n" + "".join("  " + line + "\n" for line in
+                                                 _alias_bomb().splitlines()),
+                   BASE_YAML + "deep: " + "[" * 3000 + "]" * 3000 + "\n"):
+        write_config(client, tmp_path, broken)
+        plan = source_changes(client)
+        assert plan["available"] is False
+        assert plan["reason"] == "import_failed"

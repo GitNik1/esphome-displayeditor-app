@@ -79,13 +79,17 @@ def _comments(text: str) -> list[str]:
 
 # --- unchanged save -----------------------------------------------------------
 
-def test_saving_an_unchanged_import_keeps_every_original_line(service, payload, source) -> None:
-    merged = _save(service, payload, source)
+def test_saving_an_unchanged_import_is_byte_identical(service, payload, source) -> None:
+    # No displays: the source does not define, no ESPHome defaults restated.
+    assert _save(service, payload, source) == source
 
-    # Nothing removed; at most the defaults added - never a display id the
-    # source does not define.
-    assert _changed(source, merged) == ([], [])
-    assert all(line in merged.splitlines() for line in DEFAULT_LINES)
+
+def test_a_new_lvgl_block_still_states_its_defaults() -> None:
+    from backend.designer_core.model import Project
+
+    merged = merge_project_into_yaml(Project(), "esphome:\n  name: x\n").content
+
+    assert "  color_depth: 16\n" in merged
 
 
 def test_commented_out_widgets_survive_a_save(service, payload, source) -> None:
@@ -199,7 +203,10 @@ def test_a_new_widget_uses_the_files_sequence_indentation(service, payload, sour
     merged = _save(service, payload, source)
 
     assert "        - button:\n            id: extra_button\n" in merged
-    assert "            widgets:\n              - label:\n" in merged
+    # The new widget's own child list - the file's other buttons spell this
+    # pattern too, so the child's id pins it to the inserted lines.
+    assert ("            widgets:\n              - label:\n"
+            "                  id: extra_button_label\n") in merged
     assert _comments(merged) == _comments(source)
 
 
@@ -216,8 +223,18 @@ def test_reordering_moves_the_original_text(service, payload, source) -> None:
 
 # --- fallback -----------------------------------------------------------------
 
+def test_dropping_the_key_that_carries_the_dash_moves_the_dash() -> None:
+    lines = ("lvgl:\n  pages:\n    - skip: true\n      # keep me\n      bg_opa: 50%\n"
+             "      id: p1\n").splitlines(keepends=True)
+
+    patched = patch_top_level_block(lines, "lvgl", {"pages": [{"bg_opa": "50%", "id": "p1"}]})
+
+    assert "".join(patched) == "lvgl:\n  pages:\n      # keep me\n    - bg_opa: 50%\n      id: p1\n"
+
+
 def test_an_unpatchable_edit_falls_back_to_a_full_rewrite() -> None:
-    # Dropping the first key of a `- key:` item would take its dash along.
+    # The dash moves onto bg_opa's line, which itself changes too: two edits
+    # of one line cannot be combined safely.
     lines = "lvgl:\n  pages:\n    - skip: true\n      bg_opa: 50%\n".splitlines(keepends=True)
 
-    assert patch_top_level_block(lines, "lvgl", {"pages": [{"bg_opa": "50%"}]}) is None
+    assert patch_top_level_block(lines, "lvgl", {"pages": [{"bg_opa": "60%"}]}) is None
