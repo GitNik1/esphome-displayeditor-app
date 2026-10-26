@@ -143,6 +143,7 @@ import {
 import {
   applyBuilderEvent,
   builderAvailability,
+  builderBlockedReason,
   builderRequest,
   replaceBuilderJobs,
   sortedBuilderJobs,
@@ -10117,19 +10118,21 @@ function updateBuilderButtons() {
   const available = builderAvailability(state);
   const hasConfig = Boolean(state.activeConfig);
   const published = hasConfig && !state.hasDraft;
+  const blocked = builderBlockedReason(state.system?.builder);
+  const unavailable = blocked ? t(blocked.key, blocked.values) : t("configs.hint.noPermission");
 
   const validate = $("#validate-esphome");
   validate.disabled = !available.validate;
   validate.title = !hasConfig ? t("configs.hint.noConfig")
     : !published ? t("configs.hint.publishFirst")
-    : !state.capabilities["configuration.validate_esphome"] ? t("configs.hint.noPermission")
+    : !state.capabilities["configuration.validate_esphome"] ? unavailable
     : "";
 
   const compile = $("#compile-config");
   compile.disabled = !available.compile;
   compile.title = !hasConfig ? t("configs.hint.noConfig")
     : !published ? t("configs.hint.publishFirst")
-    : !state.capabilities["firmware.compile"] ? t("configs.hint.noPermission")
+    : !state.capabilities["firmware.compile"] ? unavailable
     : state.builderRequestsRunning.has("compile") ? t("configs.hint.alreadyRunning")
     : "";
 
@@ -10137,7 +10140,7 @@ function updateBuilderButtons() {
   install.disabled = !available.install;
   install.title = !hasConfig ? t("configs.hint.noConfig")
     : !published ? t("configs.hint.publishFirst")
-    : !state.capabilities["firmware.upload"] ? t("configs.hint.noPermission")
+    : !state.capabilities["firmware.upload"] ? unavailable
     : state.builderRequestsRunning.has("install") ? t("configs.hint.alreadyRunning")
     : "";
 }

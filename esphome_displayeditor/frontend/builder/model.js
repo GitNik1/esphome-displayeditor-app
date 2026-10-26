@@ -19,6 +19,23 @@ export function builderAvailability(state) {
   };
 }
 
+/**
+ * Why builder actions are unavailable when it is not the user's role: an
+ * i18n key with its values, or null when the builder itself is fine. The
+ * disabled buttons used to say "no permission" for an unsupported ESPHome
+ * version too.
+ * @param {{state?: string, compatible?: boolean, reason?: string, esphome_version?: string | null} | null | undefined} builder
+ * @returns {{key: string, values?: Record<string, string>} | null}
+ */
+export function builderBlockedReason(builder) {
+  if (!builder || builder.compatible) return null;
+  if (builder.reason === "builder_disabled") return { key: "configs.hint.builderDisabled" };
+  if (builder.reason === "unsupported_esphome_version") {
+    return { key: "configs.hint.builderUnsupported", values: { version: builder.esphome_version || "?" } };
+  }
+  return { key: "configs.hint.builderUnavailable", values: { reason: builder.reason || builder.state || "unknown" } };
+}
+
 /** @param {RequestState} state @param {string} operation
  * @param {() => string} createKey */
 export function builderRequest(state, operation, createKey) {

@@ -68,6 +68,14 @@
   against one shared test fixture. A dropdown/roller follows a `select`
   entity by its option *text* (as Home Assistant and ESPHome report it);
   numeric states still work as an index.
+- **The ESPHome Device Builder works with ESPHome 2026.9 and 2026.10.** The
+  compatibility check accepted only 2026.6 to 2026.8, so "ESPHome prüfen",
+  "Kompilieren" and "OTA installieren" (and the matching MCP tools) were
+  unavailable with current ESPHome. It now accepts 2026.6 to 2026.10 and
+  still refuses every other version.
+- When those buttons are unavailable because of the builder - not connected,
+  not reachable, an unsupported ESPHome version - their tooltip now says so,
+  instead of "Keine Berechtigung für diese Aktion".
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.
