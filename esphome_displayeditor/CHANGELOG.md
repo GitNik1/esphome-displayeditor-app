@@ -97,6 +97,14 @@
   live-update connections and the device connections stalled until they
   finished. These requests now run in a worker thread; publishing moves its
   file work off the loop as well.
+- **"Speichern" in the toolbar.** Saving into the app storage was only
+  reachable in the collapsed "Projektverwaltung" section; the toolbar now
+  has a Speichern button (Ctrl/Cmd+S) next to Download.
+- After a reload the editor opens the project last opened or saved in this
+  browser again instead of an empty "Lokales Projekt" (a restored autosave
+  still takes precedence; "Neu" forgets it).
+- The flow-preview tooltip no longer promises an F5 shortcut - F5 reloads
+  the page.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.

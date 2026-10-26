@@ -450,6 +450,7 @@ async function initialize() {
       $("#refresh-configs").disabled = true;
     }
     await Promise.all(initialLoads);
+    await reopenLastProject();
     connectDeviceEvents();
     if (state.capabilities["firmware.compile"]) {
       await loadBuilderJobs();
@@ -1336,6 +1337,7 @@ function bindDesigner() {
   $("#open-project").addEventListener("click", () => $("#project-file").click());
   $("#project-file").addEventListener("change", openDesignerProject);
   $("#save-project").addEventListener("click", downloadDesignerProject);
+  $("#toolbar-save").addEventListener("click", saveFromShortcut);
   $("#export-project").addEventListener("click", exportDesignerYaml);
   $("#undo").addEventListener("click", undoDesignerChange);
   $("#redo").addEventListener("click", redoDesignerChange);
@@ -1757,6 +1759,7 @@ function newDesignerProject() {
   state.project = freshProject();
   state.activeSurface = "root";
   state.projectName = null;
+  rememberLastProject(null);
   clearViewerBindings();
   state.projectRevision = null;
   markProjectClean();
@@ -1991,11 +1994,51 @@ function updateServerProjectButtons() {
   $("#delete-server-project").title = canWrite ? "" : writeHint;
   $("#save-server-project").disabled = !canWrite;
   $("#save-server-project").title = writeHint;
+  $("#toolbar-save").disabled = !canWrite;
+  $("#toolbar-save").title = canWrite ? t("toolbar.saveTitle") : writeHint;
   $("#open-revisions").disabled = !selected;
   // Bound to the project in the editor, not to the dropdown: a re-sync adopts
   // into the open document, so offering it for a merely highlighted name would
   // apply the change somewhere the user cannot see it.
   $("#check-source").disabled = !state.projectName;
+}
+
+// After a reload the editor used to start with an empty "Lokales Projekt",
+// even though the work lives in the app storage - the last project opened or
+// saved is opened again (a per-browser convenience, not project data).
+const LAST_PROJECT_KEY = "designer.lastProject.v1";
+
+function rememberLastProject(/** @type {string | null} */ name) {
+  try {
+    if (name) window.localStorage.setItem(LAST_PROJECT_KEY, name);
+    else window.localStorage.removeItem(LAST_PROJECT_KEY);
+  } catch {
+    // Unavailable storage just means no reopening.
+  }
+}
+
+async function reopenLastProject() {
+  // A restored autosave or anything else already in the editor wins.
+  if (state.projectDirty || state.projectName) return;
+  let name = "";
+  try {
+    name = window.localStorage.getItem(LAST_PROJECT_KEY) || "";
+  } catch {
+    return;
+  }
+  const stored = [...$("#server-projects").options].some((/** @type {any} */ option) => option.value === name);
+  if (!name || !stored) return;
+  try {
+    adoptLoadedProject(await projectsController.load(name));
+    await loadViewerBindings(name);
+    $("#server-projects").value = name;
+    updateServerProjectButtons();
+    renderDesigner();
+    toast(t("toast.project.reopened", { name }));
+    await checkSourceChanges(true);
+  } catch {
+    rememberLastProject(null);
+  }
 }
 
 async function loadSelectedServerProject() {
@@ -2024,6 +2067,7 @@ function adoptLoadedProject(result) {
   state.activeSurface = result.project.pages?.[0] ? `page:${result.project.pages[0].id}` : "root";
   state.projectName = result.name;
   state.projectRevision = result.revision;
+  rememberLastProject(result.name);
   markProjectClean();
   state.selectedWidget = null;
   state.selectedStroke = null;
@@ -2061,6 +2105,7 @@ async function storeServerProject(/** @type {string} */ name, /** @type {string 
   const result = await projectsController.save(name, state.project, expectedRevision);
   state.projectName = name;
   state.projectRevision = result.revision;
+  rememberLastProject(name);
   $("#project-name").value = name;
   markProjectClean();
   renderDesignerStatus();

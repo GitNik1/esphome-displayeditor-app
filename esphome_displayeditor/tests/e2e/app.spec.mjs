@@ -91,6 +91,22 @@ test("a restored autosave saves under its own name without a conflict", async ({
   expect(apiControl.saves).toEqual(["sha256:bbb"]);
 });
 
+test("the last opened project is opened again after a reload", async ({ page }) => {
+  await openStoredProject(page);
+  await page.reload();
+  await expect(page.locator("#health")).toHaveClass(/ok/);
+  await expect(page.locator("#project-name")).toHaveValue("display.lvgldesign");
+  await expect(page.locator("#open-revisions")).toBeEnabled();
+});
+
+test("the toolbar save button saves into the app storage", async ({ page }) => {
+  await openStoredProject(page);
+  await page.getByRole("button", { name: /Label/ }).click();
+  await page.locator("#toolbar-save").click();
+  await expect(page.locator("#toast")).toContainText(/saved|gespeichert/);
+  expect(apiControl.saves).toEqual(["sha256:bbb"]);
+});
+
 test("a save conflict can be resolved under a new name", async ({ page }) => {
   await page.locator("#project-name").evaluate((input) => {
     input.closest("details").open = true;
