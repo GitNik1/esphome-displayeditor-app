@@ -18,10 +18,14 @@ function delay(milliseconds) {
 }
 
 /**
- * @param {{fetchImpl?: FetchLike, pathname?: string, wait?: (milliseconds: number) => Promise<unknown>}} [dependencies]
+ * @param {{fetchImpl?: FetchLike, pathname?: string, wait?: (milliseconds: number) => Promise<unknown>,
+ *   describeError?: (code: string | undefined, message: string) => string}} [dependencies]
  * @returns {ApiClient}
  */
-export function createApiClient({ fetchImpl = fetch, pathname = window.location.pathname, wait = delay } = {}) {
+export function createApiClient({
+  fetchImpl = fetch, pathname = window.location.pathname, wait = delay,
+  describeError = (_code, message) => message,
+} = {}) {
   const appBase = pathname.endsWith("/") ? pathname : `${pathname}/`;
   /** @param {string} path @param {RequestInit} options */
   async function send(path, options) {
@@ -47,7 +51,7 @@ export function createApiClient({ fetchImpl = fetch, pathname = window.location.
     if (response.status === 204) return null;
     if (!response.ok) {
       const error = /** @type {Error & {code?: string, details?: unknown}} */ (
-        new Error(body.message || `HTTP ${response.status}`)
+        new Error(describeError(body.error, body.message || `HTTP ${response.status}`))
       );
       error.code = body.error;
       error.details = body.details;

@@ -136,6 +136,13 @@
   a reload.
 - Load, "Entwurf speichern" and "Veröffentlichen" are disabled while their
   request runs, so a double click no longer sends two.
+- **More of the UI follows the language setting.** About twenty texts were
+  hard-coded in German - role hints, the font preview status, meter needle
+  types, "(fehlt)" markers, the Viewer's WASM status and page events, the
+  renderer choice, the colour placeholder. Common backend errors (rate
+  limit, missing permission, conflicts, busy, too large, timeout, invalid
+  YAML, failed merge, ...) are now shown in the UI language instead of the
+  backend's English text; the original details stay available.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.

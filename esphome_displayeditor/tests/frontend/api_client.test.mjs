@@ -84,3 +84,20 @@ test("API client never repeats a rate-limited write, nor waits long", async () =
   assert.equal(calls, 2);
   assert.deepEqual(waits, []);
 });
+
+test("API client lets the UI translate known backend error codes", async () => {
+  const api = createApiClient({
+    pathname: "/",
+    fetchImpl: async () => ({
+      status: 422, ok: false,
+      json: async () => ({ error: "merge_failed", message: "line 3: bad", details: { line: 3 } }),
+    }),
+    describeError: (code, message) => (code === "merge_failed" ? `Zusammenführen: ${message}` : message),
+  });
+  await assert.rejects(api("designer/projects/merge-draft", { method: "POST" }), (error) => {
+    assert.equal(error.message, "Zusammenführen: line 3: bad");
+    assert.equal(error.code, "merge_failed");
+    assert.deepEqual(error.details, { line: 3 });
+    return true;
+  });
+});

@@ -279,7 +279,16 @@ function selectSurface(/** @type {any} */ key) {
   renderDesigner();
 }
 
-const api = createApiClient();
+// Backend messages are English; a known error code is shown in the UI
+// language instead (with the original message where the text needs it).
+const api = createApiClient({
+  pathname: window.location.pathname,
+  describeError: (/** @type {string | undefined} */ code, /** @type {string} */ message) => {
+    const key = `error.${code}`;
+    const text = code ? t(key, { message }) : key;
+    return text === key ? message : text;
+  },
+});
 const projectsController = createProjectsController(api);
 const devicesController = createDevicesController(api);
 const builderController = createBuilderController(api);
@@ -1990,7 +1999,7 @@ async function loadServerProjects() {
 function updateServerProjectButtons() {
   const selected = Boolean($("#server-projects").value);
   const canWrite = Boolean(state.capabilities["designer.project_write"]);
-  const writeHint = canWrite ? "" : "Erfordert mindestens die Rolle \"editor\" (siehe Add-on-Konfiguration: default_role/user_roles).";
+  const writeHint = canWrite ? "" : t("project.hint.needsEditorRole");
   $("#load-server-project").disabled = !selected;
   $("#delete-server-project").disabled = !selected || !canWrite;
   $("#delete-server-project").title = canWrite ? "" : writeHint;
@@ -4937,7 +4946,7 @@ function renderStrokeFrame(/** @type {any} */ doc, /** @type {any} */ rect, /** 
     ctx.putImageData(image, 0, 0);
     canvas.toBlob((blob) => {
       if (blob) resolve(blob);
-      else reject(new Error("PNG-Erzeugung ist fehlgeschlagen."));
+      else reject(new Error(t("glow.bake.pngFailed")));
     }, "image/png");
   });
 }
@@ -5601,7 +5610,7 @@ function eventImageSource(/** @type {any} */ widget, /** @type {any} */ trigger,
 function populateImageChoice(/** @type {any} */ control, /** @type {any} */ value) {
   control.replaceChildren(new Option(t("imgbtn.notSet"), ""));
   imageLibrary().forEach((/** @type {any} */ entry) => control.append(new Option(entry.id, entry.id)));
-  if (value && !imageEntry(value)) control.append(new Option(`${value} (fehlt)`, value));
+  if (value && !imageEntry(value)) control.append(new Option(t("common.missingValue", { value }), value));
   control.value = value || "";
 }
 
@@ -5778,7 +5787,7 @@ function renderWidgetLinks(/** @type {any} */ widget) {
         triggerLabel: ACTION_TRIGGER_LABELS[trigger] || trigger,
         text: description.text,
         invalid: !description.supported || Boolean(missing.length),
-        missingText: missing.length ? ` · Ziel fehlt: ${missing.join(", ")}` : "",
+        missingText: missing.length ? t("binding.missingTargets", { ids: missing.join(", ") }) : "",
         badge: description.supported ? t("actions.link.badge.action") : t("actions.link.badge.custom"),
       });
     });
@@ -5893,7 +5902,7 @@ function renderWidgetActionBuilder(/** @type {any} */ widget) {
   const previous = target.value;
   const choices = flow ? []
     : type === "page_show"
-      ? (state.project.pages || []).map((/** @type {any} */ page) => ({ value: page.id, label: `${page.id} · Seite` }))
+      ? (state.project.pages || []).map((/** @type {any} */ page) => ({ value: page.id, label: t("action.pageOption", { id: page.id }) }))
       : (indicatorUpdate ? meterIndicatorEntries() : projectWidgetEntries())
         .filter((item) => !animimgOnly || item.widget_type === "animimg")
         .map((item) => ({ value: item.id, label: `${item.id} · ${item.widget_type}` }));
@@ -7119,7 +7128,7 @@ async function ensureMdiPreviewFont() {
     ? assetUrl(mdiFont.file_path)
     : state.system?.mdi_local ? mdiLocalFontUrl() : MDI_WEBFONT_URL;
   glyphPreviewState = { status: "loading", family: "inherit" };
-  updateGlyphPreviewStatus("Vorschaufont wird geladen …", "loading");
+  updateGlyphPreviewStatus(t("glyph.preview.loading"), "loading");
   renderIconCatalog();
   try {
     const cssSource = `url(${JSON.stringify(cssUrl)})`;
@@ -7127,11 +7136,11 @@ async function ensureMdiPreviewFont() {
     if (request !== glyphPreviewRequest) return;
     document.fonts.add(loaded);
     glyphPreviewState = { status: "loaded", family: "esphome_mdi_preview" };
-    updateGlyphPreviewStatus("Vorschaufont geladen.", "loaded");
+    updateGlyphPreviewStatus(t("glyph.preview.loaded"), "loaded");
   } catch (/** @type {any} */ error) {
     if (request !== glyphPreviewRequest) return;
     glyphPreviewState = { status: "failed", family: "inherit" };
-    updateGlyphPreviewStatus("Vorschaufont konnte nicht geladen werden.", "failed");
+    updateGlyphPreviewStatus(t("glyph.preview.failed"), "failed");
   }
   renderIconCatalog();
 }
@@ -7762,7 +7771,7 @@ function renderStyleControls(/** @type {any} */ widget) {
   styleLibrary().forEach((/** @type {any} */ entry) => select.append(new Option(entry.id, entry.id)));
   const current = (widget.style_refs || [])[0] || "";
   if (current && !styleLibrary().some((/** @type {any} */ entry) => entry.id === current)) {
-    select.append(new Option(`${current} (fehlt)`, current));
+    select.append(new Option(t("common.missingValue", { value: current }), current));
   }
   select.value = current;
 
@@ -8256,7 +8265,8 @@ function renderMeterIndicators(/** @type {any} */ scale) {
     const header = document.createElement("div");
     header.className = "meter-indicator-card-header";
     const type = document.createElement("select");
-    [["line", "Zeiger (Linie)"], ["arc", "Bogen"], ["image", "Bildzeiger"], ["tick_style", "Tick-Farbbereich"]]
+    [["line", t("meter.indicator.line")], ["arc", t("meter.indicator.arc")],
+      ["image", t("meter.indicator.image")], ["tick_style", t("meter.indicator.tickStyle")]]
       .forEach(([value, label]) => type.append(new Option(label, value)));
     type.value = kind;
     type.addEventListener("change", () => {
@@ -8524,7 +8534,7 @@ function renderThemeEditor() {
     if (property.part !== previousPart) {
       const heading = document.createElement("div");
       heading.className = "property-section";
-      heading.textContent = property.part === "main" ? "Stil" : property.part;
+      heading.textContent = property.part === "main" ? t("theme.mainPart") : property.part;
       container.append(heading);
       previousPart = property.part;
     }
@@ -8933,9 +8943,9 @@ function propertyControl(/** @type {any} */ property, /** @type {any} */ value, 
     control = document.createElement("select");
     control.append(new Option("—", ""));
     imageLibrary().forEach((/** @type {any} */ entry) => control.append(new Option(entry.id, entry.id)));
-    if (value && !imageEntry(value)) control.append(new Option(`${value} (fehlt)`, value));
+    if (value && !imageEntry(value)) control.append(new Option(t("common.missingValue", { value }), value));
     control.value = value ?? "";
-    control.append(new Option("＋ Neue Bildquelle …", ADD_IMAGE_OPTION));
+    control.append(new Option(t("properties.addImageSource"), ADD_IMAGE_OPTION));
   } else if (property.kind === "widget_ref") {
     control = document.createElement("select");
     control.append(new Option("—", ""));
@@ -8947,7 +8957,7 @@ function propertyControl(/** @type {any} */ property, /** @type {any} */ value, 
     }
     control.value = value ?? "";
   } else {
-    control = createBasicPropertyControl(document, property, value);
+    control = createBasicPropertyControl(document, property, value, t("properties.colorPlaceholder"));
     if (property.kind === "text_list") control.placeholder = t("dynprops.optionsPlaceholder");
   }
   control.id = `dynamic-${index}-${property.part}-${property.key}`;
