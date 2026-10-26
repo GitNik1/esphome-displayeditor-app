@@ -1267,3 +1267,12 @@ def test_mcp_publish_refuses_a_draft_changed_since_review(tmp_path: Path) -> Non
                                       expected_draft_revision=reviewed)
     assert refused.value.error == "revision_conflict"
     assert service.read_configuration("panel.yaml")["content"] == "esphome:\n  name: old\n"
+
+
+def test_mcp_non_ascii_bearer_token_is_rejected_not_a_server_error(tmp_path: Path) -> None:
+    """secrets.compare_digest raises TypeError for a non-ASCII str, which
+    turned an unauthenticated request with such a token into an HTTP 500."""
+    settings = mcp_settings(tmp_path)
+    with TestClient(create_mcp_app(settings), raise_server_exceptions=False) as client:
+        response = client.get("/mcp", headers={"Authorization": "Bearer täst".encode("latin-1")})
+        assert response.status_code == 401

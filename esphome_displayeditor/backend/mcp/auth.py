@@ -72,7 +72,9 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
             self.authenticate = authenticate
         elif authorization is not None:
             self.authenticate = lambda supplied: (
-                authorization if secrets.compare_digest(supplied, token) else None
+                authorization
+                if secrets.compare_digest(supplied.encode("utf-8"), token.encode("utf-8"))
+                else None
             )
         else:
             raise ValueError("MCP bearer authentication is not configured.")

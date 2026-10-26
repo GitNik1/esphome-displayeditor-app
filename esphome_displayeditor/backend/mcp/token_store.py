@@ -451,6 +451,8 @@ class MCPTokenAuthenticator:
         )
         if managed is not None:
             return managed
-        if secrets.compare_digest(raw_token, self.legacy_token):
+        # Bytes, not str: compare_digest raises TypeError for a non-ASCII
+        # str, which turned an invalid bearer token into an HTTP 500.
+        if secrets.compare_digest(raw_token.encode("utf-8"), self.legacy_token.encode("utf-8")):
             return self.legacy
         return None

@@ -88,6 +88,8 @@
   saving and publishing are refused with a hint to reload. The API accepts
   `expected_draft_revision` on draft save, merge and publish (and the MCP
   tool `display_configuration_apply`); requests without it behave as before.
+- The MCP server answers a bearer token with non-ASCII characters with 401
+  instead of an HTTP 500 (tokens are now compared as bytes).
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.
