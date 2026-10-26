@@ -67,6 +67,7 @@ import {
 } from "./project/surfaces.js";
 import { normalizeProjectName } from "./project/names.js";
 import { askSaveConflict, suggestedCopyName } from "./dialogs/save-conflict.js";
+import { designerShortcut } from "./designer/shortcuts.js";
 import { buildImportPayload, summarizeImport } from "./project/import.js";
 import {
   colorReferenceLocations as findColorReferences,
@@ -1587,97 +1588,123 @@ function bindDesigner() {
   linkBuilderSection.addEventListener("toggle", () => togglePropertyGroup("widgetLinks", !linkBuilderSection.open));
   document.addEventListener("keydown", (event) => {
     if (!$("#designer").classList.contains("active")) return;
-    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(
-      event.target instanceof HTMLElement ? event.target.tagName : "",
-    );
-
-    if (state.canvasMode === "lines" && !typing && !event.ctrlKey) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (state.drawingStroke) {
-          removeStroke(state.drawingStroke);
-          state.drawingStroke = null;
-          state.selectedStroke = null;
-          setLineTool("select");
-          renderDesigner();
-        }
-        return;
-      }
-      if (event.key === "Backspace" && state.drawingStroke) {
-        event.preventDefault();
-        state.drawingStroke.points.pop();
-        markProjectDirty();
-        renderGlowCanvas();
-        renderGlowHandles();
-        return;
-      }
-      if (event.key === "Enter" && state.drawingStroke) {
-        event.preventDefault();
-        finishDrawing();
-        return;
-      }
-      if (event.key === "Delete" && state.selectedStroke && !state.drawingStroke) {
-        event.preventDefault();
-        deleteSelectedStroke();
-        return;
-      }
-      if (event.key.toLowerCase() === "p") {
-        event.preventDefault();
-        setLineTool("draw");
-        return;
-      }
-      if (event.key.toLowerCase() === "v") {
-        event.preventDefault();
-        setLineTool("select");
-        return;
-      }
-    }
-
-    if (event.key === "Delete" && !typing) {
-      event.preventDefault();
-      deleteSelectedWidget();
-      return;
-    }
-    // Clicking empty canvas already clears the selection - Escape is the
-    // keyboard-only equivalent of that same click, for widget mode too.
-    if (event.key === "Escape" && !typing && state.canvasMode === "widgets" && state.selectedWidget) {
-      event.preventDefault();
-      deselectWidget();
-      return;
-    }
-    // Arrow-key nudge: the only way to set an exact position was the X/Y
-    // number fields, forcing a mouse round-trip even for a 1px correction
-    // (drag rounds to whole pixels but offers no way to type just one).
-    // Shift steps 10px, matching drag's existing pixel-rounding rather than
-    // adding a second unit.
-    if (!typing && !event.ctrlKey && state.canvasMode === "widgets" && state.selectedWidget
-      && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
-      event.preventDefault();
-      nudgeSelectedWidget(event.key, event.shiftKey ? 10 : 1);
-      return;
-    }
-    if (!event.ctrlKey) return;
-
-    const key = event.key.toLowerCase();
-    /** @type {Record<string, () => unknown>} */
-    const actions = {
-      z: undoDesignerChange,
-      y: redoDesignerChange,
-      n: newDesignerProject,
-      o: () => $("#project-file").click(),
-      s: downloadDesignerProject,
-      e: exportDesignerYaml,
-      d: () => { if (state.canvasMode === "widgets" && state.selectedWidget) duplicateSelectedWidgets(); },
-      0: fitCanvasToView,
-      1: () => setZoom(1),
-      "+": () => setZoom(state.zoom * 1.25),
-      "-": () => setZoom(state.zoom / 1.25),
-    };
-    if (actions[key]) {
-      event.preventDefault();
-      actions[key]();
-    }
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const shortcut = designerShortcut(event, {
+      typing: Boolean(target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)),
+      dialogOpen: Boolean(document.querySelector("dialog[open]")),
+      canvasMode: state.canvasMode,
+      hasSelection: Boolean(state.selectedWidget),
+      drawing: Boolean(state.drawingStroke),
+      hasSelectedStroke: Boolean(state.selectedStroke),
+    });
+    if (!shortcut) return;
+    event.preventDefault();
+    runDesignerShortcut(shortcut, event.key);
   });
+}
+
+// What each shortcut from designer/shortcuts.js does; which key means what
+// (and when nothing should fire at all) is decided there.
+function runDesignerShortcut(/** @type {{command: string, step?: number}} */ shortcut, /** @type {string} */ key) {
+  /** @type {Record<string, () => unknown>} */
+  const commands = {
+    "line.escape": () => {
+      if (!state.drawingStroke) return;
+      removeStroke(state.drawingStroke);
+      state.drawingStroke = null;
+      state.selectedStroke = null;
+      setLineTool("select");
+      renderDesigner();
+    },
+    "line.removePoint": () => {
+      state.drawingStroke.points.pop();
+      markProjectDirty();
+      renderGlowCanvas();
+      renderGlowHandles();
+    },
+    "line.finish": finishDrawing,
+    "line.deleteStroke": deleteSelectedStroke,
+    "line.toolDraw": () => setLineTool("draw"),
+    "line.toolSelect": () => setLineTool("select"),
+    delete: deleteSelectedWidget,
+    // Clicking empty canvas already clears the selection - Escape is the
+    // keyboard-only equivalent of that same click.
+    deselect: deselectWidget,
+    // Arrow-key nudge: the X/Y fields were the only way to a 1px correction.
+    nudge: () => nudgeSelectedWidget(key, shortcut.step || 1),
+    undo: undoDesignerChange,
+    redo: redoDesignerChange,
+    save: saveFromShortcut,
+    download: downloadDesignerProject,
+    open: () => $("#project-file").click(),
+    new: newDesignerProject,
+    export: exportDesignerYaml,
+    duplicate: duplicateSelectedWidgets,
+    copy: copySelectedWidgets,
+    paste: pasteWidgets,
+    selectAll: selectAllWidgets,
+    fit: fitCanvasToView,
+    zoomReset: () => setZoom(1),
+    zoomIn: () => setZoom(state.zoom * 1.25),
+    zoomOut: () => setZoom(state.zoom / 1.25),
+  };
+  commands[shortcut.command]?.();
+}
+
+// The id/x/y fields commit on "change", which only fires when they lose
+// focus - so leave the field first, or the save would miss the last edit.
+function saveFromShortcut() {
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  if ($("#save-server-project").disabled) {
+    if (!state.capabilities["designer.project_write"]) toast(t("configs.hint.noPermission"), true);
+    return;
+  }
+  saveServerProject();
+}
+
+/** Widgets copied with Mod+C - snapshots, so later edits do not change them. */
+/** @type {any[]} */
+let widgetClipboard = [];
+
+function copySelectedWidgets() {
+  const group = selectedWidgetGroup();
+  if (!group.length) return;
+  widgetClipboard = group.map((/** @type {any} */ widget) => JSON.parse(JSON.stringify(widget)));
+  toast(t("toast.widgets.copied", { count: group.length }));
+}
+
+// Pasted after the current selection (or at the end of the active surface),
+// with fresh ids and offset a little so the copy is visible next to the original.
+function pasteWidgets() {
+  if (!widgetClipboard.length) return;
+  pushUndo();
+  const anchor = state.selectedWidget ? findWidgetLocation(activeWidgetRoots(), state.selectedWidget) : null;
+  const target = anchor ? anchor.array : activeWidgetRoots();
+  let index = anchor ? anchor.index + 1 : target.length;
+  const clones = widgetClipboard.map((/** @type {any} */ snapshot) => {
+    const clone = cloneWidgetSubtree(snapshot);
+    if (typeof clone.x === "number") clone.x += 10;
+    if (typeof clone.y === "number") clone.y += 10;
+    target.splice(index++, 0, clone);
+    return clone;
+  });
+  if (state.canvasMode !== "widgets") setCanvasMode("widgets");
+  state.selectedWidget = clones[0];
+  state.selectedWidgets.clear();
+  clones.slice(1).forEach((/** @type {any} */ clone) => state.selectedWidgets.add(clone));
+  markProjectDirty();
+  renderDesigner();
+}
+
+function selectAllWidgets() {
+  const roots = activeWidgetRoots();
+  if (!roots.length) return;
+  state.selectedWidget = roots[0];
+  state.selectedWidgets.clear();
+  roots.slice(1).forEach((/** @type {any} */ widget) => state.selectedWidgets.add(widget));
+  renderProperties();
+  renderTree();
+  renderCanvasSelectionClasses();
 }
 
 // A session preference, not project data - opt-in, off by default so

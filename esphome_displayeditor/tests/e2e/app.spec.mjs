@@ -105,6 +105,21 @@ test("a save conflict can be resolved under a new name", async ({ page }) => {
   await expect(page.locator("#save-server-project")).toBeEnabled();
 });
 
+test("Shift+Ctrl+Z redoes, and Ctrl+Z inside a field stays in the field", async ({ page }) => {
+  await page.getByRole("button", { name: /Label/ }).click();
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(1);
+  await page.locator("#canvas").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(0);
+  await page.keyboard.press("Control+Shift+Z");
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(1);
+
+  await page.locator("#canvas .canvas-widget").first().click();
+  await page.locator("#prop-x").focus();
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(1);
+});
+
 test("selecting a widget after undo keeps the redo step", async ({ page }) => {
   await page.getByRole("button", { name: /Label/ }).click();
   await page.getByRole("button", { name: /Label/ }).click();

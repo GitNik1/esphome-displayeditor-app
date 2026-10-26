@@ -52,6 +52,15 @@
   the MCP server - opens a dialog: overwrite (the previous version stays
   under "Versionen …") or save under a new name. The save button is disabled
   while a save is running.
+- **Keyboard shortcuts behave.** Ctrl+Shift+Z used to *undo* (Shift was not
+  looked at); it now redoes, like Ctrl+Y. Cmd works like Ctrl on a Mac. While
+  a dialog is open - the Viewer, for example - Delete and the arrow keys no
+  longer act on the widget selected behind it, and Ctrl+Z inside a text field
+  undoes the typing instead of the whole project.
+- Ctrl/Cmd+S now saves into the app storage (Ctrl/Cmd+Shift+S downloads the
+  project file, which Ctrl+S used to do). New: Ctrl/Cmd+C and +V copy and
+  paste widgets, Ctrl/Cmd+A selects every widget of the current surface, and
+  Backspace deletes like Delete.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.
