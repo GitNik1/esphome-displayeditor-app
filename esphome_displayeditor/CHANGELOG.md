@@ -19,6 +19,12 @@
   the base and the result says so. Merging into a configuration that YAML
   cannot read, or that repeats a key, is refused with its line and column.
 - Whole-block rewrites keep a file's CRLF line endings.
+- An unchanged import now saves back byte for byte. Three things used to
+  change anyway: the MDI glyph list was re-sorted (losing its `"\U..."`
+  escapes and per-glyph comments), defaults the source spelled out
+  (`align: TOP_LEFT`, `x: 0`) were dropped, and an empty `bottom_layer` got
+  `widgets: []`. Each is now kept as the source wrote it as long as the
+  project did not change it.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.

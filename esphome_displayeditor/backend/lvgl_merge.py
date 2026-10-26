@@ -46,6 +46,7 @@ from .display_targets import (
 from .yaml_patch import (
     TopLevelSpan,
     YamlStructureError,
+    _identity,
     patch_top_level_block,
     same_yaml_value,
     top_level_spans,
@@ -73,6 +74,69 @@ def _without_restated_defaults(value: Any, existing: Any) -> Any:
     if "widgets" not in existing and value.get("widgets") == [] and "pages" in value:
         value.pop("widgets")
     return value
+
+
+#: Widget values the generator leaves out because they are LVGL's defaults.
+_WIDGET_DEFAULTS = {"x": 0, "y": 0, "align": "TOP_LEFT", "hidden": False}
+
+
+def _matched_items(new: list[Any], old: list[Any]):
+    """Pair each generated list item with its source counterpart - by id,
+    like the patcher, or by position for items without one."""
+    old_ids = [_identity(item) for item in old]
+    used: set[int] = set()
+    for index, item in enumerate(new):
+        ident = _identity(item)
+        if ident is not None:
+            found = next((i for i, oid in enumerate(old_ids) if oid == ident and i not in used), None)
+        elif index < len(old) and old_ids[index] is None and index not in used:
+            found = index
+        else:
+            found = None
+        if found is not None:
+            used.add(found)
+        yield item, (old[found] if found is not None else None)
+
+
+def _keep_source_spelling(new: Any, old: Any) -> Any:
+    """Undo what the generator normalises away although nothing changed, so
+    an unchanged save leaves those lines alone: a glyph list it sorted (its
+    ``\\U...`` escapes and per-glyph comments went with it), a default value
+    the source spelled out (``align: TOP_LEFT``, ``x: 0``) and an empty
+    ``widgets: []`` the source never had."""
+    if isinstance(new, list) and isinstance(old, list):
+        return [_keep_source_spelling(item, match) for item, match in _matched_items(new, old)]
+    if not isinstance(new, dict) or not isinstance(old, dict):
+        return new
+    result: dict[str, Any] = {}
+    for key, value in new.items():
+        before = old.get(key)
+        if key == "widgets" and isinstance(value, list) and isinstance(before, list):
+            result[key] = [_widget_entry(item, match)
+                           for item, match in _matched_items(value, before)]
+        elif (key == "glyphs" and isinstance(value, list) and isinstance(before, list)
+              and sorted(map(str, value)) == sorted(map(str, before))):
+            result[key] = before
+        else:
+            result[key] = _keep_source_spelling(value, before)
+    if result.get("widgets") == [] and "widgets" not in old:
+        del result["widgets"]
+    return result
+
+
+def _widget_entry(new: Any, old: Any) -> Any:
+    if not (isinstance(new, dict) and isinstance(old, dict) and len(new) == 1
+            and new.keys() == old.keys()):
+        return _keep_source_spelling(new, old)
+    ((kind, body),) = new.items()
+    before = old[kind]
+    body = _keep_source_spelling(body, before)
+    if isinstance(body, dict) and isinstance(before, dict):
+        for key, default in _WIDGET_DEFAULTS.items():
+            value = before.get(key)
+            if key not in body and type(value) is type(default) and value == default:
+                body[key] = value
+    return {kind: body}
 
 
 def _represent_tagged_scalar(dumper, value):
@@ -407,7 +471,7 @@ def merge_project_into_yaml(
         value = _materialize_lambdas(generated_doc[key])
         if key == "lvgl":
             value = _without_restated_defaults(value, existing_doc.get("lvgl"))
-        blocks[key] = value
+        blocks[key] = _keep_source_spelling(value, existing_doc.get(key))
 
     # Edit only what changed, so comments and the author's formatting inside
     # a block survive. Whatever the patcher produced is then checked as a

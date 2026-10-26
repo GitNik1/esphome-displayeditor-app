@@ -199,7 +199,7 @@ def _imported(tmp_path: Path, source: str) -> Project:
 
 @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda path: path.name)
-def test_an_unchanged_import_merges_back_into_valid_yaml(
+def test_an_unchanged_import_merges_back_byte_for_byte(
     tmp_path: Path, fixture: Path, newline: str
 ) -> None:
     source = fixture.read_text(encoding="utf-8").replace("\n", newline)
@@ -211,8 +211,9 @@ def test_an_unchanged_import_merges_back_into_valid_yaml(
     ids = _widget_ids(document.get("lvgl"))
     assert len(ids) == len(set(ids))
     assert ids == _widget_ids(load_yaml_strict(source).get("lvgl"))
-    if newline == "\r\n":
-        assert "\n" not in merged.content.replace("\r\n", "")
+    # Glyph order and escapes, spelled-out defaults and absent empty widget
+    # lists all survive: nothing changed, so nothing is rewritten.
+    assert merged.content == source
 
 
 def test_a_patch_that_leaves_old_text_behind_falls_back_to_a_whole_block(
@@ -268,3 +269,52 @@ def test_a_whole_block_rewrite_keeps_crlf_line_endings() -> None:
 
     assert "\n" not in result.content.replace("\r\n", "")
     assert "button_1" in result.content
+
+
+GLYPH_SOURCE = """\
+font:
+  - file:
+      type: web
+      url: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: icons
+    size: 24
+    glyphs:
+      - "\U000F0335"   # mdi:lightbulb
+      - "\U000F02DC"   # mdi:home
+lvgl:
+  widgets:
+    - label:
+        id: a
+        align: TOP_LEFT
+        x: 0
+        text: A
+    - label:
+        id: b
+        align: CENTER
+        text: B
+  bottom_layer:
+    bg_opa: COVER
+"""
+
+
+def test_a_moved_widget_keeps_its_spelled_out_defaults(tmp_path: Path) -> None:
+    project = _imported(tmp_path, GLYPH_SOURCE)
+    project.widgets[0].y = 12
+
+    merged = merge_project_into_yaml(project, GLYPH_SOURCE).content
+
+    assert "        align: TOP_LEFT\n        x: 0\n" in merged
+    assert "y: 12" in merged
+    assert '"\U000F0335"   # mdi:lightbulb' in merged
+    assert "bottom_layer:\n    bg_opa: COVER\n" in merged
+    assert merged.count("widgets:") == 1
+
+
+def test_a_default_the_user_chose_replaces_the_source_value(tmp_path: Path) -> None:
+    project = _imported(tmp_path, GLYPH_SOURCE)
+    project.widgets[1].align = "TOP_LEFT"
+
+    merged = merge_project_into_yaml(project, GLYPH_SOURCE).content
+
+    assert "CENTER" not in merged
+    assert load_yaml_strict(merged)["lvgl"]["widgets"][1]["label"].get("align", "TOP_LEFT") == "TOP_LEFT"
