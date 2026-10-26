@@ -18,16 +18,31 @@ Skipped inside the add-on container, where only one copy exists.
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
 
 CORE = Path(__file__).resolve().parents[1] / "backend" / "designer_core"
-DESKTOP = (
-    Path(__file__).resolve().parents[3] / "esphome-lvgl-designer" / "lvgldesigner"
-)
 
-#: Modules that must be byte-identical in both trees. ``__init__.py`` is
+
+def _desktop_core() -> Path:
+    """The desktop checkout next to this repository - found from any depth,
+    so a git worktree (``.claude/worktrees/<name>/...``) runs the check too;
+    ``ESPHOME_DESKTOP_DESIGNER`` points at it explicitly (e.g. in CI)."""
+    configured = os.getenv("ESPHOME_DESKTOP_DESIGNER")
+    if configured:
+        return Path(configured) / "lvgldesigner"
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "esphome-lvgl-designer" / "lvgldesigner"
+        if candidate.is_dir():
+            return candidate
+    return Path(__file__).resolve().parents[3] / "esphome-lvgl-designer" / "lvgldesigner"
+
+
+DESKTOP = _desktop_core()
+
+#: Modules that must be identical in both trees (up to line endings). ``__init__.py`` is
 #: excluded: the package docstring legitimately differs between the two.
 SHARED_MODULES = (
     "model.py",
@@ -40,7 +55,9 @@ SHARED_MODULES = (
 
 
 def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    # Line endings are a checkout setting, not content: the add-on forces LF
+    # (.gitattributes), a Windows desktop checkout may have CRLF.
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 @pytest.mark.skipif(not DESKTOP.is_dir(), reason="desktop checkout not present")
