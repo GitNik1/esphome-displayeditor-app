@@ -10,7 +10,12 @@ from typing import Any
 from ..audit import AuditStore
 from ..errors import ApiError
 from ..filesystem import FilesystemBackend, revision_for
-from ..lvgl_merge import DisplayTakeoverRequired, MergeError, merge_project_into_yaml
+from ..lvgl_merge import (
+    DisplayTakeoverRequired,
+    MergeError,
+    choose_merge_base,
+    merge_project_into_yaml,
+)
 from ..project_locks import project_file_lock
 from ..project_store import ProjectStore
 from ..settings import Settings
@@ -75,7 +80,8 @@ class ConfigurationDraftMutationService:
                 actual_draft_revision,
                 target="configuration_draft",
             )
-            base_content = draft["content"] if draft else active["content"]
+            base_content, base_issues = choose_merge_base(
+                draft["content"] if draft else None, active["content"])
             project, issues = self.projects.designer.validate(loaded["project"])
             if any(issue["severity"] == "error" for issue in issues):
                 raise ApiError(
@@ -99,6 +105,7 @@ class ConfigurationDraftMutationService:
                 ) from exc
             except MergeError as exc:
                 raise ApiError("merge_failed", str(exc), 422) from exc
+            merged.issues[:0] = base_issues
             blocking = [issue for issue in merged.issues if issue.severity == "A"]
             if blocking:
                 raise ApiError(

@@ -14,6 +14,7 @@ from ...lvgl_merge import (
     DisplayTakeoverRequired,
     MergeError,
     build_project_yaml_for_bundle,
+    choose_merge_base,
     merge_project_into_yaml,
 )
 from ...entity_bindings import parse_custom_binding_yaml
@@ -97,11 +98,13 @@ def create_designer_transform_router(
             raise ApiError("invalid_project", "Project validation failed.", 422,
                            {"issues": issues})
         try:
-            existing = filesystem.read_draft(body.target)["content"]
+            draft = filesystem.read_draft(body.target)["content"]
         except ApiError as exc:
             if exc.error != "draft_not_found":
                 raise
-            existing = filesystem.read_config(body.target)["content"]
+            draft = None
+        existing, base_issues = choose_merge_base(
+            draft, filesystem.read_config(body.target)["content"])
         try:
             merged = merge_project_into_yaml(
                 project, existing,
@@ -112,6 +115,7 @@ def create_designer_transform_router(
                            {"displays": exc.conflicts}) from exc
         except MergeError as exc:
             raise ApiError("merge_failed", str(exc), 422) from exc
+        merged.issues[:0] = base_issues
         blocking = [issue for issue in merged.issues if issue.severity == "A"]
         if blocking:
             raise ApiError("invalid_project", "Project validation failed.", 422,
@@ -131,7 +135,9 @@ def create_designer_transform_router(
         _record(audit, user_id, body.target, old_revision, result["revision"], "success")
         return {"revision": result["revision"], "replaced": merged.replaced_keys,
                 "appended": merged.appended_keys,
-                "display_takeover": merged.display_takeover}
+                "display_takeover": merged.display_takeover,
+                "issues": [{"severity": issue.severity, "message": issue.message}
+                           for issue in merged.issues[:100]]}
 
     return router
 

@@ -855,7 +855,7 @@ dialog::backdrop { background: #03070bc7; }
 #toast { position: fixed; right: 20px; bottom: 20px; z-index: 20; max-width: 380px; display: flex; align-items: flex-start; gap: 8px; padding: 11px 15px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: #1a2736; box-shadow: 0 10px 35px #0008; opacity: 0; transform: translateY(10px); pointer-events: none; transition: .2s; }
 #toast.show { opacity: 1; transform: translateY(0); }
 #toast.error { border-color: var(--danger); pointer-events: auto; flex-direction: column; align-items: stretch; max-width: 460px; }
-.toast-message { flex: 1; user-select: text; }
+.toast-message { flex: 1; user-select: text; white-space: pre-line; }
 #toast.error .toast-message { padding-right: 22px; }
 .toast-dismiss { position: absolute; top: 8px; right: 10px; border: 0; background: none; color: var(--muted); font-size: 15px; line-height: 1; padding: 2px 4px; cursor: pointer; }
 .toast-dismiss:hover { color: var(--text); }

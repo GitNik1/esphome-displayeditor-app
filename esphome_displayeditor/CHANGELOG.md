@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **Saving into an existing configuration no longer duplicates widgets.** A
+  commented-out line at column 0 inside `lvgl:` (for example
+  `#        pad_left: 6`) used to end the block early: only its first part was
+  rewritten, the rest stayed behind, and the draft defined every following
+  widget twice - which publishing then refused. Block boundaries now come
+  from the YAML structure instead of indentation, so comments inside a block
+  stay inside it and comments after it are kept even when a block has to be
+  rewritten as a whole.
+- Every merge result is now loaded strictly (a repeated key is an error) and
+  compared with what it should contain. If the comment-preserving patch does
+  not come out right, the affected blocks are rewritten as a whole; if even
+  that fails, nothing is written and the merge is refused with a message.
+- A draft that is no longer valid YAML (left behind by the bug above, or
+  edited by hand) no longer blocks merging: the active configuration becomes
+  the base and the result says so. Merging into a configuration that YAML
+  cannot read, or that repeats a key, is refused with its line and column.
+- Whole-block rewrites keep a file's CRLF line endings.
+- Messages raised while a dialog is open - a failed "Als Entwurf speichern",
+  for example - now appear inside that dialog instead of behind it, and notes
+  about the merge are shown with the success message.
+
 ## 0.401.0
 
 - Opening a stored project now re-reads the ESPHome configuration it was

@@ -96,6 +96,33 @@ def test_merge_draft_replaces_only_the_lvgl_block_and_requires_write_capability(
     assert "button_1" not in active
 
 
+def test_merge_draft_replaces_a_draft_that_is_no_longer_valid_yaml(tmp_path: Path) -> None:
+    """A draft left with repeated keys (the old block detection did that)
+    must not block every later merge: the active file becomes the base."""
+    config_root = tmp_path / "esphome"
+    config_root.mkdir()
+    (config_root / "device.yaml").write_text(
+        "esphome:\n  name: device\n", encoding="utf-8", newline="")
+    settings = Settings(
+        access_level="write", max_file_size=1024 * 1024, protect_sensitive_paths=True,
+        config_root=config_root, data_root=tmp_path / "data", default_role="administrator",
+    )
+    client = TestClient(create_app(settings, serve_frontend=False),
+                        headers={"X-Remote-User-Id": "test-user"})
+    broken = "esphome:\n  name: device\nlvgl:\n  widgets: []\n  widgets: []\n"
+    assert client.put("/api/v1/configurations/device.yaml/draft",
+                      json={"content": broken}).status_code == 200
+
+    merged = client.post("/api/v1/designer/projects/merge-draft",
+                         json={"project": project_with_button(), "target": "device.yaml"})
+
+    assert merged.status_code == 200
+    assert merged.json()["issues"][0]["severity"] == "B"
+    assert "saved draft was not valid YAML" in merged.json()["issues"][0]["message"]
+    draft = client.get("/api/v1/configurations/device.yaml/draft").json()["content"]
+    assert draft.count("widgets:") == 1 and "button_1" in draft
+
+
 def test_export_zip_bundles_yaml_and_local_image(tmp_path: Path) -> None:
     import zipfile
     import io

@@ -319,6 +319,8 @@ function dismissToast() {
 // instead of being silently dropped at the call site.
 function toast(/** @type {any} */ message, error = false, /** @type {any} */ details = undefined) {
   const node = $("#toast");
+  const host = toastHost();
+  if (node.parentElement !== host) host.append(node);
   node.replaceChildren();
   const text = document.createElement("span");
   text.className = "toast-message";
@@ -346,6 +348,25 @@ function toast(/** @type {any} */ message, error = false, /** @type {any} */ det
   node.className = error ? "show error" : "show";
   clearTimeout(toastTimer);
   if (!error) toastTimer = setTimeout(() => { node.className = ""; }, 3500);
+}
+
+// A modal dialog draws over everything else and makes it inert, so a message
+// raised while one is open - a failed "save as draft", say - has to live
+// inside the topmost one to be read and dismissed at all.
+function toastHost() {
+  const modals = document.querySelectorAll("dialog:modal");
+  return modals.length ? modals[modals.length - 1] : document.body;
+}
+
+// ...and leave a dialog together with it, so a message shown right before
+// the dialog closes (the usual success path) stays on screen.
+function bindToastHost() {
+  document.addEventListener("close", (event) => {
+    const node = $("#toast");
+    if (event.target instanceof HTMLDialogElement && event.target.contains(node)) {
+      toastHost().append(node);
+    }
+  }, true);
 }
 
 function bindLanguageSwitch() {
@@ -380,6 +401,7 @@ async function initialize() {
   applyStaticTranslations();
   bindLanguageSwitch();
   bindUnloadGuard();
+  bindToastHost();
   bindTabs();
   bindDesigner();
   bindConfigurations();
@@ -9552,7 +9574,12 @@ async function saveMergeDraft() {
       result = await merge(true);
     }
     const changed = [...result.replaced, ...result.appended];
-    toast(t("toast.mergeDraft.saved", { target, keys: changed.join(", ") }));
+    // Non-blocking notes - a block rewritten as a whole, a broken draft
+    // replaced - belong next to the success message, not in a log.
+    const notes = (result.issues || [])
+      .filter((/** @type {any} */ issue) => issue.severity !== "A")
+      .map((/** @type {any} */ issue) => issue.message);
+    toast([t("toast.mergeDraft.saved", { target, keys: changed.join(", ") }), ...notes].join("\n"));
     $("#yaml-dialog").close();
     $$(".tab").forEach((item) => item.classList.toggle("active", item.dataset.tab === "configurations"));
     $$(".view").forEach((view) => view.classList.toggle("active", view.id === "configurations"));

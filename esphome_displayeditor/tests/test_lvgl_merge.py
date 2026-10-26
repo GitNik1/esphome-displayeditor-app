@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from typing import Any
+
 import pytest
 
+from backend.designer import DesignerService
 from backend.designer_core.model import ImageLibraryEntry, Project, WidgetNode
-from backend.lvgl_merge import MergeError, merge_project_into_yaml
+from backend.lvgl_merge import MergeError, choose_merge_base, merge_project_into_yaml
+from backend.yaml_strict import load_yaml_strict
 
 
 def project_with_button() -> Project:
@@ -158,3 +164,107 @@ def test_merge_rejects_a_duplicate_top_level_key() -> None:
 
     with pytest.raises(MergeError):
         merge_project_into_yaml(project_with_button(), existing)
+
+
+# --- block boundaries from the YAML structure (A1) ------------------------------
+
+FIXTURES = sorted((Path(__file__).parent / "data").glob("*.yaml"))
+
+
+def _widget_ids(value: Any) -> list[str]:
+    """Ids of widget *definitions* - actions reference ids too, so counting
+    ``id:`` text would see every referenced widget twice."""
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "widgets" and isinstance(child, list):
+                for item in child:
+                    if isinstance(item, dict) and len(item) == 1:
+                        (body,) = item.values()
+                        if isinstance(body, dict) and isinstance(body.get("id"), str):
+                            found.append(body["id"])
+            found.extend(_widget_ids(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(_widget_ids(child))
+    return found
+
+
+def _imported(tmp_path: Path, source: str) -> Project:
+    service = DesignerService(tmp_path)
+    payload = json.loads(json.dumps(service.import_yaml(source)["project"]))
+    project, _issues = service.validate(payload)
+    return project
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+@pytest.mark.parametrize("fixture", FIXTURES, ids=lambda path: path.name)
+def test_an_unchanged_import_merges_back_into_valid_yaml(
+    tmp_path: Path, fixture: Path, newline: str
+) -> None:
+    source = fixture.read_text(encoding="utf-8").replace("\n", newline)
+
+    merged = merge_project_into_yaml(_imported(tmp_path, source), source,
+                                     display_takeover="comment")
+
+    document = load_yaml_strict(merged.content)  # a repeated key raises
+    ids = _widget_ids(document.get("lvgl"))
+    assert len(ids) == len(set(ids))
+    assert ids == _widget_ids(load_yaml_strict(source).get("lvgl"))
+    if newline == "\r\n":
+        assert "\n" not in merged.content.replace("\r\n", "")
+
+
+def test_a_patch_that_leaves_old_text_behind_falls_back_to_a_whole_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole-document check is the safety net for what the per-block
+    patch check cannot see."""
+    def leave_a_duplicate_behind(lines, key, value):
+        return [*lines, "  widgets: []\n"]
+
+    monkeypatch.setattr("backend.lvgl_merge.patch_top_level_block", leave_a_duplicate_behind)
+    existing = "lvgl:\n  widgets:\n  - label:\n      id: old\n"
+
+    result = merge_project_into_yaml(project_with_button(), existing)
+
+    load_yaml_strict(result.content)
+    assert "button_1" in result.content and "old" not in result.content
+    assert any(issue.severity == "C" and "'lvgl:'" in issue.message for issue in result.issues)
+
+
+def test_a_merge_that_cannot_be_verified_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("backend.lvgl_merge.patch_top_level_block",
+                        lambda lines, key, value: [*lines, "  widgets: []\n"])
+    monkeypatch.setattr("backend.lvgl_merge._dump_lines",
+                        lambda key, value, newline: [f"{key}:\n", "  widgets: []\n", "  widgets: []\n"])
+
+    with pytest.raises(MergeError, match="did not come out as intended"):
+        merge_project_into_yaml(project_with_button(), "lvgl:\n  widgets: []\n")
+
+
+def test_a_target_with_a_repeated_key_is_refused_with_its_line() -> None:
+    existing = "sensor:\n  - platform: template\n    id: a\n    id: b\n"
+
+    with pytest.raises(MergeError, match="duplicate key"):
+        merge_project_into_yaml(project_with_button(), existing)
+
+
+def test_a_broken_draft_is_replaced_by_a_merge_into_the_active_file() -> None:
+    broken = "lvgl:\n  widgets: []\n  widgets: []\n"
+    active = "esphome:\n  name: device\n"
+
+    assert choose_merge_base(None, active) == (active, [])
+    assert choose_merge_base(active + "# edited\n", active) == (active + "# edited\n", [])
+    base, issues = choose_merge_base(broken, active)
+    assert base == active
+    assert [issue.severity for issue in issues] == ["B"]
+
+
+def test_a_whole_block_rewrite_keeps_crlf_line_endings() -> None:
+    existing = "esphome:\r\n  name: device\r\nlvgl: {widgets: []}\r\n"
+
+    result = merge_project_into_yaml(project_with_button(), existing)
+
+    assert "\n" not in result.content.replace("\r\n", "")
+    assert "button_1" in result.content

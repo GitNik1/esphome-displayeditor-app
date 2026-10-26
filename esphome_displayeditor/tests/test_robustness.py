@@ -91,7 +91,7 @@ def _label_project() -> Project:
     return project
 
 
-@pytest.mark.parametrize("header", ["lvgl: \n", "lvgl:   # meine UI\n", "lvgl:\t\n"])
+@pytest.mark.parametrize("header", ["lvgl: \n", "lvgl:   # meine UI\n"])
 def test_a_decorated_lvgl_line_is_still_the_lvgl_block(header: str) -> None:
     content = header + "  widgets:\n    - label: {id: alt}\n"
 
@@ -115,10 +115,30 @@ def test_a_referenced_lvgl_block_is_refused(header: str) -> None:
         merge_project_into_yaml(_label_project(), header)
 
 
+def test_a_file_yaml_cannot_read_is_refused_with_its_position() -> None:
+    """A tab after ``lvgl:`` is not YAML that PyYAML/libyaml (and so ESPHome
+    and the publish check) can read; the merge says where instead of
+    guessing block boundaries from indentation."""
+    content = "lvgl:\t\n  widgets:\n    - label: {id: alt}\n"
+
+    with pytest.raises(MergeError, match=r"line 1, column 6"):
+        merge_project_into_yaml(_label_project(), content)
+
+
 def test_block_detection_ignores_lookalikes() -> None:
-    lines = ["lvgl_extra:\n", "  - x\n", "# lvgl:\n", "  lvgl:\n"]
+    lines = ["lvgl_extra:\n", "  - x\n", "# lvgl:\n", "other:\n", "  lvgl: 1\n"]
 
     assert _find_top_level_block(lines, "lvgl") is None
+
+
+def test_a_column_zero_comment_stays_inside_its_block() -> None:
+    """The regression behind duplicated widgets: a commented-out property at
+    column 0 inside ``lvgl:`` ended the block for the old line scanner."""
+    lines = ["lvgl:\n", "  widgets:\n", "    - obj:\n", "        id: a\n",
+             "#        pad_left: 6\n", "        radius: 0\n", "# trailing note\n",
+             "\n", "wifi:\n", "  ssid: x\n"]
+
+    assert _find_top_level_block(lines, "lvgl") == (0, 6)
 
 
 # --- YAML alias bombs -----------------------------------------------------------------

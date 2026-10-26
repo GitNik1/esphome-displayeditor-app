@@ -43,7 +43,14 @@ from .display_targets import (
     find_display_conflicts,
     resolve_display_placeholder,
 )
-from .yaml_patch import patch_top_level_block
+from .yaml_patch import (
+    TopLevelSpan,
+    YamlStructureError,
+    patch_top_level_block,
+    same_yaml_value,
+    top_level_spans,
+)
+from .yaml_strict import load_yaml_strict
 
 #: The four top-level keys a Designer project can contribute, in the order
 #: they are considered - matches yamlexport.export_project()'s own order.
@@ -237,51 +244,108 @@ def build_project_yaml_for_bundle(project: Project) -> tuple[str, list[ExportIss
     return "\n".join(parts), issues
 
 
-def _find_top_level_block(lines: list[str], key: str) -> tuple[int, int] | None:
-    """Return the [start, end) line-index range of an existing top-level
-    ``key:`` block, or None if it isn't present. A line belongs to the
-    block if it is blank, starts with whitespace (indented under the key),
-    or starts with ``-`` (a block-sequence item at column 0 - PyYAML dumps
-    a top-level list value, e.g. ``color:``/``font:``/``image:``, with its
-    items starting at column 0, not indented under the key); the first
-    line back at column 0 that is neither - or end of file - ends it.
-
-    Getting this wrong previously mistook a sequence item's own ``-`` for
-    the start of a new top-level key, so the "block" for a list-valued key
-    was measured as just its own ``key:`` line. On a *replace* (the key
-    already existed), that line-range replacement then only ever
-    overwrote the ``key:`` line itself, leaving every one of its old
-    entries in place right after the freshly-inserted new ones - so
-    merging the same project into the same file twice in a row silently
-    duplicated every entry in ``color:``/``font:``/``image:`` (never
-    ``lvgl:``, since its own list values - e.g. ``widgets:`` - are always
-    nested *under* another key and therefore genuinely indented).
+def _refuse_reference(lines: list[str], key: str) -> None:
+    """``key: !include x``, ``key: *anchor`` and ``key: &anchor ...`` keep
+    the block's content in another file or share it; writing here would
+    replace the reference. Checked on the text first, so even an undefined
+    alias - which the YAML composer cannot get past - is reported as what it is.
     """
     # `lvgl:` may carry trailing blanks or a comment, or its whole value
-    # inline (`lvgl: {...}`). Missing any of these used to append a second
-    # `lvgl:` key, which ESPHome rejects as a duplicate.
+    # inline (`lvgl: {...}`).
     pattern = re.compile(rf"^{re.escape(key)}:(?:[ \t]+(?P<value>[^#\s][^\r\n]*?))?[ \t]*(?:#[^\r\n]*)?\r?\n?$")
-    start = None
-    for index, line in enumerate(lines):
-        match = pattern.match(line)
-        if not match:
-            continue
-        if start is not None:
-            raise MergeError(f"Found '{key}:' more than once at the top level.")
-        value = match.group("value") or ""
+    for line in lines:
+        match = pattern.match(line.lstrip("﻿"))
+        value = (match.group("value") or "") if match else ""
         if value.startswith(("!", "*", "&", "<<")):
             raise MergeError(
                 f"'{key}: {value}' comes from another file or anchor; merge into that "
                 "file instead - writing here would replace the reference.")
-        start = index
-    if start is None:
+
+
+def _top_level_spans(content: str) -> dict[str, TopLevelSpan]:
+    try:
+        return top_level_spans(content)
+    except YamlStructureError as exc:
+        raise MergeError(str(exc)) from exc
+
+
+def _editable_span(content: str, spans: dict[str, TopLevelSpan], key: str) -> TopLevelSpan | None:
+    span = spans.get(key)
+    if span is None:
         return None
-    end = start + 1
-    while end < len(lines) and (
-        lines[end] in ("\n", "\r\n") or lines[end].startswith((" ", "\t", "-"))
-    ):
-        end += 1
-    return start, end
+    value = span.value_node
+    if (value.start_mark.index < span.key_node.end_mark.index
+            or content[value.start_mark.index:value.start_mark.index + 1] in ("!", "&", "*")):
+        raise MergeError(
+            f"'{key}:' comes from another file or anchor; merge into that file "
+            "instead - writing here would replace the reference.")
+    return span
+
+
+def _find_top_level_block(lines: list[str], key: str) -> tuple[int, int] | None:
+    """The [start, end) line range of the top-level ``key:`` block, or None.
+
+    Taken from the YAML structure (``yaml_patch.top_level_spans``), not from
+    indentation: a column-0 comment inside the block - a commented-out
+    property - used to end it early, so a merge rewrote only its first part
+    and left the rest behind as a second copy.
+    """
+    _refuse_reference(lines, key)
+    content = "".join(lines)
+    span = _editable_span(content, _top_level_spans(content), key)
+    return None if span is None else (span.start, span.end)
+
+
+def _dump_lines(key: str, value: Any, newline: str) -> list[str]:
+    """A whole-block rewrite in the file's own line endings."""
+    return [line.removesuffix("\n") + newline
+            for line in _dump_block(key, value).splitlines(keepends=True)]
+
+
+def _normalized(key: str, value: Any) -> Any:
+    """``value`` as it reads back once written - what a merged block must load as."""
+    return load_lvgl_yaml(_dump_block(key, value))[key]
+
+
+def _load_target(content: str) -> dict[str, Any]:
+    """The configuration a merge builds on, loaded strictly: a repeated key
+    is refused here, with its line, instead of surfacing as an unverifiable
+    merge result (ESPHome and publishing refuse such a file as well)."""
+    try:
+        document = load_yaml_strict(content)
+    except LvglImportError as exc:
+        raise MergeError(f"The configuration cannot be merged into: {exc}") from exc
+    return document if isinstance(document, dict) else {}
+
+
+def _comes_out_as(content: str, expected: dict[str, Any]) -> bool:
+    """Whether the merged text loads - strictly - as exactly ``expected``.
+
+    The per-block patch check cannot see a block's surroundings; this whole-
+    document check is what catches a block whose old text survived next to
+    the new one."""
+    try:
+        document = load_yaml_strict(content)
+    except LvglImportError:
+        return False
+    document = document if isinstance(document, dict) else {}
+    return set(document) == set(expected) and all(
+        same_yaml_value(document[key], expected[key]) for key in expected)
+
+
+def choose_merge_base(draft: str | None, active: str) -> tuple[str, list[ExportIssue]]:
+    """The text a draft merge builds on: the saved draft, unless it no longer
+    loads strictly - a draft left broken (by the old line-based block
+    detection, or by hand) would otherwise block every later merge."""
+    if draft is None:
+        return active, []
+    try:
+        load_yaml_strict(draft)
+    except LvglImportError:
+        return active, [ExportIssue(
+            "B", "The saved draft was not valid YAML (for example a repeated key); "
+                 "it was replaced by a merge into the active configuration.")]
+    return draft, []
 
 
 def merge_project_into_yaml(
@@ -331,67 +395,111 @@ def merge_project_into_yaml(
     generated_doc, export_issues = _build_merge_doc(compiled.project)
     issues.extend(display_issues)
     issues.extend(export_issues)
-    lines = existing_content.splitlines(keepends=True)
-    if lines and not lines[-1].endswith(("\n", "\r\n")):
-        lines[-1] += "\n"
-
-    replaced: list[str] = []
-    to_append: list[str] = []
-    appended: list[str] = []
-    try:
-        existing_doc = load_lvgl_yaml(existing_content)
-    except LvglImportError:
-        existing_doc = {}
+    existing_lines = existing_content.splitlines(keepends=True)
+    for key in MERGE_KEYS:
+        if key in generated_doc:
+            _refuse_reference(existing_lines, key)
+    existing_doc = _load_target(existing_content)
+    blocks: dict[str, Any] = {}
     for key in MERGE_KEYS:
         if key not in generated_doc:
             continue
         value = _materialize_lambdas(generated_doc[key])
         if key == "lvgl":
             value = _without_restated_defaults(value, existing_doc.get("lvgl"))
-        found = _find_top_level_block(lines, key)
-        if found is None:
-            to_append.append(_dump_block(key, value))
-            appended.append(key)
-            continue
-        start, end = found
-        # Edit only what changed, so comments and the author's formatting
-        # inside the block survive; a block the patcher cannot handle safely
-        # is rewritten as a whole, as before.
-        patched = patch_top_level_block(lines[start:end], key, value)
-        if patched is None:
-            patched = _dump_block(key, value).splitlines(keepends=True)
-            issues.append(ExportIssue(
-                "C", f"'{key}:' was rewritten as a whole; comments inside it were not kept."))
-        lines[start:end] = patched
-        replaced.append(key)
+        blocks[key] = value
 
-    result_text = "".join(lines)
-    if to_append:
-        if not result_text.endswith("\n"):
-            result_text += "\n"
-        appended_text = "\n" + "\n".join(to_append)
-        if lines and lines[0].endswith("\r\n"):
-            appended_text = appended_text.replace("\n", "\r\n")  # keep the file's line endings
-        result_text += appended_text
-    if compiled.entity_actions:
-        result_text, changed_domains = _merge_entity_binding_actions(
-            result_text,
-            compiled.entity_actions,
-        )
-        for domain in changed_domains:
-            if domain not in replaced:
-                replaced.append(domain)
-    # Line handling needs a final newline; a file that had none gets none
-    # back, so an unchanged file stays byte for byte the same.
-    if existing_content and not existing_content.endswith("\n") and not to_append:
-        result_text = result_text.removesuffix("\n").removesuffix("\r")
+    # Edit only what changed, so comments and the author's formatting inside
+    # a block survive. Whatever the patcher produced is then checked as a
+    # whole document; if it does not load as intended, the merge is redone
+    # with every touched block rewritten as a whole - and refused if even
+    # that does not come out right, rather than saving a broken draft.
+    for patch in (True, False):
+        spliced = _splice_blocks(existing_content, existing_doc, blocks,
+                                 compiled.entity_actions, patch=patch)
+        if _comes_out_as(spliced.content, spliced.expected):
+            break
+    else:
+        raise MergeError(
+            "The merged configuration did not come out as intended, so nothing was "
+            "written. Please report this together with the configuration.")
+    issues.extend(
+        ExportIssue("C", f"'{key}:' was rewritten as a whole; comments inside it were not kept.")
+        for key in spliced.rewritten)
     return MergeResult(
-        content=result_text,
-        replaced_keys=replaced,
-        appended_keys=appended,
+        content=spliced.content,
+        replaced_keys=spliced.replaced,
+        appended_keys=spliced.appended,
         issues=issues,
         display_takeover=[c.to_dict() for c in conflicts],
     )
+
+
+@dataclass
+class _Spliced:
+    content: str
+    #: What the merged document must load as, key by key.
+    expected: dict[str, Any]
+    replaced: list[str] = field(default_factory=list)
+    appended: list[str] = field(default_factory=list)
+    #: Blocks written as a whole instead of patched.
+    rewritten: list[str] = field(default_factory=list)
+
+
+def _splice_blocks(
+    content: str,
+    existing_doc: dict[str, Any],
+    blocks: dict[str, Any],
+    entity_actions: list[dict[str, Any]],
+    *,
+    patch: bool,
+) -> _Spliced:
+    lines = content.splitlines(keepends=True)
+    if lines and not lines[-1].endswith(("\n", "\r\n")):
+        lines[-1] += "\n"
+    newline = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+    spans = _top_level_spans(content)
+    result = _Spliced(content="", expected=dict(existing_doc))
+    edits: list[tuple[int, int, list[str]]] = []
+    to_append: list[str] = []
+    for key, value in blocks.items():
+        result.expected[key] = _normalized(key, value)
+        span = _editable_span(content, spans, key)
+        if span is None:
+            to_append.append(_dump_block(key, value))
+            result.appended.append(key)
+            continue
+        new_lines = patch_top_level_block(lines[span.start:span.end], key, value) if patch else None
+        if new_lines is None:
+            new_lines = _dump_lines(key, value, newline)
+            result.rewritten.append(key)
+        edits.append((span.start, span.end, new_lines))
+        result.replaced.append(key)
+    # Bottom up, so every span still points at the lines it was measured on.
+    for start, end, new_lines in sorted(edits, key=lambda edit: edit[0], reverse=True):
+        lines[start:end] = new_lines
+
+    text = "".join(lines)
+    if to_append:
+        if not text.endswith("\n"):
+            text += "\n"
+        appended_text = "\n" + "\n".join(to_append)
+        if newline == "\r\n":
+            appended_text = appended_text.replace("\n", "\r\n")  # keep the file's line endings
+        text += appended_text
+    if entity_actions:
+        text, domains, rewritten = _merge_entity_binding_actions(text, entity_actions, patch=patch)
+        for domain, value in domains.items():
+            result.expected[domain] = _normalized(domain, value)
+            if domain not in result.replaced:
+                result.replaced.append(domain)
+        result.rewritten.extend(rewritten)
+    # Line handling needs a final newline; a file that had none gets none
+    # back, so an unchanged file stays byte for byte the same.
+    if content and not content.endswith("\n") and not to_append:
+        text = text.removesuffix("\n").removesuffix("\r")
+    result.content = text
+    return result
 
 
 def _find_entity(value: Any, entity_id: str) -> dict[str, Any] | None:
@@ -437,13 +545,14 @@ def _action_target(action: dict[str, Any]) -> tuple[str, str] | None:
 
 
 def _merge_entity_binding_actions(
-    content: str, actions: list[dict[str, Any]]
-) -> tuple[str, list[str]]:
+    content: str, actions: list[dict[str, Any]], *, patch: bool = True
+) -> tuple[str, dict[str, Any], list[str]]:
     """Semantically update only domains that receive generated bindings.
 
     Existing component entries and user actions are retained. A previously
     generated LVGL action with the same action name and target id is replaced,
-    making repeated merges idempotent.
+    making repeated merges idempotent. Returns the new text, the new value of
+    every changed domain and the domains that had to be rewritten as a whole.
     """
     document = load_lvgl_yaml(content)
     changed: set[str] = set()
@@ -500,16 +609,24 @@ def _merge_entity_binding_actions(
         changed.add(domain)
 
     lines = content.splitlines(keepends=True)
+    newline = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+    spans = _top_level_spans(content)
+    edits: list[tuple[int, int, list[str]]] = []
+    rewritten: list[str] = []
     for domain in sorted(changed):
-        found = _find_top_level_block(lines, domain)
-        if found is None:
+        _refuse_reference(lines, domain)
+        span = _editable_span(content, spans, domain)
+        if span is None:
             raise MergeError(f"Binding domain '{domain}:' disappeared during merge.")
-        start, end = found
         # Like lvgl:/font:, only the bound entity's lines change; the rest of
         # the domain keeps its comments and formatting. A block the patcher
         # cannot handle safely is re-dumped as before.
-        patched = patch_top_level_block(lines[start:end], domain, document[domain])
+        block = lines[span.start:span.end]
+        patched = patch_top_level_block(block, domain, document[domain]) if patch else None
         if patched is None:
-            patched = _dump_block(domain, document[domain]).splitlines(keepends=True)
+            patched = _dump_lines(domain, document[domain], newline)
+            rewritten.append(domain)
+        edits.append((span.start, span.end, patched))
+    for start, end, patched in sorted(edits, key=lambda edit: edit[0], reverse=True):
         lines[start:end] = patched
-    return "".join(lines), sorted(changed)
+    return "".join(lines), {domain: document[domain] for domain in sorted(changed)}, rewritten
