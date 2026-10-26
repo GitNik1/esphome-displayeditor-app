@@ -38,6 +38,11 @@
   full every time.
 - A read refused by the rate limit is retried once when the server says it
   frees up within three seconds; writes are never repeated automatically.
+- **Redo survives selecting a widget.** Clicking a widget or focusing a
+  property field recorded an undo step on the spot - emptying the redo stack
+  before anything had changed, and leaving steps that undid nothing (the
+  first Ctrl+Z seemed to do nothing). The state is now only remembered and
+  becomes an undo step once the project actually changes.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.

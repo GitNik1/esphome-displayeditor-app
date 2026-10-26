@@ -51,6 +51,22 @@ test("adds a widget and supports undo and redo", async ({ page }) => {
   await expect(page.locator("#canvas .canvas-widget")).toHaveCount(1);
 });
 
+test("selecting a widget after undo keeps the redo step", async ({ page }) => {
+  await page.getByRole("button", { name: /Label/ }).click();
+  await page.getByRole("button", { name: /Label/ }).click();
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(2);
+  await page.locator("#undo").click();
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(1);
+
+  // A click is a pointer-down that *might* start a drag; it used to commit
+  // an undo step on the spot and throw the redo stack away.
+  await page.locator("#canvas .canvas-widget").first().click();
+  await page.locator("#prop-x").focus();
+  await expect(page.locator("#redo")).toBeEnabled();
+  await page.locator("#redo").click();
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(2);
+});
+
 test("inspects, names, locks and restores an earlier version", async ({ page }) => {
   page.on("dialog", (dialog) => dialog.accept());
   // The project toolbar lives in a collapsed <details>.

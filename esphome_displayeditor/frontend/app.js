@@ -56,7 +56,7 @@ import {
 } from "./project/model.js";
 import {
   cloneProject,
-  pushHistory,
+  commitPendingUndo,
   redoHistory,
   undoHistory,
 } from "./project/history.js";
@@ -3053,9 +3053,23 @@ function formatRevisionDate(value, dateOnly = false) {
   }).format(parsed);
 }
 
+/** The project as it was before a change that may be about to happen. */
+/** @type {string | null} */
+let pendingUndo = null;
+
+// Called before anything that *might* change the project - a pointer-down on
+// a widget, a field getting focus. It only remembers the state; it becomes
+// an undo step once something actually changed (markProjectDirty).
 function pushUndo() {
-  state.undo = pushHistory(state.undo, state.project);
-  state.redo = [];
+  if (pendingUndo === null) pendingUndo = JSON.stringify(state.project);
+}
+
+function flushPendingUndo() {
+  const result = commitPendingUndo(state.undo, state.redo, pendingUndo, state.project);
+  pendingUndo = null;
+  if (!result.committed) return;
+  state.undo = result.undo;
+  state.redo = result.redo;
   updateUndoButtons();
 }
 
@@ -3069,6 +3083,7 @@ function reselectAfterHistoryChange(/** @type {any} */ widgetId, /** @type {any}
 }
 
 function undoDesignerChange() {
+  flushPendingUndo();
   const history = undoHistory(state.undo, state.redo, state.project);
   if (!history) return;
   const widgetId = state.selectedWidget?.id;
@@ -3081,6 +3096,7 @@ function undoDesignerChange() {
 }
 
 function redoDesignerChange() {
+  flushPendingUndo();
   const history = redoHistory(state.undo, state.redo, state.project);
   if (!history) return;
   const widgetId = state.selectedWidget?.id;
@@ -3093,6 +3109,7 @@ function redoDesignerChange() {
 }
 
 function resetHistory() {
+  pendingUndo = null;
   state.undo = [];
   state.redo = [];
   updateUndoButtons();
@@ -3104,6 +3121,7 @@ function updateUndoButtons() {
 }
 
 function markProjectDirty() {
+  flushPendingUndo();
   actions.set("projectDirty", true);
 }
 
