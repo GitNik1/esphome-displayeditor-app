@@ -110,6 +110,11 @@
   Messages now stack: errors stay until closed and are announced to screen
   readers as alerts, other notices fade out, and a repeated message is not
   stacked twice.
+- **Typing in theme and layout fields keeps the focus.** Every keystroke
+  rebuilt the whole theme editor or properties panel, so values like
+  `FF0000` or `FR(1), 200` could only be typed one character at a time. The
+  panels are now rebuilt only when the set of fields changes (a different
+  layout type).
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.

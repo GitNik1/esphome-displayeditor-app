@@ -8455,9 +8455,7 @@ function renderThemeEditor() {
   stateSelect.value = state.themeState;
 
   const schema = state.schemas.find((/** @type {any} */ item) => item.type_key === state.themeType);
-  const entry = themeLibrary()[state.themeType];
-  $("#delete-theme-entry").disabled = !entry;
-  $("#theme-empty").classList.toggle("hidden", Boolean(entry));
+  refreshThemeEntryState();
 
   const container = $("#theme-properties");
   container.replaceChildren();
@@ -8533,7 +8531,15 @@ async function updateThemeProperty(/** @type {any} */ property, /** @type {any} 
 
   markProjectDirty();
   renderCanvas();
-  renderThemeEditor();
+  // Only whether an entry exists can change here - rebuilding every field
+  // on each keystroke took the focus away after one character.
+  refreshThemeEntryState();
+}
+
+function refreshThemeEntryState() {
+  const entry = themeLibrary()[state.themeType];
+  $("#delete-theme-entry").disabled = !entry;
+  $("#theme-empty").classList.toggle("hidden", Boolean(entry));
 }
 
 function renderGridCellSection(/** @type {any} */ widget) {
@@ -8943,7 +8949,9 @@ async function updateDynamicProperty(/** @type {any} */ widget, /** @type {any} 
   // Layout and placement change where everything else sits, so the whole
   // canvas has to be recomputed rather than just this widget repainted.
   renderCanvas();
-  if (targetKind === "layout" || targetKind === "grid_cell") renderProperties();
+  // Only a different layout type changes which fields the panel shows;
+  // rebuilding it for every value took the focus away after each keystroke.
+  if (targetKind === "layout" && property.key === "type") renderProperties();
 }
 
 function updateSelectedWidget(/** @type {any} */ event) {
