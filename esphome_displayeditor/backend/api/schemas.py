@@ -7,12 +7,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, SecretStr
 
 
+_REVISION = r"^sha256:[0-9a-f]{64}$"
+
+
 class DraftRequest(BaseModel):
     content: str = Field(max_length=4 * 1024 * 1024)
+    #: The draft revision the edit started from - null: "there was no
+    #: draft". Left out, the draft is overwritten unchecked (older clients).
+    expected_draft_revision: str | None = Field(default=None, pattern=_REVISION)
 
 
 class PublishRequest(BaseModel):
-    expected_revision: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    expected_revision: str = Field(pattern=_REVISION)
+    #: The draft revision that was reviewed; a draft changed since is refused.
+    expected_draft_revision: str | None = Field(default=None, pattern=_REVISION)
 
 
 class DesignerProjectRequest(BaseModel):
@@ -32,6 +40,9 @@ class MergeDraftRequest(BaseModel):
 
     project: dict[str, Any]
     target: str
+    #: Like ``DraftRequest.expected_draft_revision``: the draft the merge may
+    #: build on; left out, whatever draft is there is used.
+    expected_draft_revision: str | None = Field(default=None, pattern=_REVISION)
     #: The user agreed to comment out the target display's own drawing
     #: (lambda:, pages:, ...) so LVGL can take it over.
     confirm_display_takeover: bool = False

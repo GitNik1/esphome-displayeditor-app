@@ -80,6 +80,14 @@
   the container, which the Ingress boundary refused like any other outside
   client, so the container was reported "unhealthy" forever. That single
   read-only route (status and version only) is now answered on loopback.
+- **A draft changed elsewhere is no longer overwritten or published
+  unseen.** Saving a draft and publishing checked only the active file, so a
+  draft changed in another tab or by an MCP client after you looked at it
+  was replaced by your save - or published although nobody reviewed it. The
+  Konfigurationen view now names the draft it shows; if that draft changed,
+  saving and publishing are refused with a hint to reload. The API accepts
+  `expected_draft_revision` on draft save, merge and publish (and the MCP
+  tool `display_configuration_apply`); requests without it behave as before.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.

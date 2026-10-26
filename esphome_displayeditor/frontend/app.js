@@ -9920,10 +9920,14 @@ async function loadConfiguration(/** @type {any} */ configuration) {
     state.activeConfig = configuration.name;
     state.activeRevision = active.revision;
     state.hasDraft = configuration.has_draft;
+    // The draft this view shows; saving or publishing names it, so a draft
+    // changed meanwhile (another tab, an MCP client) is refused, not lost.
+    state.draftRevision = null;
     let content = active.content;
     if (configuration.has_draft) {
       const draft = await api(`configurations/${encodedName(configuration.name)}/draft`);
       content = draft.content;
+      state.draftRevision = draft.revision;
     }
     $("#config-title").textContent = configuration.name;
     setRevisionDisplay(active.revision);
@@ -9947,10 +9951,12 @@ async function loadConfiguration(/** @type {any} */ configuration) {
 async function saveDraft() {
   if (!state.activeConfig) return;
   try {
-    await api(`configurations/${encodedName(state.activeConfig)}/draft`, {
-      method: "PUT", body: JSON.stringify({ content: $("#yaml-editor").value }),
+    const result = await api(`configurations/${encodedName(state.activeConfig)}/draft`, {
+      method: "PUT",
+      body: JSON.stringify({ content: $("#yaml-editor").value, expected_draft_revision: state.draftRevision }),
     });
     state.hasDraft = true;
+    state.draftRevision = result.revision;
     state.yamlLoadedContent = $("#yaml-editor").value;
     state.yamlDirty = false;
     updateDraftActionButtons();
@@ -9958,7 +9964,15 @@ async function saveDraft() {
     updateYamlEditorUi();
     toast(t("toast.draft.saved"));
     await loadConfigurations();
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
+  } catch (/** @type {any} */ error) { toastDraftError(error); }
+}
+
+function toastDraftError(/** @type {any} */ error) {
+  if (error.code === "revision_conflict" && error.details?.target === "configuration_draft") {
+    toast(t("toast.draft.changedElsewhere"), true, error.details);
+  } else {
+    toast(error.message, true, error.details);
+  }
 }
 
 // (line, column) are both 1-based, matching the YAML parser's own
@@ -10019,6 +10033,7 @@ async function openMergeDialog() {
     state.activeRevision = active.revision;
     setRevisionDisplay(active.revision);
     $("#merge-config-name").textContent = state.activeConfig;
+    state.draftRevision = draft.revision;
     $("#merge-active").value = active.content;
     $("#merge-draft-source").value = draft.content;
     $("#merge-result").value = draft.content;
@@ -10030,10 +10045,11 @@ async function saveMergedDraft() {
   if (!state.activeConfig) return;
   const content = $("#merge-result").value;
   try {
-    await api(`configurations/${encodedName(state.activeConfig)}/draft`, {
-      method: "PUT", body: JSON.stringify({ content }),
+    const result = await api(`configurations/${encodedName(state.activeConfig)}/draft`, {
+      method: "PUT", body: JSON.stringify({ content, expected_draft_revision: state.draftRevision }),
     });
     state.hasDraft = true;
+    state.draftRevision = result.revision;
     state.yamlLoadedContent = content;
     state.yamlDirty = false;
     $("#yaml-editor").value = content;
@@ -10043,7 +10059,7 @@ async function saveMergedDraft() {
     updateYamlEditorUi();
     await loadConfigurations();
     toast(t("toast.draft.mergedSaved"));
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
+  } catch (/** @type {any} */ error) { toastDraftError(error); }
 }
 
 async function publishDraft() {
@@ -10051,10 +10067,12 @@ async function publishDraft() {
   if (!confirm(t("confirm.config.publish", { name: state.activeConfig }))) return;
   try {
     const result = await api(`configurations/${encodedName(state.activeConfig)}/publish`, {
-      method: "POST", body: JSON.stringify({ expected_revision: state.activeRevision }),
+      method: "POST",
+      body: JSON.stringify({ expected_revision: state.activeRevision, expected_draft_revision: state.draftRevision }),
     });
     state.activeRevision = result.revision;
     state.hasDraft = false;
+    state.draftRevision = null;
     state.yamlLoadedContent = $("#yaml-editor").value;
     state.yamlDirty = false;
     setRevisionDisplay(result.revision);
@@ -10063,7 +10081,7 @@ async function publishDraft() {
     updateYamlEditorUi();
     toast(t("toast.config.published"));
     await loadConfigurations();
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
+  } catch (/** @type {any} */ error) { toastDraftError(error); }
 }
 
 // A full "sha256:<64 hex chars>" is diagnostic detail, not something anyone

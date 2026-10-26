@@ -8,6 +8,7 @@ import os
 import tempfile
 from pathlib import Path, PurePosixPath
 from stat import S_ISREG
+from typing import Any
 
 import yaml
 from yaml.constructor import ConstructorError
@@ -15,6 +16,10 @@ from yaml.constructor import ConstructorError
 from .errors import ApiError
 from .project_locks import project_file_lock
 from .settings import Settings
+
+#: "Do not check the draft's revision" - distinct from None, which means
+#: "there must be no draft yet".
+DRAFT_UNCHECKED: Any = object()
 
 
 class _EspHomeLoader(yaml.SafeLoader):
@@ -299,14 +304,33 @@ class FilesystemBackend:
                 os.close(descriptor)
         return content, _ASSET_CONTENT_TYPES[relative.suffix.lower()]
 
-    def save_draft(self, name: str, content: str) -> dict:
+    def save_draft(
+        self, name: str, content: str, *, expected_draft_revision: Any = DRAFT_UNCHECKED
+    ) -> dict:
+        """Write a draft. With ``expected_draft_revision`` (None: "there was
+        no draft") the write is refused if the draft changed meanwhile."""
         relative, _, draft = self._paths(name)
         self._assert_access(relative, write=True)
         self._validate_content_size(content)
         with self._configuration_lock(relative):
+            self._require_draft_revision(draft, expected_draft_revision)
             draft.parent.mkdir(parents=True, exist_ok=True)
             self._atomic_write(draft, content)
         return {"name": relative.as_posix(), "revision": revision_for(content)}
+
+    def _require_draft_revision(self, draft: Path, expected: Any) -> None:
+        if expected is DRAFT_UNCHECKED:
+            return
+        actual = (revision_for(self._read(draft, missing_error="draft_not_found"))
+                  if draft.exists() else None)
+        if actual != expected:
+            raise ApiError(
+                "revision_conflict",
+                "The configuration draft changed after it was loaded.",
+                409,
+                {"target": "configuration_draft", "expected_revision": expected,
+                 "actual_revision": actual},
+            )
 
     def save_draft_checked(
         self,
@@ -408,10 +432,18 @@ class FilesystemBackend:
             }
         return {"valid": True, "revision": document["revision"], "error": None}
 
-    def publish(self, name: str, expected_revision: str) -> dict:
+    def publish(
+        self, name: str, expected_revision: str, *, expected_draft_revision: Any = DRAFT_UNCHECKED
+    ) -> dict:
+        """Make the draft active. ``expected_draft_revision`` is the draft the
+        user reviewed: a draft changed since (another tab, an MCP client) is
+        refused instead of being published unseen."""
         relative, active, draft = self._paths(name)
         self._assert_access(relative, write=True)
         with self._configuration_lock(relative):
+            if expected_draft_revision is not DRAFT_UNCHECKED and expected_draft_revision is None:
+                expected_draft_revision = DRAFT_UNCHECKED  # publishing needs a draft anyway
+            self._require_draft_revision(draft, expected_draft_revision)
             current = self._read(active, missing_error="configuration_not_found")
             current_revision = revision_for(current)
             if current_revision != expected_revision:

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Header, Request
 from ...audit import AuditStore
 from ...builder import BuilderManager
 from ...errors import ApiError
-from ...filesystem import FilesystemBackend
+from ...filesystem import DRAFT_UNCHECKED, FilesystemBackend
 from ...settings import Settings
 from ...workflow import WorkflowStore
 from ..schemas import InstallRequest, PublishRequest
@@ -144,7 +144,9 @@ def create_firmware_workflow_router(
             async with locks.setdefault(name, asyncio.Lock()):
                 if builder.available:
                     await reject_parallel_job(name)
-                result = filesystem.publish(name, body.expected_revision)
+                result = filesystem.publish(
+                    name, body.expected_revision,
+                    expected_draft_revision=body.expected_draft_revision or DRAFT_UNCHECKED)
                 workflow.invalidate_validation(name)
         except ApiError as exc:
             _audit(audit, user_id, "configuration.publish", name,

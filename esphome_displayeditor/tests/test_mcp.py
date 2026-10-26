@@ -1250,3 +1250,20 @@ def test_settings_loads_mcp_options_without_exposing_token(
     assert settings.mcp_allowed_hosts == ("display.local", "192.0.2.10")
     assert settings.mcp_allowed_origins == ("https://display.local",)
     assert settings.mcp_access_token not in repr(settings)
+
+
+def test_mcp_publish_refuses_a_draft_changed_since_review(tmp_path: Path) -> None:
+    settings = mcp_settings(tmp_path, mcp_access="project_write")
+    (tmp_path / "esphome").mkdir()
+    (tmp_path / "esphome" / "panel.yaml").write_text(
+        "esphome:\n  name: old\n", encoding="utf-8", newline="")
+    service = AssistantToolService(settings)
+    active = service.filesystem.read_config("panel.yaml")["revision"]
+    reviewed = service.filesystem.save_draft("panel.yaml", "esphome:\n  name: reviewed\n")["revision"]
+    service.filesystem.save_draft("panel.yaml", "esphome:\n  name: changed\n")
+
+    with pytest.raises(ApiError) as refused:
+        service.publish_configuration("panel.yaml", active, identity="mcp:test",
+                                      expected_draft_revision=reviewed)
+    assert refused.value.error == "revision_conflict"
+    assert service.read_configuration("panel.yaml")["content"] == "esphome:\n  name: old\n"

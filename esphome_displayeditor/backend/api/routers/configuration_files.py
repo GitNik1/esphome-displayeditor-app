@@ -7,6 +7,7 @@ from fastapi import APIRouter, Query, Request, Response
 from ...audit import AuditStore
 from ...errors import ApiError
 from ...filesystem import FilesystemBackend
+from ..drafts import expected_draft_revision
 from ..schemas import DraftRequest
 
 
@@ -39,7 +40,8 @@ def create_configuration_files_router(
             except ApiError as exc:
                 if exc.error != "draft_not_found":
                     raise
-            result = filesystem.save_draft(name, body.content)
+            result = filesystem.save_draft(
+                name, body.content, expected_draft_revision=expected_draft_revision(body))
         except ApiError as exc:
             _record(audit, user_id, "configuration.draft.save", name,
                     old_revision, None, exc.error)

@@ -9,6 +9,7 @@ from ...audit import AuditStore
 from ...designer import DesignerService
 from ...errors import ApiError
 from ...filesystem import FilesystemBackend
+from ..drafts import expected_draft_revision
 from ...lvgl_bundle import build_project_zip
 from ...lvgl_merge import (
     DisplayTakeoverRequired,
@@ -128,7 +129,9 @@ def create_designer_transform_router(
             except ApiError as exc:
                 if exc.error != "draft_not_found":
                     raise
-            result = filesystem.save_draft(body.target, merged.content)
+            result = filesystem.save_draft(
+                body.target, merged.content,
+                expected_draft_revision=expected_draft_revision(body))
         except ApiError as exc:
             _record(audit, user_id, body.target, old_revision, None, exc.error)
             raise

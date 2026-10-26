@@ -166,8 +166,13 @@ def register_write_api(
         )
 
     @server.tool(name="display_configuration_apply", annotations=APPLY)
-    def display_configuration_apply(name: str, expected_revision: str) -> dict[str, Any]:
-        """Publish an already-reviewed draft as the active ESPHome YAML."""
+    def display_configuration_apply(
+        name: str, expected_revision: str, expected_draft_revision: str | None = None
+    ) -> dict[str, Any]:
+        """Publish an already-reviewed draft as the active ESPHome YAML.
+
+        Pass the reviewed draft's revision as expected_draft_revision so a
+        draft changed since the review is refused instead of published."""
         return scoped_tool_result(
             ("configuration:publish",),
             fallback,
@@ -175,5 +180,6 @@ def register_write_api(
                 name,
                 expected_revision,
                 identity=authorization.identity,
+                expected_draft_revision=expected_draft_revision,
             ),
         )

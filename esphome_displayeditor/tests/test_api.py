@@ -253,3 +253,49 @@ def test_designer_project_api_requires_revision_and_ingress_user(tmp_path: Path)
         f"{url}?expected_revision={revision}", headers={"X-Remote-User-Id": "user-1"}
     )
     assert deleted.status_code == 200
+
+
+def _draft_client(tmp_path: Path) -> tuple[TestClient, Path]:
+    config_root = tmp_path / "esphome"
+    config_root.mkdir()
+    (config_root / "device.yaml").write_text("esphome:\n  name: device\n", encoding="utf-8", newline="")
+    settings = Settings(
+        access_level="write", max_file_size=1024 * 1024, protect_sensitive_paths=True,
+        config_root=config_root, data_root=tmp_path / "data", default_role="administrator",
+    )
+    client = TestClient(create_app(settings, serve_frontend=False),
+                        headers={"X-Remote-User-Id": "test-user"})
+    return client, config_root
+
+
+def test_a_draft_changed_elsewhere_is_not_overwritten_or_published(tmp_path: Path) -> None:
+    """A draft reviewed in one tab and changed in another (or by MCP) used to
+    be overwritten - or published unseen. Naming the reviewed revision
+    refuses both; leaving it out keeps the old, unchecked behaviour."""
+    client, config_root = _draft_client(tmp_path)
+    url = "/api/v1/configurations/device.yaml"
+    first = client.put(f"{url}/draft", json={"content": "esphome:\n  name: a\n",
+                                              "expected_draft_revision": None})
+    assert first.status_code == 200
+    seen = first.json()["revision"]
+    elsewhere = client.put(f"{url}/draft", json={"content": "esphome:\n  name: b\n"})
+    assert elsewhere.status_code == 200  # an unchecked client, as before
+
+    stale = client.put(f"{url}/draft", json={"content": "esphome:\n  name: c\n",
+                                              "expected_draft_revision": seen})
+    assert stale.status_code == 409
+    assert stale.json()["details"]["target"] == "configuration_draft"
+    assert client.put(f"{url}/draft", json={"content": "x: 1\n",
+                                             "expected_draft_revision": None}).status_code == 409
+
+    active = client.get(url).json()["revision"]
+    refused = client.post(f"{url}/publish", json={"expected_revision": active,
+                                                   "expected_draft_revision": seen})
+    assert refused.status_code == 409
+    assert "name: device" in (config_root / "device.yaml").read_text(encoding="utf-8")
+
+    current = client.get(f"{url}/draft").json()["revision"]
+    published = client.post(f"{url}/publish", json={"expected_revision": active,
+                                                     "expected_draft_revision": current})
+    assert published.status_code == 200
+    assert "name: b" in (config_root / "device.yaml").read_text(encoding="utf-8")

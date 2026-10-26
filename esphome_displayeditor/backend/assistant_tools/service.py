@@ -9,7 +9,7 @@ from ..audit import AuditStore
 from ..builder import BuilderManager
 from ..designer import DesignerService
 from ..errors import ApiError
-from ..filesystem import FilesystemBackend
+from ..filesystem import DRAFT_UNCHECKED, FilesystemBackend
 from ..project_store import ProjectStore
 from ..runtime.registry import DeviceRegistry
 from ..settings import Settings
@@ -319,11 +319,8 @@ class AssistantToolService:
         )
 
     def publish_configuration(
-        self,
-        name: str,
-        expected_revision: str,
-        *,
-        identity: str,
+        self, name: str, expected_revision: str, *, identity: str,
+        expected_draft_revision: str | None = None,
     ) -> dict[str, Any]:
         """Publish an already-reviewed draft as the active ESPHome YAML.
 
@@ -332,7 +329,8 @@ class AssistantToolService:
         via ``display_configuration_draft_propose`` /
         ``display_changeset_apply``. Publishing is the further, deliberately
         separate and revision-checked step that makes it active, mirroring
-        the app's own ``configuration.publish`` capability.
+        the app's own ``configuration.publish`` capability. With
+        ``expected_draft_revision`` a draft changed since review is refused.
         """
         if self.settings.mcp_access != "project_write" or self.settings.access_level not in {
             "write",
@@ -344,7 +342,8 @@ class AssistantToolService:
                 403,
             )
         try:
-            result = self.filesystem.publish(name, expected_revision)
+            result = self.filesystem.publish(name, expected_revision, expected_draft_revision=(
+                expected_draft_revision or DRAFT_UNCHECKED))
         except ApiError as exc:
             self.audit.record(
                 user_id=identity,
