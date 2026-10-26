@@ -76,6 +76,10 @@
 - When those buttons are unavailable because of the builder - not connected,
   not reachable, an unsupported ESPHome version - their tooltip now says so,
   instead of "Keine Berechtigung für diese Aktion".
+- The container's health check works: it probes `/api/v1/health` from inside
+  the container, which the Ingress boundary refused like any other outside
+  client, so the container was reported "unhealthy" forever. That single
+  read-only route (status and version only) is now answered on loopback.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.

@@ -56,6 +56,17 @@ def _is_asset_read(request: Request) -> bool:
     return request.method in {"GET", "HEAD"} and request.url.path.startswith(_ASSET_READ_PREFIX)
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1"}
+
+
+def _is_loopback_health_check(request: Request, client_host: str) -> bool:
+    """The container's own HEALTHCHECK (Dockerfile) probes from inside the
+    container; refused like any non-Ingress client, the app was reported
+    unhealthy forever. It only ever learns the status and the version."""
+    return (client_host in _LOOPBACK_HOSTS and request.method == "GET"
+            and request.url.path == "/api/v1/health")
+
+
 def create_app(
     runtime_settings: Settings | None = None,
     *,
@@ -128,7 +139,8 @@ def create_app(
     @application.middleware("http")
     async def security_boundary(request: Request, call_next):
         client_host = request.client.host if request.client else "unknown"
-        if not allow_direct_access and client_host not in trusted_ingress_hosts:
+        if (not allow_direct_access and client_host not in trusted_ingress_hosts
+                and not _is_loopback_health_check(request, client_host)):
             return JSONResponse(
                 status_code=403,
                 headers={

@@ -294,3 +294,23 @@ def test_production_app_rejects_non_ingress_source(tmp_path: Path, monkeypatch) 
     assert denied.status_code == 403
     assert denied.json()["error"] == "ingress_required"
     assert denied.headers["Cache-Control"] == "no-store"
+
+
+def test_container_health_check_from_loopback_is_answered(tmp_path: Path, monkeypatch) -> None:
+    """The Dockerfile HEALTHCHECK probes 127.0.0.1 from inside the container;
+    it was refused like any other non-Ingress client, so the container stayed
+    "unhealthy". Only that one read-only route is let through."""
+    monkeypatch.setenv("ESPHOME_CONFIG_ROOT", str(tmp_path / "esphome"))
+    monkeypatch.setenv("ESPHOME_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ESPHOME_OPTIONS_PATH", str(tmp_path / "missing-options.json"))
+    (tmp_path / "esphome").mkdir()
+    app = create_app(serve_frontend=False)
+
+    for host in ("127.0.0.1", "::1"):
+        loopback = TestClient(app, client=(host, 40000))
+        assert loopback.get("/api/v1/health").status_code == 200
+        assert loopback.get("/api/v1/system").status_code == 403
+        assert loopback.get("/api/v1/configurations").status_code == 403
+        assert loopback.post("/api/v1/health").status_code == 403
+    outside = TestClient(app, client=("192.168.1.20", 40000))
+    assert outside.get("/api/v1/health").status_code == 403
