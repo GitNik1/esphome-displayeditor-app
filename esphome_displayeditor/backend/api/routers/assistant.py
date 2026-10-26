@@ -37,7 +37,7 @@ def create_assistant_router(
     rate_limiter = RateLimiter(read_limit=_REQUESTS_PER_HOUR, write_limit=_REQUESTS_PER_HOUR, window_seconds=3600)
 
     @router.post("/ask")
-    async def ask(body: AssistantAskRequest, request: Request) -> dict:
+    def ask(body: AssistantAskRequest, request: Request) -> dict:
         user_id = require_capability(request, "assistant.ask")
         decision = rate_limiter.check(user_id, write=True)
         if not decision.allowed:
@@ -103,7 +103,7 @@ def create_assistant_router(
         }
 
     @router.post("/changesets/{change_set_id}/apply")
-    async def apply(change_set_id: str, request: Request) -> dict:
+    def apply(change_set_id: str, request: Request) -> dict:
         # Never called by the model (see loop.py/scope.py): this is the
         # only path that applies a proposal, and it always requires this
         # separate, explicit request - the same capability gate as /ask.

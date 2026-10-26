@@ -90,6 +90,13 @@
   tool `display_configuration_apply`); requests without it behave as before.
 - The MCP server answers a bearer token with non-ASCII characters with 401
   instead of an HTTP 500 (tokens are now compared as bytes).
+- **Slow requests no longer freeze the app.** The AI help panel's question,
+  YAML import, export, merging, saving and loading projects and drafts ran
+  their blocking work - HTTPS calls to the model API, YAML parsing, file
+  locks, SQLite - directly on the server's event loop, so the UI, both
+  live-update connections and the device connections stalled until they
+  finished. These requests now run in a worker thread; publishing moves its
+  file work off the loop as well.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.

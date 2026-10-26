@@ -24,21 +24,21 @@ def create_designer_projects_router(
     router = APIRouter(prefix="/api/v1", tags=["designer projects"])
 
     @router.get("/designer/projects")
-    async def list_projects() -> dict:
+    def list_projects() -> dict:
         return {"projects": projects.list()}
 
     @router.get("/designer/projects/{name}")
-    async def get_project(name: str) -> dict:
+    def get_project(name: str) -> dict:
         return projects.read(name)
 
     @router.get("/viewer/bindings/{name}")
-    async def get_bindings(name: str, request: Request) -> dict:
+    def get_bindings(name: str, request: Request) -> dict:
         require_capability(request, "designer.project")
         projects.read(name)
         return viewer_bindings.read(name)
 
     @router.put("/viewer/bindings/{name}")
-    async def save_bindings(
+    def save_bindings(
         name: str, body: ViewerBindingsRequest, request: Request
     ) -> dict:
         user_id = require_capability(request, "designer.project_write")
@@ -58,7 +58,7 @@ def create_designer_projects_router(
         return result
 
     @router.put("/designer/projects/{name}")
-    async def save_project(
+    def save_project(
         name: str, body: SaveDesignerProjectRequest, request: Request
     ) -> dict:
         user_id = require_capability(request, "designer.project_write")
@@ -79,7 +79,7 @@ def create_designer_projects_router(
         return result
 
     @router.delete("/designer/projects/{name}")
-    async def delete_project(
+    def delete_project(
         name: str,
         request: Request,
         expected_revision: str = Query(pattern=r"^sha256:[0-9a-f]{64}$"),

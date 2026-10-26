@@ -40,17 +40,17 @@ def create_designer_transform_router(
     router = APIRouter(prefix="/api/v1/designer", tags=["designer transform"])
 
     @router.get("/schemas")
-    async def schemas(language: str = Query(default="de", pattern="^(de|en)$")) -> dict:
+    def schemas(language: str = Query(default="de", pattern="^(de|en)$")) -> dict:
         return designer.schemas(language)
 
     @router.post("/projects/validate")
-    async def validate(body: DesignerProjectRequest) -> dict:
+    def validate(body: DesignerProjectRequest) -> dict:
         project, issues = designer.validate(body.project)
         return {"valid": not any(issue["severity"] == "error" for issue in issues),
                 "issues": issues, "project": designer.project_payload(project)}
 
     @router.post("/bindings/custom-yaml/validate")
-    async def validate_custom_binding_yaml(body: CustomBindingYamlRequest) -> dict:
+    def validate_custom_binding_yaml(body: CustomBindingYamlRequest) -> dict:
         try:
             action, normalized = parse_custom_binding_yaml(body.content)
         except LvglImportError as exc:
@@ -58,7 +58,7 @@ def create_designer_transform_router(
         return {"valid": True, "action": action, "yaml": normalized}
 
     @router.post("/viewer-scenarios/validate")
-    async def validate_viewer_scenarios(body: ViewerScenariosRequest) -> dict:
+    def validate_viewer_scenarios(body: ViewerScenariosRequest) -> dict:
         try:
             scenarios = parse_viewer_scenarios(body.content)
         except LvglImportError as exc:
@@ -66,11 +66,11 @@ def create_designer_transform_router(
         return {"valid": True, "scenarios": scenarios}
 
     @router.post("/projects/export-yaml")
-    async def export_yaml(body: DesignerProjectRequest) -> dict:
+    def export_yaml(body: DesignerProjectRequest) -> dict:
         return designer.export_yaml(body.project)
 
     @router.post("/projects/export-zip")
-    async def export_zip(body: DesignerProjectRequest) -> Response:
+    def export_zip(body: DesignerProjectRequest) -> Response:
         ensure_capability_available("designer.export_yaml")
         project, issues = designer.validate(body.project)
         if any(issue["severity"] == "error" for issue in issues):
@@ -91,7 +91,7 @@ def create_designer_transform_router(
         return Response(content=bundle.content, media_type="application/zip", headers=headers)
 
     @router.post("/projects/merge-draft")
-    async def merge_draft(body: MergeDraftRequest, request: Request) -> dict:
+    def merge_draft(body: MergeDraftRequest, request: Request) -> dict:
         user_id = require_capability(request, "configuration.write_draft")
         ensure_capability_available("designer.export_yaml")
         project, issues = designer.validate(body.project)

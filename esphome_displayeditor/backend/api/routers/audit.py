@@ -15,7 +15,7 @@ def create_audit_router(
     router = APIRouter(prefix="/api/v1/audit", tags=["audit"])
 
     @router.get("")
-    async def get_audit(
+    def get_audit(
         request: Request, limit: int = Query(default=100, ge=1, le=500)
     ) -> dict:
         require_capability(request, "audit.read")

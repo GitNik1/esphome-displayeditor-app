@@ -32,12 +32,12 @@ def create_designer_import_router(
         return body.content, "", ""
 
     @router.post("/probe")
-    async def probe(body: ImportRequest) -> dict:
+    def probe(body: ImportRequest) -> dict:
         text, _name, _revision = source(body)
         return designer.probe_yaml(text)
 
     @router.post("")
-    async def import_configuration(body: ImportRequest) -> dict:
+    def import_configuration(body: ImportRequest) -> dict:
         text, name, revision = source(body)
         canvas = (body.canvas.width, body.canvas.height) if body.canvas else None
         result = designer.import_yaml(text, canvas=canvas, source_name=name)

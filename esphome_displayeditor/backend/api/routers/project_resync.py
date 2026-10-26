@@ -77,7 +77,7 @@ def create_project_resync_router(
         return config, imported, result
 
     @router.get("/projects/{name}/source")
-    async def read_source_changes(name: str, request: Request) -> dict:
+    def read_source_changes(name: str, request: Request) -> dict:
         require_capability(request, "designer.project")
         stored = projects.read(name)
         payload = stored["project"]
@@ -107,7 +107,7 @@ def create_project_resync_router(
         }
 
     @router.post("/projects/{name}/source/apply")
-    async def apply_source_changes(
+    def apply_source_changes(
         name: str, body: ApplyProjectResyncRequest, request: Request
     ) -> dict:
         user_id = require_capability(request, "designer.project_write")

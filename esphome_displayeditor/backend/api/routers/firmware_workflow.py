@@ -144,8 +144,9 @@ def create_firmware_workflow_router(
             async with locks.setdefault(name, asyncio.Lock()):
                 if builder.available:
                     await reject_parallel_job(name)
-                result = filesystem.publish(
-                    name, body.expected_revision,
+                # File locks, YAML parsing and fsync - off the event loop.
+                result = await asyncio.to_thread(
+                    filesystem.publish, name, body.expected_revision,
                     expected_draft_revision=body.expected_draft_revision or DRAFT_UNCHECKED)
                 workflow.invalidate_validation(name)
         except ApiError as exc:

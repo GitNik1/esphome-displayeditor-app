@@ -21,17 +21,17 @@ def create_configuration_files_router(
     router = APIRouter(prefix="/api/v1/configurations", tags=["configurations"])
 
     @router.get("")
-    async def list_configurations() -> dict:
+    def list_configurations() -> dict:
         ensure_capability_available("configuration.list")
         return {"configurations": filesystem.list_configs()}
 
     @router.get("/{name:path}/draft")
-    async def get_draft(name: str) -> dict:
+    def get_draft(name: str) -> dict:
         ensure_capability_available("configuration.read")
         return filesystem.read_draft(name)
 
     @router.put("/{name:path}/draft")
-    async def put_draft(name: str, body: DraftRequest, request: Request) -> dict:
+    def put_draft(name: str, body: DraftRequest, request: Request) -> dict:
         user_id = require_capability(request, "configuration.write_draft")
         old_revision = None
         try:
@@ -51,7 +51,7 @@ def create_configuration_files_router(
         return result
 
     @router.delete("/{name:path}/draft", status_code=204)
-    async def delete_draft(name: str, request: Request) -> Response:
+    def delete_draft(name: str, request: Request) -> Response:
         user_id = require_capability(request, "configuration.write_draft")
         old_revision = None
         try:
@@ -66,12 +66,12 @@ def create_configuration_files_router(
         return Response(status_code=204)
 
     @router.get("/{name:path}/diff")
-    async def get_diff(name: str) -> dict:
+    def get_diff(name: str) -> dict:
         ensure_capability_available("configuration.read")
         return filesystem.diff(name)
 
     @router.post("/{name:path}/check-yaml")
-    async def check_yaml(
+    def check_yaml(
         name: str,
         source: str = Query(default="draft", pattern="^(draft|active)$"),
     ) -> dict:
@@ -79,7 +79,7 @@ def create_configuration_files_router(
         return filesystem.check_yaml(name, source=source)
 
     @router.get("/{name:path}")
-    async def get_configuration(name: str) -> dict:
+    def get_configuration(name: str) -> dict:
         ensure_capability_available("configuration.read")
         return filesystem.read_config(name)
 
