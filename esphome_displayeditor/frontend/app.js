@@ -67,6 +67,8 @@ import {
 } from "./project/surfaces.js";
 import { normalizeProjectName } from "./project/names.js";
 import { askSaveConflict, suggestedCopyName } from "./dialogs/save-conflict.js";
+import { askText } from "./dialogs/text-prompt.js";
+import { askImageSource } from "./dialogs/image-source.js";
 import { designerShortcut } from "./designer/shortcuts.js";
 import { createNotifications } from "./shell/notifications.js";
 import { copyText } from "./shell/clipboard.js";
@@ -2045,6 +2047,9 @@ async function loadSelectedServerProject() {
   const name = $("#server-projects").value;
   if (!name) return;
   if (state.projectDirty && !confirm(t("confirm.discardUnsaved"))) return;
+  const button = $("#load-server-project");
+  if (button.disabled) return;
+  button.disabled = true;
   try {
     adoptLoadedProject(await projectsController.load(name));
     await loadViewerBindings(name);
@@ -2054,6 +2059,8 @@ async function loadSelectedServerProject() {
     await checkSourceChanges(true);
   } catch (/** @type {any} */ error) {
     toast(error.message, true, error.details);
+  } finally {
+    updateServerProjectButtons();
   }
 }
 
@@ -7786,24 +7793,23 @@ function changeStyleRef() {
   renderCanvas();
 }
 
-function saveCurrentStyleAsNamed() {
+async function saveCurrentStyleAsNamed() {
   const widget = state.selectedWidget;
   if (!widget) return;
   if (!Object.keys(widget.style_tree || {}).length) {
     toast(t("toast.style.noStyleToSave"), true);
     return;
   }
-  const suggestion = `style_${styleLibrary().length + 1}`;
-  const name = (prompt(t("prompt.style.name"), suggestion) || "").trim();
-  if (!name) return;
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-    toast(t("toast.style.invalidName"), true);
-    return;
-  }
-  if (styleLibrary().some((/** @type {any} */ entry) => entry.id === name)) {
-    toast(t("toast.style.nameExists", { name }), true);
-    return;
-  }
+  // The dialog checks the name in place, so a typo does not throw the input away.
+  const name = await askText($("#text-prompt-dialog"), {
+    title: t("prompt.style.title"),
+    label: t("prompt.style.name"),
+    value: `style_${styleLibrary().length + 1}`,
+    validate: (value) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value) ? t("toast.style.invalidName")
+      : styleLibrary().some((/** @type {any} */ entry) => entry.id === value) ? t("toast.style.nameExists", { name: value })
+      : "",
+  });
+  if (!name || state.selectedWidget !== widget) return;
   pushUndo();
   styleLibrary().push({ id: name, style_tree: JSON.parse(JSON.stringify(widget.style_tree)) });
   widget.style_tree = {};
@@ -8875,20 +8881,14 @@ function registerServerImageAsset(/** @type {any} */ path) {
 }
 
 async function addImageSource() {
+  // Fresh each time: a file copied into images/ after the page loaded
+  // should be offered without a reload.
+  serverImageAssetsCache = null;
   const existing = await availableServerImages();
-  let url;
-  if (existing.length) {
-    const list = existing.map((/** @type {any} */ path, /** @type {any} */ index) => `${index + 1}: ${path}`).join("\n");
-    const answer = (prompt(t("prompt.image.urlOrExisting", { list }), "https://") || "").trim();
-    const index = Number.parseInt(answer, 10);
-    if (Number.isInteger(index) && index >= 1 && index <= existing.length) {
-      return registerServerImageAsset(existing[index - 1]);
-    }
-    url = answer;
-  } else {
-    url = (prompt(t("prompt.image.url"), "https://") || "").trim();
-  }
-  if (!url || url === "https://") return null;
+  const choice = await askImageSource($("#image-source-dialog"), { existing });
+  if (!choice) return null;
+  if ("path" in choice) return registerServerImageAsset(choice.path);
+  const url = choice.url;
   if (!isRemoteAsset(url)) {
     toast(t("toast.image.onlyHttpUrls"), true);
     return null;
@@ -10002,7 +10002,8 @@ async function loadConfiguration(/** @type {any} */ configuration) {
 }
 
 async function saveDraft() {
-  if (!state.activeConfig) return;
+  if (!state.activeConfig || $("#save-draft").disabled) return;
+  $("#save-draft").disabled = true;
   try {
     const result = await api(`configurations/${encodedName(state.activeConfig)}/draft`, {
       method: "PUT",
@@ -10018,6 +10019,7 @@ async function saveDraft() {
     toast(t("toast.draft.saved"));
     await loadConfigurations();
   } catch (/** @type {any} */ error) { toastDraftError(error); }
+  finally { updateDraftActionButtons(); }
 }
 
 function toastDraftError(/** @type {any} */ error) {
@@ -10118,6 +10120,7 @@ async function saveMergedDraft() {
 async function publishDraft() {
   if (!state.activeConfig || !state.hasDraft) return;
   if (!confirm(t("confirm.config.publish", { name: state.activeConfig }))) return;
+  $("#publish").disabled = true;
   try {
     const result = await api(`configurations/${encodedName(state.activeConfig)}/publish`, {
       method: "POST",
@@ -10135,6 +10138,7 @@ async function publishDraft() {
     toast(t("toast.config.published"));
     await loadConfigurations();
   } catch (/** @type {any} */ error) { toastDraftError(error); }
+  finally { updateDraftActionButtons(); }
 }
 
 // A full "sha256:<64 hex chars>" is diagnostic detail, not something anyone

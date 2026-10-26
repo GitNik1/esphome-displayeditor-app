@@ -127,6 +127,15 @@
 - Copy buttons work over plain `http://` too (Home Assistant opened as
   `http://homeassistant.local:8123` has no Clipboard API), and say so when
   copying is not possible.
+- **No more browser prompts for styles and images.** Naming a new style and
+  picking a new image source used `prompt()` - for images a numbered text
+  list whose number had to be typed back. Both are app dialogs now: the
+  style name is checked in place (a typo no longer discards the input), and
+  existing images are a list to pick from, next to a URL field. The list is
+  read fresh each time, so an image copied into `images/` shows up without
+  a reload.
+- Load, "Entwurf speichern" and "Veröffentlichen" are disabled while their
+  request runs, so a double click no longer sends two.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.

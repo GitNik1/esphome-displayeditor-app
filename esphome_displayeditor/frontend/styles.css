@@ -679,6 +679,8 @@ input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var
 .external-change-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 20px 12px; padding: 10px 14px; border: 1px solid var(--warning); border-radius: 9px; color: #ffe6ab; background: #2b2110; font-size: 13px; }
 .external-change-banner > span { flex: 1 1 260px; min-width: 0; }
 .external-change-banner .icon-button { color: #ffe6ab; }
+.image-source-dialog select { width: 100%; min-height: 120px; }
+.text-prompt-dialog p:empty { display: none; }
 .role-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 20px 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 9px; background: #16212d; font-size: 13px; }
 .role-banner > span { flex: 1 1 100%; }
 .role-banner pre { flex: 1 1 260px; margin: 0; padding: 8px 10px; border-radius: 6px; background: #0d151e; user-select: text; white-space: pre; overflow-x: auto; }

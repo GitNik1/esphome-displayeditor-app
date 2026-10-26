@@ -1132,6 +1132,30 @@
       </div>
     </dialog>
 
+    <dialog id="text-prompt-dialog" class="text-prompt-dialog" aria-labelledby="text-prompt-title">
+      <div class="dialog-heading"><h2 id="text-prompt-title" data-role="title"></h2></div>
+      <label><span data-role="label"></span> <input data-role="value" maxlength="128" autocomplete="off"></label>
+      <p class="hint issue-error" data-role="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="button subtle" data-action="cancel" data-i18n="dialog.common.cancel">Abbrechen</button>
+        <button type="button" class="button primary" data-action="ok" data-i18n="dialog.common.ok">OK</button>
+      </div>
+    </dialog>
+
+    <dialog id="image-source-dialog" class="image-source-dialog" aria-labelledby="image-source-title">
+      <div class="dialog-heading"><h2 id="image-source-title" data-i18n="dialog.imageSource.title">Neue Bildquelle</h2></div>
+      <label data-role="existing-label"><span data-i18n="dialog.imageSource.existing">Vorhandenes Bild im Ordner images/</span>
+        <select data-role="existing" size="6"></select>
+      </label>
+      <label><span data-i18n="dialog.imageSource.url">… oder Bild-URL (http/https)</span>
+        <input data-role="url" type="url" placeholder="https://" autocomplete="off">
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="button subtle" data-action="cancel" data-i18n="dialog.common.cancel">Abbrechen</button>
+        <button type="button" class="button primary" data-action="apply" data-i18n="dialog.imageSource.apply">Übernehmen</button>
+      </div>
+    </dialog>
+
     <dialog id="save-conflict-dialog" class="save-conflict-dialog" aria-labelledby="save-conflict-title">
       <div class="dialog-heading"><h2 id="save-conflict-title" data-i18n="dialog.saveConflict.title">Gespeicherte Fassung ist neuer</h2></div>
       <p class="hint" data-role="message"></p>
