@@ -115,6 +115,18 @@
   `FF0000` or `FR(1), 200` could only be typed one character at a time. The
   panels are now rebuilt only when the set of fields changes (a different
   layout type).
+- **Read-only users learn how to get edit rights.** Every Ingress user gets
+  `default_role` (viewer unless configured), and the only hint was a
+  disabled button. A banner now shows the user's Home Assistant user id and
+  a ready-to-copy `user_roles` entry.
+- The System view reads like a status page - version, access level, user and
+  role, and whether configurations, devices and the Device Builder are
+  available, each with how to switch it on - instead of a raw JSON dump
+  (still available under "Rohdaten"). The Devices view says how to turn the
+  Native API on.
+- Copy buttons work over plain `http://` too (Home Assistant opened as
+  `http://homeassistant.local:8123` has no Clipboard API), and say so when
+  copying is not possible.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.

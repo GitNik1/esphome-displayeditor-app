@@ -25,6 +25,13 @@
       <button id="external-change-dismiss" type="button" class="icon-button" data-i18n-attr="aria-label:external.dismiss" aria-label="Hinweis schließen">×</button>
     </div>
 
+    <div id="role-banner" class="role-banner hidden" role="status">
+      <span id="role-banner-message"></span>
+      <pre id="role-banner-snippet"></pre>
+      <button id="role-banner-copy" type="button" class="button primary compact" data-i18n="role.banner.copy">Snippet kopieren</button>
+      <button id="role-banner-dismiss" type="button" class="icon-button" data-i18n-attr="aria-label:role.banner.dismiss" aria-label="Hinweis schließen">×</button>
+    </div>
+
     <nav class="tabs" data-i18n-attr="aria-label:nav.ariaLabel" aria-label="Bereiche">
       <button class="tab active" data-tab="designer" data-i18n="nav.designer">Designer</button>
       <button class="tab" data-tab="configurations" data-i18n="nav.configurations">Konfigurationen</button>
@@ -882,7 +889,7 @@
 
       <section id="system" class="view system-view">
         <div class="system-grid">
-          <div class="system-card"><small data-i18n="system.status">STATUS</small><h2 data-i18n="system.heading">System und Fähigkeiten</h2><pre id="system-json" data-i18n="system.loading">Wird geladen …</pre></div>
+          <div class="system-card"><small data-i18n="system.status">STATUS</small><h2 data-i18n="system.heading">System und Fähigkeiten</h2><dl id="system-summary" class="system-summary"><dt data-i18n="system.loading">Wird geladen …</dt></dl><div id="system-capabilities" class="system-capabilities"></div><details class="system-raw"><summary data-i18n="system.rawDetails">Rohdaten (JSON)</summary><pre id="system-json"></pre></details></div>
           <section id="revision-feed-card" class="system-card revision-feed-card hidden" aria-labelledby="revision-feed-heading">
             <div class="mcp-token-heading">
               <div><h2 id="revision-feed-heading" data-i18n="revisions.feed.title">Letzte Änderungen</h2></div>

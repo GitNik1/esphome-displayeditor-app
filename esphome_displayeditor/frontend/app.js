@@ -69,6 +69,8 @@ import { normalizeProjectName } from "./project/names.js";
 import { askSaveConflict, suggestedCopyName } from "./dialogs/save-conflict.js";
 import { designerShortcut } from "./designer/shortcuts.js";
 import { createNotifications } from "./shell/notifications.js";
+import { copyText } from "./shell/clipboard.js";
+import { capabilitySummary, roleOnboarding, systemStatusRows } from "./system/status.js";
 import { buildImportPayload, summarizeImport } from "./project/import.js";
 import {
   colorReferenceLocations as findColorReferences,
@@ -323,6 +325,53 @@ function toast(/** @type {any} */ message, error = false, /** @type {any} */ det
   notifications.show(String(message), { error, details });
 }
 
+// The System view used to dump the raw JSON of system and capabilities; it
+// now reads like a status page, and the JSON stays one click away.
+function renderSystemStatus(/** @type {any} */ system, /** @type {Record<string, unknown>} */ capabilities) {
+  const list = $("#system-summary");
+  list.replaceChildren();
+  systemStatusRows(system, t).forEach((row) => {
+    const term = document.createElement("dt");
+    term.textContent = row.label;
+    const value = document.createElement("dd");
+    value.textContent = row.value;
+    if (row.tone) value.className = row.tone;
+    if (row.hint) {
+      const hint = document.createElement("small");
+      hint.className = "system-hint";
+      hint.textContent = row.hint;
+      value.append(hint);
+    }
+    list.append(term, value);
+  });
+  const chips = $("#system-capabilities");
+  chips.replaceChildren();
+  const summary = capabilitySummary(capabilities);
+  [...summary.available.map((key) => [key, ""]), ...summary.unavailable.map((key) => [key, "off"])]
+    .forEach(([key, tone]) => {
+      const chip = document.createElement("span");
+      chip.textContent = key;
+      if (tone) chip.className = tone;
+      chips.append(chip);
+    });
+}
+
+// Someone who can open the app but not edit gets their Home Assistant user id
+// and a ready-to-paste user_roles entry, instead of greyed-out buttons.
+function renderRoleBanner(/** @type {any} */ system, /** @type {Record<string, unknown>} */ capabilities) {
+  const onboarding = roleOnboarding(system, capabilities);
+  const banner = $("#role-banner");
+  banner.classList.toggle("hidden", !onboarding);
+  if (!onboarding) return;
+  $("#role-banner-message").textContent = t("role.banner.message", { role: onboarding.role });
+  $("#role-banner-snippet").textContent = onboarding.snippet;
+  $("#role-banner-copy").onclick = async () => {
+    if (await copyText(onboarding.snippet)) toast(t("role.banner.copied"));
+    else toast(t("clipboard.failed"), true);
+  };
+  $("#role-banner-dismiss").onclick = () => banner.classList.add("hidden");
+}
+
 function bindLanguageSwitch() {
   const select = $("#language-select");
   select.value = getLanguage();
@@ -380,6 +429,8 @@ async function initialize() {
     $("#health").classList.toggle("ok", health.status === "ok");
     $("#profile").textContent = `${system.access_level} · ${system.user.role} · ${system.user.display_name || system.user.name || "Ingress"}`;
     $("#system-json").textContent = JSON.stringify({ system, ...capabilityData }, null, 2);
+    renderSystemStatus(system, capabilityData.capabilities || {});
+    renderRoleBanner(system, capabilityData.capabilities || {});
     $("#mcp-token-card").classList.toggle("hidden", !state.capabilities["mcp.manage"]);
     $("#assistant-card").classList.toggle("hidden", !state.capabilities["assistant.ask"]);
     $("#revision-feed-card").classList.toggle("hidden", !state.capabilities["designer.project"]);
@@ -662,7 +713,7 @@ async function copyMcpTokenSecret() {
   const secret = $("#mcp-token-secret").value;
   if (!secret) return;
   try {
-    await navigator.clipboard.writeText(secret);
+    if (!(await copyText(secret))) throw new Error(t("clipboard.failed"));
     toast(t("mcp.tokens.secretCopied"));
   } catch (/** @type {any} */ error) {
     toast(errorMessage(error), true);
@@ -673,7 +724,7 @@ async function copyMcpClientConfig(/** @type {string} */ selector) {
   const value = $(selector).value;
   if (!value) return;
   try {
-    await navigator.clipboard.writeText(value);
+    if (!(await copyText(value))) throw new Error(t("clipboard.failed"));
     toast(t("mcp.clientConfig.copied"));
   } catch (/** @type {any} */ error) {
     toast(errorMessage(error), true);
@@ -1527,8 +1578,8 @@ function bindDesigner() {
   $("#do-import").addEventListener("click", runImport);
   $("#close-dialog").addEventListener("click", () => $("#yaml-dialog").close());
   $("#copy-yaml").addEventListener("click", async () => {
-    await navigator.clipboard.writeText($("#yaml-output").textContent);
-    toast(t("toast.yaml.copied"));
+    if (await copyText($("#yaml-output").textContent)) toast(t("toast.yaml.copied"));
+    else toast(t("clipboard.failed"), true);
   });
   $("#merge-draft-target").addEventListener("change", () => {
     $("#merge-draft-save").disabled = !$("#merge-draft-target").value;

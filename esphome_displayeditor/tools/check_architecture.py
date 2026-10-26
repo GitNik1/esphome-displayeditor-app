@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
 def check_frontend_boundaries() -> list[str]:
     errors: list[str] = []
-    pure_roots = ("actions", "builder", "designer", "devices", "project", "properties", "runtime", "state")
+    pure_roots = ("actions", "builder", "designer", "devices", "project", "properties", "runtime", "state", "system")
     forbidden = ("document.", "window.", "new WebSocket(")
     for root in pure_roots:
         for path in (FRONTEND / root).glob("*.js"):

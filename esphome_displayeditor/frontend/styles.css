@@ -679,6 +679,18 @@ input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var
 .external-change-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 20px 12px; padding: 10px 14px; border: 1px solid var(--warning); border-radius: 9px; color: #ffe6ab; background: #2b2110; font-size: 13px; }
 .external-change-banner > span { flex: 1 1 260px; min-width: 0; }
 .external-change-banner .icon-button { color: #ffe6ab; }
+.role-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 20px 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 9px; background: #16212d; font-size: 13px; }
+.role-banner > span { flex: 1 1 100%; }
+.role-banner pre { flex: 1 1 260px; margin: 0; padding: 8px 10px; border-radius: 6px; background: #0d151e; user-select: text; white-space: pre; overflow-x: auto; }
+.system-summary { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 12px 0; }
+.system-summary dt { color: var(--muted); }
+.system-summary dd { margin: 0; }
+.system-summary dd.off { color: var(--warning); }
+.system-summary .system-hint { display: block; color: var(--muted); font-size: 12px; }
+.system-capabilities { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.system-capabilities span { padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 11px; }
+.system-capabilities span.off { opacity: .45; text-decoration: line-through; }
+.system-raw summary { cursor: pointer; color: var(--muted); }
 /* The flex column below is what keeps the actions on screen - the browser
    already caps a dialog at the viewport. This max-height only stops the
    dialog becoming absurdly tall on a very tall display. */

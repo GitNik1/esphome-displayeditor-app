@@ -123,6 +123,23 @@ test("notifications keep unread errors, announce them and follow open dialogs", 
   ]);
 });
 
+test("a viewer sees their user id and a user_roles snippet", async ({ page }) => {
+  await page.route("**/api/v1/system", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ access_level: "write", user: { id: "0123abcd", role: "viewer", name: "gast" } }),
+  }));
+  await page.route("**/api/v1/capabilities", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ capabilities: { "designer.project": true, "designer.project_write": false } }),
+  }));
+  await page.reload();
+
+  await expect(page.locator("#role-banner")).toBeVisible();
+  await expect(page.locator("#role-banner-snippet")).toContainText('user_id: "0123abcd"');
+  await page.getByRole("button", { name: "System" }).click();
+  await expect(page.locator("#system-summary")).toContainText("gast · viewer");
+});
+
 test("the last opened project is opened again after a reload", async ({ page }) => {
   await openStoredProject(page);
   await page.reload();
