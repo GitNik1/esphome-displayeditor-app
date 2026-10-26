@@ -160,6 +160,7 @@ import {
 } from "./properties/model.js";
 import { createBasicPropertyControl } from "./properties/view.js";
 import { renderViewerMeter } from "./viewer/widget-primitives.js";
+import { assetLoadFailed, forgetFailedAssets, markAssetLoadFailed } from "./viewer/assets.js";
 import {
   cursorPosition,
   editorIsDirty,
@@ -4802,7 +4803,9 @@ function renderStrokeFrame(/** @type {any} */ doc, /** @type {any} */ rect, /** 
 }
 
 async function uploadBakedFrame(/** @type {any} */ name, /** @type {any} */ blob) {
-  return uploadImageAsset(api, name, blob);
+  const path = await uploadImageAsset(api, name, blob);
+  forgetFailedAssets();
+  return path;
 }
 
 // Only ever called for a baked glow-line frame (see bakeStroke()):
@@ -4937,20 +4940,29 @@ function renderWidget(/** @type {any} */ item) {
   } else if (widget.widget_type === "meter") {
     node.append(renderViewerMeter(state.project, widget, previewState ? [previewState] : []));
   } else if (imageSource) {
-    const picture = document.createElement("img");
-    picture.className = "widget-image";
-    picture.src = imageSource;
-    picture.draggable = false;
-    picture.alt = "";
     // Fall back to a label if the URL cannot be loaded in the browser. Replace
     // only the image - setting textContent here would drop the resize handle.
-    picture.addEventListener("error", () => {
-      const fallback = document.createElement("span");
-      fallback.textContent = `${imageReference || widget.id} ⚠`;
-      picture.replaceWith(fallback);
+    const fallback = () => {
+      const element = document.createElement("span");
+      element.textContent = `${imageReference || widget.id} ⚠`;
       node.title = t("canvas.imageLoadFailedTitle");
-    });
-    node.append(picture);
+      return element;
+    };
+    if (assetLoadFailed(imageSource)) {
+      node.append(fallback());
+    } else {
+      const picture = document.createElement("img");
+      picture.className = "widget-image";
+      picture.src = imageSource;
+      picture.draggable = false;
+      picture.alt = "";
+      picture.addEventListener("error", () => {
+        // Every canvas re-render would otherwise request the missing file again.
+        markAssetLoadFailed(imageSource);
+        picture.replaceWith(fallback());
+      });
+      node.append(picture);
+    }
   } else if (!(widget.widget_type === "button" && widget.children?.length
       && !Object.hasOwn(widget.properties || {}, "text"))) {
     const text = document.createElement("span");

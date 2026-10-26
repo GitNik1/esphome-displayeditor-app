@@ -25,6 +25,19 @@
   (`align: TOP_LEFT`, `x: 0`) were dropped, and an empty `bottom_layer` got
   `widgets: []`. Each is now kept as the source wrote it as long as the
   project did not change it.
+- **Missing images no longer flood the API.** The Viewer created a new image
+  for every frame of an animated image, and a failed load is not cached by
+  the browser - so a missing frame was requested again on every tick until
+  the API's own rate limit refused everything else, saving included. Frames
+  are now created once and only shown or hidden; an image that failed to
+  load is not requested again during the page view (also on the canvas), and
+  the list is cleared after an upload.
+- Image and font reads have their own, larger rate-limit budget, separate
+  from the one saving and loading use, and are revalidated through an ETag
+  (answered with 304 without reading the file) instead of being re-sent in
+  full every time.
+- A read refused by the rate limit is retried once when the server says it
+  frees up within three seconds; writes are never repeated automatically.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.

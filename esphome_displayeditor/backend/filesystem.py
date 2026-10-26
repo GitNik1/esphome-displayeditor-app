@@ -7,6 +7,7 @@ import hashlib
 import os
 import tempfile
 from pathlib import Path, PurePosixPath
+from stat import S_ISREG
 
 import yaml
 from yaml.constructor import ConstructorError
@@ -238,6 +239,32 @@ class FilesystemBackend:
         content = self._read(draft, missing_error="draft_not_found")
         return {"name": relative.as_posix(), "content": content, "revision": revision_for(content)}
 
+    def _asset_target(self, name: str) -> tuple[PurePosixPath, Path, int]:
+        relative = self._relative(name, suffixes=set(_ASSET_CONTENT_TYPES))
+        limit = (
+            min(self.settings.request_max_size, 16 * 1024 * 1024)
+            if relative.suffix.lower() in self._allowed_font_asset_suffixes
+            else self.settings.max_file_size
+        )
+        self._assert_access(relative, write=False)
+        return relative, self._resolve(self.root, relative), limit
+
+    def asset_etag(self, name: str) -> str:
+        """A validator for the asset's current version - modification time
+        and size from one ``lstat``, so a browser revalidating an image it
+        already has is answered without reading the file. Same path checks
+        as ``read_asset``."""
+        _relative, target, _limit = self._asset_target(name)
+        try:
+            info = os.stat(target, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            raise ApiError("asset_not_found", "Asset was not found.", 404) from exc
+        except OSError as exc:
+            raise ApiError("invalid_path", "Asset could not be opened safely.") from exc
+        if not S_ISREG(info.st_mode):
+            raise ApiError("invalid_path", "Path is not a regular file.")
+        return f'"{info.st_mtime_ns:x}-{info.st_size:x}"'
+
     def read_asset(self, name: str) -> tuple[bytes, str]:
         """Read an image or font an imported config references by a local
         path, e.g. ``images/panel_bg.png`` or ``fonts/OpenSans-Regular.ttf``.
@@ -249,14 +276,7 @@ class FilesystemBackend:
         broader path is safe - traversal, symlinks and hidden segments are
         still rejected by ``_relative``/``_resolve``, same as everywhere else.
         """
-        relative = self._relative(name, suffixes=set(_ASSET_CONTENT_TYPES))
-        limit = (
-            min(self.settings.request_max_size, 16 * 1024 * 1024)
-            if relative.suffix.lower() in self._allowed_font_asset_suffixes
-            else self.settings.max_file_size
-        )
-        self._assert_access(relative, write=False)
-        target = self._resolve(self.root, relative)
+        relative, target, limit = self._asset_target(name)
         try:
             descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         except FileNotFoundError as exc:

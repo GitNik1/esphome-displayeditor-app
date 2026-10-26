@@ -17,16 +17,34 @@ class RateLimitDecision:
 class RateLimiter:
     """Sliding-window limits for one single-process app instance."""
 
-    def __init__(self, read_limit: int, write_limit: int, window_seconds: int = 60) -> None:
+    def __init__(
+        self,
+        read_limit: int,
+        write_limit: int,
+        window_seconds: int = 60,
+        *,
+        asset_limit: int | None = None,
+    ) -> None:
         self.read_limit = read_limit
         self.write_limit = write_limit
+        #: Image/font reads get their own, larger budget: a page full of
+        #: images (or an animated image's frames) must not use up the
+        #: budget that saving and loading depend on.
+        self.asset_limit = asset_limit if asset_limit is not None else 5 * read_limit
         self.window_seconds = window_seconds
         self._requests: dict[tuple[str, str], deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
 
-    def check(self, identity: str, *, write: bool, now: float | None = None) -> RateLimitDecision:
+    def check(
+        self,
+        identity: str,
+        *,
+        write: bool,
+        asset: bool = False,
+        now: float | None = None,
+    ) -> RateLimitDecision:
         timestamp = time.monotonic() if now is None else now
-        buckets = [("api", self.read_limit)]
+        buckets = [("asset", self.asset_limit)] if asset else [("api", self.read_limit)]
         if write:
             buckets.append(("write", self.write_limit))
 

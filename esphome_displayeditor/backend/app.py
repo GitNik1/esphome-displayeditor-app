@@ -49,6 +49,12 @@ from .version import APP_VERSION
 from .viewer_bindings import ViewerBindingStore
 from .workflow import WorkflowStore
 
+_ASSET_READ_PREFIX = "/api/v1/designer/assets/read/"
+
+
+def _is_asset_read(request: Request) -> bool:
+    return request.method in {"GET", "HEAD"} and request.url.path.startswith(_ASSET_READ_PREFIX)
+
 
 def create_app(
     runtime_settings: Settings | None = None,
@@ -163,6 +169,7 @@ def create_app(
             decision = rate_limiter.check(
                 identity,
                 write=request.method not in {"GET", "HEAD", "OPTIONS"},
+                asset=_is_asset_read(request),
             )
             if not decision.allowed:
                 return JSONResponse(
@@ -214,7 +221,9 @@ def create_app(
             "connect-src 'self' ws: wss: https:; "
             "object-src 'none'; base-uri 'none'"
         )
-        if request.url.path.startswith("/api/v1/"):
+        if _is_asset_read(request):
+            pass  # revalidated through its ETag - see designer_assets.read_asset
+        elif request.url.path.startswith("/api/v1/"):
             response.headers["Cache-Control"] = "no-store"
         elif request.method == "GET":
             response.headers["Cache-Control"] = "no-cache"

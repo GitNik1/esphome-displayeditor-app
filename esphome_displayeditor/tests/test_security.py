@@ -195,6 +195,29 @@ def test_rate_limiter_has_separate_write_budget() -> None:
     assert limiter.check("user", write=True, now=61).allowed
 
 
+def test_rate_limiter_gives_asset_reads_their_own_budget() -> None:
+    """A page full of images - or a missing animated-image frame requested
+    again and again - must not use up the budget saving depends on."""
+    limiter = RateLimiter(read_limit=2, write_limit=2, window_seconds=60, asset_limit=3)
+
+    for second in range(3):
+        assert limiter.check("user", write=False, asset=True, now=second).allowed
+    assert not limiter.check("user", write=False, asset=True, now=3).allowed
+    assert limiter.check("user", write=True, now=4).allowed
+    assert limiter.check("user", write=False, now=5).allowed
+
+
+def test_asset_flood_does_not_block_writes(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, api_limit=2)
+    client = TestClient(create_app(settings, serve_frontend=False),
+                        headers={"X-Remote-User-Id": "user"})
+
+    for _ in range(5):
+        assert client.get("/api/v1/designer/assets/read/images/missing.png").status_code == 404
+    assert client.put("/api/v1/configurations/display.yaml/draft",
+                      json={"content": "esphome:\n  name: x\n"}).status_code != 429
+
+
 def test_backend_enforces_roles_and_audits_denials(tmp_path: Path) -> None:
     settings = make_settings(
         tmp_path,
