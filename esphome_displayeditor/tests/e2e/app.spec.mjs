@@ -91,6 +91,38 @@ test("a restored autosave saves under its own name without a conflict", async ({
   expect(apiControl.saves).toEqual(["sha256:bbb"]);
 });
 
+test("notifications keep unread errors, announce them and follow open dialogs", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const { createNotifications } = await import("/shell/notifications.js");
+    const region = document.createElement("div");
+    document.body.append(region);
+    const notes = createNotifications({ region, closeLabel: () => "close", detailsLabel: () => "details" });
+    notes.show("Speichern fehlgeschlagen", { error: true, details: { code: 1 } });
+    notes.show("Gespeichert");
+    const dialog = document.createElement("dialog");
+    document.body.append(dialog);
+    dialog.showModal();
+    notes.show("Im Dialog", { error: true });
+    const insideDialog = dialog.contains(region);
+    const closed = new Promise((resolve) => dialog.addEventListener("close", resolve, { once: true }));
+    dialog.close();
+    await closed;  // "close" is dispatched as a task, not during close()
+    return {
+      insideDialog,
+      backInBody: region.parentElement === document.body,
+      items: [...region.children].map((item) => [
+        item.getAttribute("role"), item.querySelector(".toast-message").textContent,
+      ]),
+    };
+  });
+  expect(result.insideDialog).toBe(true);
+  expect(result.backInBody).toBe(true);
+  // A later success notice no longer replaces the unread error.
+  expect(result.items).toEqual([
+    ["alert", "Speichern fehlgeschlagen"], ["status", "Gespeichert"], ["alert", "Im Dialog"],
+  ]);
+});
+
 test("the last opened project is opened again after a reload", async ({ page }) => {
   await openStoredProject(page);
   await page.reload();

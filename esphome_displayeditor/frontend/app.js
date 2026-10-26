@@ -68,6 +68,7 @@ import {
 import { normalizeProjectName } from "./project/names.js";
 import { askSaveConflict, suggestedCopyName } from "./dialogs/save-conflict.js";
 import { designerShortcut } from "./designer/shortcuts.js";
+import { createNotifications } from "./shell/notifications.js";
 import { buildImportPayload, summarizeImport } from "./project/import.js";
 import {
   colorReferenceLocations as findColorReferences,
@@ -305,72 +306,21 @@ let builderEventsClient = null;
 /** @type {any} */
 let viewerRuntimeClient = null;
 
-/** @type {ReturnType<typeof setTimeout> | undefined} */
-let toastTimer;
 /** @param {unknown} error */
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
-function dismissToast() {
-  $("#toast").className = "";
-  clearTimeout(toastTimer);
-}
 
-// Errors stay until dismissed (a validation or compile error is often longer
-// than 3.5s worth of reading), the text is selectable so it can be copied
-// into a search or bug report, and error.details - already attached by the
-// api() client whenever the backend sends it - gets a place to show up
-// instead of being silently dropped at the call site.
+/** @type {ReturnType<typeof createNotifications> | null} */
+let notifications = null;
+
 function toast(/** @type {any} */ message, error = false, /** @type {any} */ details = undefined) {
-  const node = $("#toast");
-  const host = toastHost();
-  if (node.parentElement !== host) host.append(node);
-  node.replaceChildren();
-  const text = document.createElement("span");
-  text.className = "toast-message";
-  text.textContent = String(message);
-  node.append(text);
-  if (error && details !== undefined && details !== null) {
-    const block = document.createElement("details");
-    block.className = "toast-details";
-    const summary = document.createElement("summary");
-    summary.textContent = t("toast.detailsToggle");
-    const pre = document.createElement("pre");
-    pre.textContent = typeof details === "string" ? details : JSON.stringify(details, null, 2);
-    block.append(summary, pre);
-    node.append(block);
-  }
-  if (error) {
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "toast-dismiss";
-    close.textContent = "×";
-    close.setAttribute("aria-label", t("toast.close"));
-    close.addEventListener("click", dismissToast);
-    node.append(close);
-  }
-  node.className = error ? "show error" : "show";
-  clearTimeout(toastTimer);
-  if (!error) toastTimer = setTimeout(() => { node.className = ""; }, 3500);
-}
-
-// A modal dialog draws over everything else and makes it inert, so a message
-// raised while one is open - a failed "save as draft", say - has to live
-// inside the topmost one to be read and dismissed at all.
-function toastHost() {
-  const modals = document.querySelectorAll("dialog:modal");
-  return modals.length ? modals[modals.length - 1] : document.body;
-}
-
-// ...and leave a dialog together with it, so a message shown right before
-// the dialog closes (the usual success path) stays on screen.
-function bindToastHost() {
-  document.addEventListener("close", (event) => {
-    const node = $("#toast");
-    if (event.target instanceof HTMLDialogElement && event.target.contains(node)) {
-      toastHost().append(node);
-    }
-  }, true);
+  notifications ||= createNotifications({
+    region: $("#toast"),
+    closeLabel: () => t("toast.close"),
+    detailsLabel: () => t("toast.detailsToggle"),
+  });
+  notifications.show(String(message), { error, details });
 }
 
 function bindLanguageSwitch() {
@@ -405,7 +355,6 @@ async function initialize() {
   applyStaticTranslations();
   bindLanguageSwitch();
   bindUnloadGuard();
-  bindToastHost();
   bindTabs();
   bindDesigner();
   bindConfigurations();

@@ -105,6 +105,11 @@
   still takes precedence; "Neu" forgets it).
 - The flow-preview tooltip no longer promises an F5 shortcut - F5 reloads
   the page.
+- **Messages no longer overwrite each other.** There was a single message
+  slot, so a success notice replaced an error before anyone had read it.
+  Messages now stack: errors stay until closed and are announced to screen
+  readers as alerts, other notices fade out, and a repeated message is not
+  stacked twice.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.
