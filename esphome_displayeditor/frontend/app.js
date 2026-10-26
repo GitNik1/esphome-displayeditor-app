@@ -66,6 +66,7 @@ import {
   surfaceLayoutProject,
 } from "./project/surfaces.js";
 import { normalizeProjectName } from "./project/names.js";
+import { askSaveConflict, suggestedCopyName } from "./dialogs/save-conflict.js";
 import { buildImportPayload, summarizeImport } from "./project/import.js";
 import {
   colorReferenceLocations as findColorReferences,
@@ -2012,19 +2013,50 @@ async function saveServerProject() {
   const name = normalizeProjectName($("#project-name").value);
   $("#project-name").value = name;
   const expectedRevision = state.projectName === name ? state.projectRevision : null;
+  // A second click while the first save is in flight would collide with it.
+  const button = $("#save-server-project");
+  button.disabled = true;
   try {
-    const result = await projectsController.save(name, state.project, expectedRevision);
-    state.projectName = name;
-    state.projectRevision = result.revision;
-    markProjectClean();
-    renderDesignerStatus();
-    renderProperties();
-    await loadServerProjects();
-    $("#server-projects").value = name;
-    updateServerProjectButtons();
-    toast(t("toast.project.savedToStorage"));
+    await storeServerProject(name, expectedRevision);
   } catch (/** @type {any} */ error) {
-    toast(error.code === "project_exists" ? t("toast.project.alreadyExists") : error.message, true);
+    if (error.code === "project_exists" || error.code === "revision_conflict") {
+      await resolveSaveConflict(name, error.details?.actual_revision ?? null);
+    } else {
+      toast(error.message, true, error.details);
+    }
+  } finally {
+    updateServerProjectButtons();
+  }
+}
+
+async function storeServerProject(/** @type {string} */ name, /** @type {string | null} */ expectedRevision) {
+  const result = await projectsController.save(name, state.project, expectedRevision);
+  state.projectName = name;
+  state.projectRevision = result.revision;
+  $("#project-name").value = name;
+  markProjectClean();
+  renderDesignerStatus();
+  renderProperties();
+  await loadServerProjects();
+  $("#server-projects").value = name;
+  toast(t("toast.project.savedToStorage"));
+}
+
+// The stored version is newer than the one this edit started from - saved
+// in another tab or by the MCP server, or the editor holds a restored
+// autosave. That used to end in "load it first", which would have thrown the
+// work in the editor away; now the user decides, and nothing is lost either
+// way: an overwritten version stays in the version history.
+async function resolveSaveConflict(/** @type {string} */ name, /** @type {string | null} */ actualRevision) {
+  const choice = await askSaveConflict($("#save-conflict-dialog"), {
+    message: t("dialog.saveConflict.message", { name }),
+    suggestedName: suggestedCopyName(name),
+  });
+  try {
+    if (choice.action === "overwrite") await storeServerProject(name, actualRevision);
+    if (choice.action === "rename") await storeServerProject(normalizeProjectName(choice.name), null);
+  } catch (/** @type {any} */ error) {
+    toast(error.code === "project_exists" ? t("toast.project.alreadyExists") : error.message, true, error.details);
   }
 }
 
@@ -3155,6 +3187,10 @@ function saveAutosave() {
     window.localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({
       project: state.project,
       projectName: state.projectName,
+      // Which stored version the edit started from - without it, saving
+      // the restored work could only ever end in a conflict.
+      projectRevision: state.projectRevision,
+      nameField: $("#project-name").value,
       savedAt: Date.now(),
     }));
   } catch {
@@ -3190,7 +3226,13 @@ function offerAutosaveRecovery() {
   state.project = saved.project;
   state.activeSurface = "root";
   state.projectName = saved.projectName || null;
-  state.projectRevision = null;
+  // Older autosaves have no revision; saving them then goes through the
+  // conflict dialog instead of silently taking the newest stored version.
+  state.projectRevision = saved.projectRevision || null;
+  // Saving reads this field, not projectName - restore it, or the work
+  // would be saved under the default name.
+  const nameField = saved.nameField || saved.projectName;
+  if (nameField) $("#project-name").value = nameField;
   state.projectDirty = true;
   state.selectedWidget = null;
   state.selectedStroke = null;

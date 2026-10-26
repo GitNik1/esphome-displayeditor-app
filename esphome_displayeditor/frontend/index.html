@@ -1124,6 +1124,17 @@
       </div>
     </dialog>
 
+    <dialog id="save-conflict-dialog" class="save-conflict-dialog" aria-labelledby="save-conflict-title">
+      <div class="dialog-heading"><h2 id="save-conflict-title" data-i18n="dialog.saveConflict.title">Gespeicherte Fassung ist neuer</h2></div>
+      <p class="hint" data-role="message"></p>
+      <label><span data-i18n="dialog.saveConflict.newName">Neuer Name</span> <input data-role="new-name" maxlength="128" autocomplete="off"></label>
+      <div class="dialog-actions">
+        <button type="button" class="button subtle" data-action="cancel" data-i18n="dialog.saveConflict.cancel">Abbrechen</button>
+        <button type="button" class="button subtle" data-action="rename" data-i18n="dialog.saveConflict.saveAs">Unter neuem Namen speichern</button>
+        <button type="button" class="button danger compact" data-action="overwrite" data-i18n="dialog.saveConflict.overwrite">Überschreiben</button>
+      </div>
+    </dialog>
+
     <dialog id="merge-dialog" class="merge-dialog">
       <div class="dialog-heading">
         <div><h2 data-i18n="dialog.merge.title">YAML zusammenführen</h2><small id="merge-config-name"></small></div>

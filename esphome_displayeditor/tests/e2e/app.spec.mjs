@@ -51,6 +51,60 @@ test("adds a widget and supports undo and redo", async ({ page }) => {
   await expect(page.locator("#canvas .canvas-widget")).toHaveCount(1);
 });
 
+test("saving over a newer stored version asks instead of failing", async ({ page }) => {
+  await page.getByRole("button", { name: /Label/ }).click();
+  await page.locator("#project-name").evaluate((input) => {
+    input.closest("details").open = true;
+  });
+  await page.locator("#project-name").fill("display.lvgldesign");
+  await page.locator("#save-server-project").click();
+
+  const dialog = page.locator("#save-conflict-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("[data-role=new-name]")).toHaveValue("display_2.lvgldesign");
+  await dialog.locator("[data-action=overwrite]").click();
+
+  await expect(dialog).toBeHidden();
+  await expect(page.locator("#toast")).toContainText(/saved|gespeichert/);
+  // First try without a revision, then the overwrite with the stored one.
+  expect(apiControl.saves).toEqual([null, "sha256:bbb"]);
+});
+
+test("a restored autosave saves under its own name without a conflict", async ({ page }) => {
+  await page.addInitScript((saved) => {
+    window.localStorage.setItem("designer.autosave.v1", JSON.stringify(saved));
+  }, {
+    project, projectName: "display.lvgldesign", projectRevision: "sha256:bbb",
+    nameField: "display.lvgldesign", savedAt: Date.now(),
+  });
+  page.on("dialog", (dialog) => dialog.accept());  // "restore the autosave?"
+  await page.goto("/");
+  await expect(page.locator("#project-name")).toHaveValue("display.lvgldesign");
+
+  await page.locator("#project-name").evaluate((input) => {
+    input.closest("details").open = true;
+  });
+  await page.locator("#save-server-project").click();
+
+  await expect(page.locator("#save-conflict-dialog")).toBeHidden();
+  await expect(page.locator("#toast")).toContainText(/saved|gespeichert/);
+  expect(apiControl.saves).toEqual(["sha256:bbb"]);
+});
+
+test("a save conflict can be resolved under a new name", async ({ page }) => {
+  await page.locator("#project-name").evaluate((input) => {
+    input.closest("details").open = true;
+  });
+  await page.locator("#project-name").fill("display.lvgldesign");
+  await page.locator("#save-server-project").click();
+  const dialog = page.locator("#save-conflict-dialog");
+  await dialog.locator("[data-role=new-name]").fill("kopie");
+  await dialog.locator("[data-action=rename]").click();
+
+  await expect(page.locator("#project-name")).toHaveValue("kopie.lvgldesign");
+  await expect(page.locator("#save-server-project")).toBeEnabled();
+});
+
 test("selecting a widget after undo keeps the redo step", async ({ page }) => {
   await page.getByRole("button", { name: /Label/ }).click();
   await page.getByRole("button", { name: /Label/ }).click();

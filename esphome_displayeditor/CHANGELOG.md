@@ -43,6 +43,15 @@
   before anything had changed, and leaving steps that undid nothing (the
   first Ctrl+Z seemed to do nothing). The state is now only remembered and
   becomes an undo step once the project actually changes.
+- **Restored work can be saved again.** Restoring an autosave dropped the
+  stored version it was based on and left the project-name field at its
+  default, so "In App speichern" either failed with "load it first" (which
+  would have discarded the restored work) or saved under the wrong name.
+  The autosave now keeps both.
+- Saving over a version that changed in the meantime - in another tab, by
+  the MCP server - opens a dialog: overwrite (the previous version stays
+  under "Versionen …") or save under a new name. The save button is disabled
+  while a save is running.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.

@@ -116,6 +116,27 @@ export async function mockApi(page) {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ client }) });
       return;
     }
+    // Saving follows the backend's revision rule: an existing name needs the
+    // revision the edit started from.
+    const saveMatch = path.match(/^designer\/projects\/([^/]+)$/);
+    if (saveMatch && method === "PUT") {
+      const body = route.request().postDataJSON();
+      control.saves = [...(control.saves || []), body.expected_revision];
+      const known = decodeURIComponent(saveMatch[1]) === "display.lvgldesign" && control.exists;
+      if (known && body.expected_revision !== control.currentRevision) {
+        await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({
+          error: body.expected_revision ? "revision_conflict" : "project_exists",
+          message: "Project already exists; load it before overwriting.",
+          details: { actual_revision: control.currentRevision },
+        }) });
+        return;
+      }
+      control.currentRevision = `sha256:saved${control.saves.length}`;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        name: decodeURIComponent(saveMatch[1]), revision: control.currentRevision, issues: [],
+      }) });
+      return;
+    }
     const sourceMatch = path.match(/^designer\/projects\/([^/]+)\/source(\/apply)?$/);
     if (sourceMatch) {
       if (!sourceMatch[2]) {
