@@ -14,7 +14,11 @@ from backend.runtime.manager import DeviceManager, RuntimeState
 from backend.runtime.registry import DeviceRegistry
 from backend.runtime.secrets import SecretStore
 from backend.settings import Settings
-from backend.viewer_bindings import ViewerBindingStore
+from backend.viewer_bindings import (
+    ViewerBindingStore,
+    validate_binding_targets,
+    viewer_targets_for_widget_type,
+)
 
 from .test_designer import project_with_button
 
@@ -234,3 +238,25 @@ def test_viewer_websocket_snapshot_is_filtered(tmp_path: Path, monkeypatch) -> N
     assert snapshot["devices"][0]["states"][0]["entity_id"] == "fake_sensor:7"
     assert "192.168.1.42" not in encoded
     assert "display-secret" not in encoded
+
+
+def test_viewer_targets_match_the_shared_contract_with_the_editor() -> None:
+    """The editor offers targets from frontend/runtime/bindings.js; a target
+    the backend then refuses failed every save with HTTP 422."""
+    contract = json.loads(
+        (Path(__file__).parent / "data" / "viewer_binding_targets.json").read_text(encoding="utf-8"))
+    for widget_type, targets in contract.items():
+        assert viewer_targets_for_widget_type(widget_type) == sorted(targets), widget_type
+
+
+@pytest.mark.parametrize(("widget_type", "target"), [
+    ("textarea", "text"), ("checkbox", "state_checked"),
+    ("dropdown", "selected_index"), ("roller", "selected_index"),
+])
+def test_targets_the_editor_offers_are_accepted(widget_type: str, target: str) -> None:
+    binding = {"widget_id": "w", "target": target, "device_id": "panel",
+               "entity_id": "select:mode"}
+
+    accepted = validate_binding_targets([binding], {"w": widget_type})
+
+    assert accepted[0]["target"] == target

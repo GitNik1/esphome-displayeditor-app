@@ -17,13 +17,18 @@ from .project_locks import locked_project_write
 _PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.lvgldesign$")
 _WIDGET_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _ENTITY_ID = re.compile(r"^[a-z0-9_]{1,64}:[A-Za-z0-9_.:-]{1,128}$")
-_TARGETS = {"text", "value", "state_checked"}
 _MAX_FILE_SIZE = 256 * 1024
+#: Which widget property a Viewer binding may drive, per widget type. Must
+#: match the Viewer runtime (frontend/viewer/runtime.js) - both are checked
+#: against tests/data/viewer_binding_targets.json.
 _TARGET_WIDGET_TYPES = {
-    "text": {"label"},
+    "text": {"label", "textarea"},
     "value": {"slider", "bar", "arc"},
-    "state_checked": {"switch"},
+    "state_checked": {"switch", "checkbox"},
+    "selected_index": {"dropdown", "roller"},
 }
+VIEWER_BINDING_TARGETS = tuple(_TARGET_WIDGET_TYPES)
+_TARGETS = set(VIEWER_BINDING_TARGETS)
 
 
 def viewer_targets_for_widget_type(widget_type: str) -> list[str]:

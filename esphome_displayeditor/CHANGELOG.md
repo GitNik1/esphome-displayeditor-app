@@ -61,6 +61,13 @@
   project file, which Ctrl+S used to do). New: Ctrl/Cmd+C and +V copy and
   paste widgets, Ctrl/Cmd+A selects every widget of the current surface, and
   Backspace deletes like Delete.
+- **Live data in the Viewer can drive text areas, checkboxes, dropdowns and
+  rollers.** The editor offered these targets, but saving such a binding
+  failed with HTTP 422 because the backend only knew labels, sliders, bars,
+  arcs and switches. Both sides now use the same list (MCP included), checked
+  against one shared test fixture. A dropdown/roller follows a `select`
+  entity by its option *text* (as Home Assistant and ESPHome report it);
+  numeric states still work as an index.
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.
