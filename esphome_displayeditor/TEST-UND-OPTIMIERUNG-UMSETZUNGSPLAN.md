@@ -13,23 +13,28 @@ Freigegebener Umfang der ersten Runde: **Phase 0 bis 2**. Phase 3–5 sind die R
 Entscheidung zu A6: Versionsgrenze des Device Builders ohne Live-Test auf
 `< 2026.11` anheben.
 
-| Schritt | Inhalt | Stand |
+| Schritt | Inhalt | Stand (27.10.2026) |
 |---|---|---|
-| Phase 0 | venv (Python 3.13, `mcp` 2.0) + `npm ci`, `scripts/dev_server.py`, Plan im Repo | erledigt |
-| A1a | Merge: Blockgrenzen, Gesamtprüfung, defekte Entwürfe | offen |
-| A1b | Merge: Round-Trip-Treue | offen |
-| A2 | Bilder-Negativcache, Rate-Limit-Buckets | offen |
-| A3 | Kurzbefehle | offen |
-| A4 | Undo-Schnappschuss erst bei echter Änderung | offen |
-| A5 | Autosave-Wiederherstellung speicherbar | offen |
-| A6 | Builder bis ESPHome 2026.10, Grund statt „Keine Berechtigung“ | offen |
-| A7 | Viewer-Bindungsziele Frontend/Backend | offen (eigene Session vorgeschlagen) |
-| A8 | Kern-Sync-Test zeilenendenneutral | offen |
-| A9 | Docker-Healthcheck | offen |
-| A10 | Entwurfsrevision bei Speichern/Merge/Veröffentlichen | offen |
-| A11 | Event-Loop entlasten | offen |
-| A12 | MCP-Token-Vergleich mit Nicht-ASCII | offen |
-| Phase 2 | Speichern, Toasts, Fokus, Hinweise, i18n | offen |
+| Phase 0 | venv (Python 3.13, `mcp` 2.0) + `npm ci`, `scripts/dev_server.py`, Plan im Repo | erledigt (c594fa2) |
+| A1a | Merge: Blockgrenzen, Gesamtprüfung, defekte Entwürfe | erledigt (28333f1) |
+| A1b | Merge: Round-Trip-Treue | erledigt (401aa32) – alle Fixtures byte-identisch, LF und CRLF |
+| A2 | Bilder-Negativcache, Rate-Limit-Buckets | erledigt (8383394) |
+| A3 | Kurzbefehle | erledigt (025944f) |
+| A4 | Undo-Schnappschuss erst bei echter Änderung | erledigt (5c9f051) |
+| A5 | Autosave-Wiederherstellung speicherbar | erledigt (a66b05f) |
+| A6 | Builder bis ESPHome 2026.10, Grund statt „Keine Berechtigung“ | erledigt (c5ccbe5) – ohne Live-Test (Entscheidung) |
+| A7 | Viewer-Bindungsziele Frontend/Backend | erledigt (58d7a8c) |
+| A8 | Kern-Sync-Test zeilenendenneutral | erledigt (7c9eb2e) |
+| A9 | Docker-Healthcheck | erledigt (12c7c34) – im Container selbst nicht geprüft |
+| A10 | Entwurfsrevision bei Speichern/Merge/Veröffentlichen | erledigt (5cf66b1) |
+| A11 | Event-Loop entlasten | erledigt (71c52f7) – `project_revisions`, `devices` u. a. folgen in Phase 3 |
+| A12 | MCP-Token-Vergleich mit Nicht-ASCII | erledigt (76cf063) |
+| Phase 2 | Speichern, Toasts, Fokus, Hinweise, Dialoge, i18n | erledigt (436ce39 … c16ed10) – ohne „Datei ▾“-Menü |
+
+Prüfstand nach der Umsetzung: Backend 616 bestanden (Coverage 86,4 %), Frontend-Unit
+223/223, Playwright-E2E 40/40, Ruff, TypeScript, Architektur-Check und
+`uv pip check` grün; Import → Speichern → Entwurf → Prüfen → Veröffentlichen im
+Dev-Server mit `p4_86_panel.yaml` erfolgreich.
 
 ## 1. Testergebnis (Ausgangslage)
 

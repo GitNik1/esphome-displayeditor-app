@@ -31,6 +31,9 @@ OPTIONS = {
     "access_level": "write",
     "default_role": "administrator",
     "runtime_provider": "disabled",
+    # As in the add-on's defaults (config.yaml): the MDI icon font is served
+    # locally; the GitHub URL is refused by the browser (CORS).
+    "mdi_local": True,
 }
 
 
