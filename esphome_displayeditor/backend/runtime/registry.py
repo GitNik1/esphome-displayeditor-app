@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import os
 import re
-import tempfile
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from ..errors import ApiError
+from ..atomic_files import write_atomic
 
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
@@ -22,23 +21,8 @@ _HOSTNAME = re.compile(
 
 
 def _atomic_json_write(path: Path, value: object, mode: int = 0o600) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(value, stream, ensure_ascii=False, indent=2, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary_name, mode)
-        os.replace(temporary_name, path)
-        os.chmod(path, mode)
-    except BaseException:
-        try:
-            os.unlink(temporary_name)
-        except OSError:
-            pass
-        raise
+    data = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    write_atomic(path, data.encode("utf-8"), mode=mode)
 
 
 @dataclass(frozen=True)

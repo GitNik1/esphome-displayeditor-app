@@ -14,6 +14,11 @@
   other while one of them reads.
 - Validation errors no longer repeat the submitted values in the response
   (which could echo an API key or a whole YAML file into logs).
+- **Publishing keeps the file's permissions.** The active ESPHome YAML was
+  replaced by a temporary file created with mode 0600, so after publishing
+  only its owner could read it. Every file the app writes now goes through
+  one helper that keeps the replaced file's permissions (secrets explicitly
+  stay 0600) and fsyncs file and directory alike.
 - **Saving into an existing configuration no longer duplicates widgets.** A
   commented-out line at column 0 inside `lvgl:` (for example
   `#        pad_left: 6`) used to end the block early: only its first part was

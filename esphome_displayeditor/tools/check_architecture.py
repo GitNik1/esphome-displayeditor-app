@@ -65,7 +65,7 @@ OVERSIZED_BASELINE = {
     "backend/entity_bindings.py": 934,
     "backend/designer.py": 770,
     "backend/lvgl_merge.py": 696,
-    "backend/filesystem.py": 684,
+    "backend/filesystem.py": 625,
 }
 
 #: Generated or copied code: the MDI glyph catalog and translation tables,

@@ -5,7 +5,6 @@ from __future__ import annotations
 import difflib
 import hashlib
 import os
-import tempfile
 from pathlib import Path, PurePosixPath
 from stat import S_ISREG
 from typing import Any
@@ -13,6 +12,7 @@ from typing import Any
 import yaml
 from yaml.constructor import ConstructorError
 
+from .atomic_files import write_atomic
 from .errors import ApiError
 from .project_locks import project_file_lock
 from .settings import Settings
@@ -315,7 +315,7 @@ class FilesystemBackend:
         with self._configuration_lock(relative):
             self._require_draft_revision(draft, expected_draft_revision)
             draft.parent.mkdir(parents=True, exist_ok=True)
-            self._atomic_write(draft, content)
+            write_atomic(draft, content.encode("utf-8"))
         return {"name": relative.as_posix(), "revision": revision_for(content)}
 
     def _require_draft_revision(self, draft: Path, expected: Any) -> None:
@@ -377,7 +377,7 @@ class FilesystemBackend:
                     },
                 )
             draft.parent.mkdir(parents=True, exist_ok=True)
-            self._atomic_write(draft, content)
+            write_atomic(draft, content.encode("utf-8"))
             verified = self._read(draft, missing_error="draft_not_found")
             if verified != content:
                 raise ApiError(
@@ -466,7 +466,7 @@ class FilesystemBackend:
                     422,
                     {"error": str(exc), "line": line, "column": column},
                 )
-            self._atomic_write(active, content)
+            write_atomic(active, content.encode("utf-8"))
             verified = self._read(active, missing_error="configuration_not_found")
             new_revision = revision_for(verified)
             if new_revision != revision_for(content):
@@ -556,7 +556,7 @@ class FilesystemBackend:
                     409,
                 )
 
-        self._atomic_write_bytes(target, content)
+        write_atomic(target, content)
         return {
             "path": f"{self._assets_subdir}/{relative.as_posix()}",
             "size": len(content),
@@ -596,7 +596,7 @@ class FilesystemBackend:
                     409,
                 )
 
-        self._atomic_write_bytes(target, content)
+        write_atomic(target, content)
         return {
             "path": f"{self._font_assets_subdir}/{relative.as_posix()}",
             "size": len(content),
@@ -623,62 +623,3 @@ class FilesystemBackend:
                 mark.column + 1 if mark is not None else None,
             )
 
-    @staticmethod
-    def _atomic_write_bytes(path: Path, content: bytes) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_name: str | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                dir=path.parent,
-                prefix=f".{path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                temporary_name = handle.name
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_name, path)
-            temporary_name = None
-        finally:
-            if temporary_name:
-                try:
-                    Path(temporary_name).unlink()
-                except FileNotFoundError:
-                    pass
-
-    @staticmethod
-    def _atomic_write(path: Path, content: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_name: str | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                newline="",
-                dir=path.parent,
-                prefix=f".{path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                temporary_name = handle.name
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_name, path)
-            temporary_name = None
-            try:
-                directory_fd = os.open(path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
-            except OSError:
-                pass
-        finally:
-            if temporary_name:
-                try:
-                    Path(temporary_name).unlink()
-                except FileNotFoundError:
-                    pass

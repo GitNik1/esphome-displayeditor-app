@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 import secrets
 import stat
-import tempfile
 import threading
 from typing import Any
 
@@ -20,6 +19,7 @@ from ..assistant_tools.limits import (
     MCP_TOKEN_STORE_MAX_BYTES,
 )
 from ..errors import ApiError
+from ..atomic_files import write_atomic
 from ..project_locks import project_file_lock
 from .identity import (
     MCPAuthorization,
@@ -322,32 +322,14 @@ class MCPTokenStore:
         self._ensure_root()
         if self.path.is_symlink():
             raise ApiError("mcp_token_store_unsafe", "The MCP token store is unsafe.", 500)
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=".tokens.",
-            dir=self.root,
-        )
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-                json.dump(
-                    {"version": 1, "tokens": records},
-                    stream,
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.chmod(temporary_name, 0o600)
-            os.replace(temporary_name, self.path)
-            os.chmod(self.path, 0o600)
-            self._invalidate_cache()
-        except BaseException:
-            try:
-                os.unlink(temporary_name)
-            except OSError:
-                pass
-            raise
+        data = json.dumps(
+            {"version": 1, "tokens": records},
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ) + "\n"
+        write_atomic(self.path, data.encode("utf-8"), mode=0o600)
+        self._invalidate_cache()
 
     @staticmethod
     def _valid_record(item: Any) -> bool:

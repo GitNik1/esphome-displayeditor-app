@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
+from .atomic_files import write_atomic
 from .errors import ApiError
 from .filesystem import revision_for
 from .project_locks import locked_project_write
@@ -163,7 +163,7 @@ class ViewerBindingStore:
                 {"expected_revision": expected_revision, "actual_revision": None},
             )
         raw = (json.dumps({"version": 1, "bindings": normalized}, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-        self._atomic_write(path, raw)
+        write_atomic(path, raw)
         return {
             "project": project_name,
             "bindings": normalized,
@@ -196,22 +196,3 @@ class ViewerBindingStore:
             if descriptor >= 0:
                 os.close(descriptor)
 
-    @staticmethod
-    def _atomic_write(path: Path, raw: bytes) -> None:
-        temporary_name: str | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
-            ) as handle:
-                temporary_name = handle.name
-                handle.write(raw)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_name, path)
-            temporary_name = None
-        finally:
-            if temporary_name:
-                try:
-                    Path(temporary_name).unlink()
-                except FileNotFoundError:
-                    pass
