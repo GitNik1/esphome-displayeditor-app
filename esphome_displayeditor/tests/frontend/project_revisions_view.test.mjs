@@ -7,12 +7,27 @@ import {
   actorLabel,
   carriesContent,
   entryModifier,
+  formatRevisionDate,
   formatSize,
   groupFeedByDay,
   lockQuota,
   originKey,
+  parseCompareTarget,
   versionTitle,
 } from "../../frontend/project/revisions-view.js";
+
+test("parseCompareTarget keeps 'current' and turns ids into numbers", () => {
+  assert.equal(parseCompareTarget("current"), "current");
+  assert.equal(parseCompareTarget("12"), 12);
+});
+
+test("formatRevisionDate follows the UI language and tolerates bad values", () => {
+  const value = "2026-08-27T10:00:00+00:00";
+  assert.equal(formatRevisionDate(value, "en", true), "27 Aug 2026");
+  assert.match(formatRevisionDate(value, "de"), /27\.08\.2026|27\. Aug\. 2026/);
+  assert.equal(formatRevisionDate(null, "de"), "—");
+  assert.equal(formatRevisionDate("not a date", "en"), "not a date");
+});
 
 const translate = (key, params = {}) =>
   Object.entries(params).reduce(

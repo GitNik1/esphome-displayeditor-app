@@ -59,7 +59,7 @@ MODULE_LINE_LIMIT = 500
 #: production module. They may shrink - lower the number when they do - but
 #: never grow; the composition root app.js is being split up step by step.
 OVERSIZED_BASELINE = {
-    "frontend/app.js": 9878,
+    "frontend/app.js": 9169,
     "frontend/viewer/viewer.js": 1001,
     "frontend/layout.js": 521,
     "backend/entity_bindings.py": 934,
