@@ -45,9 +45,11 @@ app factory -> API routers -> services -> stores/adapters
   silently bypass checking.
 - Backend coverage remains at or above 83 percent.
 - Dependency locks, audit, Ruff, compilation, and container builds run in CI.
-- New feature modules stay below 500 lines and controllers below 300 lines;
-  generated catalogs, translation tables, and composition roots are measured
-  separately.
+- Every production module stays below 500 lines and controllers below 300
+  lines (`tools/check_architecture.py`). Modules that were already larger -
+  the composition root `app.js` among them - are listed with their size as a
+  baseline: they may shrink, never grow. Generated catalogs, translation
+  tables and the shared `designer_core` copy are exempt.
 - The PowerShell and shell workflows are fail-fast and must propagate native
   command failures.
 
