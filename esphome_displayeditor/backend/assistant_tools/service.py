@@ -5,16 +5,10 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
-from ..audit import AuditStore
 from ..builder import BuilderManager
-from ..designer import DesignerService
-from ..filesystem import FilesystemBackend
-from ..project_store import ProjectStore
-from ..runtime.registry import DeviceRegistry
 from ..settings import Settings
+from ..stores import Stores
 from ..version import APP_VERSION
-from ..viewer_bindings import ViewerBindingStore
-from ..workflow import WorkflowStore
 from .binding_operations import ProjectBindingOperation
 from .viewer_scenario_service import read_viewer_scenarios
 from .limits import (
@@ -62,20 +56,25 @@ class AssistantToolService:
     module under the project's backend line limit.
     """
 
-    def __init__(self, settings: Settings, *, builder: BuilderManager | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        builder: BuilderManager | None = None,
+        stores: Stores | None = None,
+    ) -> None:
+        """``stores`` are the application's own instances (``create_app``);
+        without them - the MCP listener process, tests - they are opened here."""
+        stores = stores or Stores.open(settings)
         self.settings = settings
-        self.designer = DesignerService(settings.data_root)
-        self.filesystem = FilesystemBackend(settings)
-        self.projects = ProjectStore(
-            settings.data_root,
-            self.designer,
-            settings.max_file_size,
-        )
-        self.audit = AuditStore(settings.data_root)
-        self.workflow = WorkflowStore(settings.data_root)
+        self.designer = stores.designer
+        self.filesystem = stores.filesystem
+        self.projects = stores.projects
+        self.audit = stores.audit
+        self.workflow = stores.workflow
         self.changesets = ChangeSetStore(settings.data_root)
-        self.viewer_bindings = ViewerBindingStore(settings.data_root)
-        self.device_registry = DeviceRegistry(settings.data_root)
+        self.viewer_bindings = stores.viewer_bindings
+        self.device_registry = stores.device_registry
         self.device_discovery = DeviceDiscoveryService(
             self.device_registry,
             runtime_available=settings.runtime_provider == "native",

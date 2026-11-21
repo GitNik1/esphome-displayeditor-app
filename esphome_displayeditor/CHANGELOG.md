@@ -30,6 +30,13 @@
   running, and `secrets.yaml` is refused for publishing too. Merging a
   project into a draft likewise uses one implementation for both, with the
   same error messages.
+- The live event streams (firmware jobs, device states, viewer data) now
+  check access in the same order as every other route: Ingress first, then
+  whether the feature is switched on. A client outside Ingress could
+  previously learn that the device runtime was off. A stream for a feature
+  that is off now closes with `capability_unavailable` instead of
+  `permission_denied`. The app and its built-in assistant now share one set
+  of stores instead of opening every database twice.
 - **Saving into an existing configuration no longer duplicates widgets.** A
   commented-out line at column 0 inside `lvgl:` (for example
   `#        pad_left: 6`) used to end the block early: only its first part was
