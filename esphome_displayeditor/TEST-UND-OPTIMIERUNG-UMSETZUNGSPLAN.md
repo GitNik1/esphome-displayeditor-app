@@ -11,7 +11,8 @@ wurden im Code oder per Reproduktion nachgeprüft.
 
 Freigegebener Umfang der ersten Runde: **Phase 0 bis 2**. Phase 3–5 sind die Roadmap.
 Entscheidung zu A6: Versionsgrenze des Device Builders ohne Live-Test auf
-`< 2026.11` anheben.
+`< 2026.11` anheben. Zweite Runde (21.11.2026): **Phase 3 – Code-Struktur**, Stand
+im Abschnitt „Phase 3“ unter der Tabelle.
 
 | Schritt | Inhalt | Stand (27.10.2026) |
 |---|---|---|
@@ -35,6 +36,42 @@ Prüfstand nach der Umsetzung: Backend 616 bestanden (Coverage 86,4 %), Frontend
 223/223, Playwright-E2E 40/40, Ruff, TypeScript, Architektur-Check und
 `uv pip check` grün; Import → Speichern → Entwurf → Prüfen → Veröffentlichen im
 Dev-Server mit `p4_86_panel.yaml` erfolgreich.
+
+### Phase 3 – Code-Struktur (Stand 21.11.2026)
+
+| Schritt | Inhalt | Stand |
+|---|---|---|
+| 3.1 | 500-Zeilen-Grenze für alle Module (Ausnahmen: generierte Tabellen, `designer_core`); Ausreißer mit Baseline, die beim Schrumpfen mitsinken muss | erledigt (7679cb1, verschärft in cc11370) |
+| 3.2 | Catch-all-Fehlerhandler mit Referenz im Log, 422 ohne Eingabe-Echo, Audit nicht mehr fatal und auf 50 000 Einträge begrenzt, SQLite im WAL-Modus | erledigt (8f14525) |
+| 3.3 | Ein Atomic-Write-Helfer statt sechs; Veröffentlichen behält den Dateimodus (setzte 0600) | erledigt (716a8e9) |
+| 3.4 | Ruff `ASYNC`/`B`/`BLE`; restliche blockierende Handler im Threadpool | erledigt (d558ae5) |
+| 3.5 | Ein Firmware-Workflow und ein Draft-Merge für Web-UI und MCP – MCP bekommt Job-Sperre pro Konfiguration, kein Veröffentlichen bei laufendem Job, `secrets.yaml` gesperrt | erledigt (a61adc1) |
+| 3.6 | Eine Zugriffsprüfung (Ingress, Identität, Rechte, Rate-Limit) für HTTP und die WebSocket-Streams (als `backend/api/access.py`; im Plan hieß das Modul `dependencies.py`); Stores einmal pro Prozess, der Assistent nutzt sie mit | erledigt (2aac24f) |
+| 3.7 | `app.js`: Konfigurationen und Firmware-Jobs als Module, neue E2E-Suite; behoben: Veröffentlichen mit ungespeicherten Änderungen, Überschreiben nach abgebrochenem Merge-Dialog, OTA-Meldung und `<html lang>` | erledigt (cc11370) |
+| 3.8 | `app.js`: Versionsverlauf, historische Ansicht mit Graph und Farbbibliothek als Module (Farbbibliothek mit erstem E2E-Test) | erledigt (665f4d4, 7754b9f) – Schriftbibliothek offen |
+
+`app.js` schrumpfte von 10 374 auf 9 028 Zeilen. Prüfstand nach Phase 3: Backend 636
+bestanden, 7 übersprungen (Symlinks/POSIX-Rechte unter Windows; die POSIX-Tests liefen
+in WSL), Coverage 87,0 %; Frontend-Unit 227/227; Playwright-E2E 50/50 (neu:
+Konfigurationen 9, Bibliotheken 1); Ruff, compileall, TypeScript, Architektur-Check und
+`uv pip check` grün. Im Dev-Server geprüft: Konfiguration öffnen → Entwurf → Sperre bei
+ungespeicherten Änderungen → Syntax/Diff, Liste/Detail auf Handybreite,
+Versionsdialog → historische Ansicht → zurück, Farbbibliothek; keine Konsolen- oder
+Serverfehler.
+
+Offen aus Phase 3 – die nächsten Schritte, in dieser Reihenfolge:
+1. Schriftbibliothek aus `app.js` lösen (~730 Zeilen mit Icon-Katalog, MDI-Schriften,
+   Glyphen-Editor, Web-Font-Quellen). Vorher E2E-Abdeckung schaffen – der Mock braucht
+   dafür Font-Upload und die Font-Quellen-Endpunkte.
+2. Glow-Line-Editor, Eigenschaften-Panel, Canvas-Rendering/Gesten aus `app.js` lösen.
+3. Gezielt rendern statt `renderDesigner()` für alles; Eingaben entprellen; günstigere
+   Undo-Schnappschüsse.
+4. Backend: YAML pro Merge einmal parsen, `list_configs` per mtime/Größe cachen,
+   Revisionen als gemeinsamer Service für REST und MCP (Diff und „restorable“ gleich).
+5. `STYLE_PARTS` und Bindungsziele aus einer Quelle, tote Add-on-Schemas für bar/arc
+   entfernen, gzip für statische Dateien.
+6. Bedienung: Jobstatus übersetzen (heute „queued“, „running“ roh); „Syntax prüfen“ und
+   „Diff“ arbeiten auf dem gespeicherten Stand, nicht auf dem Editorinhalt.
 
 ## 1. Testergebnis (Ausgangslage)
 
@@ -234,7 +271,7 @@ Schwellen werden nicht gesenkt. Neue Frontend-Logik entsteht als eigene Module, 
   Versionen → Bibliotheken → Glow-Line → Eigenschaften → Canvas), Größen-Ratsche in
   `check_architecture.py`, gezieltes Rendern; Backend-Services für Firmware, Draft-Merge,
   Revisionen; gemeinsame Request-Identität; ein Atomic-Write-Helfer; SQLite mit WAL;
-  Ruff `ASYNC`/`BLE`/`B`.
+  Ruff `ASYNC`/`BLE`/`B`. Stand und offene Punkte: Abschnitt „Phase 3“ oben.
 - Phase 4: Trigger/Aktionen im Action-Builder, Stilbibliothek, `line`/`buttonmatrix`,
   Viewer-Lücken, MCP nach Bedarf.
 - Phase 5: Doku/Screenshots/Icon, E2E für Import→Merge→Veröffentlichen, CI-Lint/Audit/
