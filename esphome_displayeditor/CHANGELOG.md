@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **An unexpected server error now says so.** Errors the API did not map
+  ended as a plain-text "Internal Server Error" the UI could only show as
+  "HTTP 500". They are now a structured response with a short reference
+  that also appears in the app log next to the traceback.
+- A failed audit entry - a full disk, the database briefly locked by the MCP
+  process - no longer turns an already completed save or publish into an
+  error; it is logged instead. The audit log keeps the newest 50,000 entries
+  instead of growing without limit, and the app's SQLite databases use
+  write-ahead logging, so the app and the MCP server no longer block each
+  other while one of them reads.
+- Validation errors no longer repeat the submitted values in the response
+  (which could echo an API key or a whole YAML file into logs).
 - **Saving into an existing configuration no longer duplicates widgets.** A
   commented-out line at column 0 inside `lvgl:` (for example
   `#        pad_left: 6`) used to end the block early: only its first part was

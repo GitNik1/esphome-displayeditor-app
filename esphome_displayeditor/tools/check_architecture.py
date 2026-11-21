@@ -66,7 +66,6 @@ OVERSIZED_BASELINE = {
     "backend/designer.py": 770,
     "backend/lvgl_merge.py": 696,
     "backend/filesystem.py": 684,
-    "backend/app.py": 522,
 }
 
 #: Generated or copied code: the MDI glyph catalog and translation tables,

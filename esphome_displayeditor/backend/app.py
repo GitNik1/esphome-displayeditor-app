@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .api.error_handlers import install_error_handlers
 from .api.viewer_projection import viewer_entity, viewer_state
 from .api.routers.system import create_system_router
 from .api.routers.builder import create_builder_router
@@ -34,7 +34,6 @@ from .api.routers.assistant import create_assistant_router
 from .assistant_tools import AssistantToolService
 from .audit import AuditStore
 from .builder import BuilderManager
-from .builder.adapter import BuilderAdapterError
 from .designer import DesignerService
 from .errors import ApiError, capability_unavailable
 from .filesystem import FilesystemBackend
@@ -241,34 +240,7 @@ def create_app(
             response.headers["Cache-Control"] = "no-cache"
         return response
 
-    @application.exception_handler(ApiError)
-    async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"error": exc.error, "message": exc.message, "details": exc.details},
-        )
-
-    @application.exception_handler(BuilderAdapterError)
-    async def builder_error_handler(
-        _request: Request, exc: BuilderAdapterError
-    ) -> JSONResponse:
-        return JSONResponse(
-            status_code=504 if exc.code == "builder_timeout" else 503,
-            content={"error": exc.code, "message": exc.message, "details": {}},
-        )
-
-    @application.exception_handler(RequestValidationError)
-    async def validation_error_handler(
-        _request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
-        return JSONResponse(
-            status_code=422,
-            content={
-                "error": "invalid_request",
-                "message": "The request body or parameters are invalid.",
-                "details": {"errors": exc.errors()},
-            },
-        )
+    install_error_handlers(application)
 
     def request_identity(request: Request) -> tuple[str | None, str]:
         user_id = request.headers.get("X-Remote-User-Id", "").strip() or None

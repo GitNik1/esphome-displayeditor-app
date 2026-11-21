@@ -2,16 +2,29 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 import threading
-import json
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .sqlite_support import use_write_ahead_log
+
+_LOGGER = logging.getLogger(__name__)
+
+#: Rows kept; older ones are pruned. Generous - an install writes a few
+#: hundred a day - but the table no longer grows without bound (every
+#: refused request writes a row too).
+AUDIT_RETENTION_ROWS = 50_000
+_PRUNE_EVERY = 500
+
 
 class AuditStore:
-    def __init__(self, data_root: Path) -> None:
+    def __init__(self, data_root: Path, *, retention_rows: int = AUDIT_RETENTION_ROWS) -> None:
+        self.retention_rows = retention_rows
+        self._writes = 0
         database_dir = data_root / "database"
         database_dir.mkdir(parents=True, exist_ok=True)
         self.path = database_dir / "audit.sqlite3"
@@ -25,6 +38,7 @@ class AuditStore:
 
     def _initialize(self) -> None:
         with closing(self._connect()) as connection, connection:
+            use_write_ahead_log(connection)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS audit_events (
@@ -48,6 +62,13 @@ class AuditStore:
             for name in ("job_id", "esphome_version", "metadata_json"):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE audit_events ADD COLUMN {name} TEXT")
+            self._prune(connection)
+
+    def _prune(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "DELETE FROM audit_events WHERE id <= (SELECT MAX(id) FROM audit_events) - ?",
+            (self.retention_rows,),
+        )
 
     def record(
         self,
@@ -62,6 +83,19 @@ class AuditStore:
         esphome_version: str | None = None,
         metadata: dict | None = None,
     ) -> None:
+        """Append an event. Never raises: an audit row that cannot be
+        written (a full disk, the database locked by the other process) is
+        logged, but must not turn the change it describes - usually already
+        saved - into an error response."""
+        try:
+            self._insert(user_id, action, configuration, old_revision, new_revision,
+                         result, job_id, esphome_version, metadata)
+        except sqlite3.Error as exc:
+            _LOGGER.warning("Audit event %s for %s could not be written: %s",
+                            action, configuration, exc)
+
+    def _insert(self, user_id, action, configuration, old_revision, new_revision,
+                result, job_id, esphome_version, metadata) -> None:
         with self._lock, closing(self._connect()) as connection, connection:
             connection.execute(
                 """
@@ -86,6 +120,9 @@ class AuditStore:
                     else None,
                 ),
             )
+            self._writes += 1
+            if self._writes % _PRUNE_EVERY == 0:
+                self._prune(connection)
 
     def recent(self, limit: int = 100) -> list[dict]:
         safe_limit = min(max(limit, 1), 500)
