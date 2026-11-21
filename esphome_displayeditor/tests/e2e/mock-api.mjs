@@ -1,5 +1,11 @@
 import { expect } from "@playwright/test";
 
+import {
+  configurationCapabilities,
+  connectedBuilder,
+  createConfigurationMock,
+} from "./mock-configurations.mjs";
+
 // Shared by app.spec.mjs and layout.spec.mjs: one mocked backend, so the
 // behavioural and the geometry suites exercise the very same screens.
 
@@ -74,7 +80,10 @@ export const sourcePlanWithChanges = {
   binding_losses: [{ id: "show_level", missing: ["title"] }],
 };
 
-export async function mockApi(page) {
+/** `configurations` adds the configuration workspace and the Device
+ * Builder (mock-configurations.mjs); its state is `control.configurations`. */
+export async function mockApi(page, { configurations = false } = {}) {
+  const configurationMock = configurations ? createConfigurationMock() : null;
   const mcpClients = [];
   const versions = revisionVersions.map((item) => ({ ...item }));
   // Shared by the resync and the restore handler: both append a version, and
@@ -86,10 +95,12 @@ export async function mockApi(page) {
     lastDiff: null,
     sourcePlan: { available: false, reason: "no_source" },
     lastResync: null,
+    configurations: configurationMock?.control ?? null,
   };
   await page.route("**/api/v1/**", async (route) => {
     const path = new URL(route.request().url()).pathname.replace(/^.*\/api\/v1\//, "");
     const method = route.request().method();
+    if (configurationMock && await configurationMock.handle(route, path, method)) return;
     if (path === "admin/mcp/test" && method === "POST") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ reachable: true, status: "ok", latency_ms: 4 }) });
       return;
@@ -253,8 +264,14 @@ export async function mockApi(page) {
     }
     const payloads = {
       health: { status: "ok" },
-      system: { access_level: "write", user: { role: "administrator", name: "smoke" } },
-      capabilities: { capabilities: { "designer.project": true, "designer.project_write": true, "mcp.manage": true } },
+      system: {
+        access_level: "write", user: { role: "administrator", name: "smoke" },
+        ...(configurationMock ? { builder: connectedBuilder } : {}),
+      },
+      capabilities: { capabilities: {
+        "designer.project": true, "designer.project_write": true, "mcp.manage": true,
+        ...(configurationMock ? configurationCapabilities : {}),
+      } },
       "designer/schemas": { widgets: [{ type_key: "label", label: "Label", category: "display", default_size: [100, 40], allows_children: false, properties: [] }], grid_cell_properties: [], states: [] },
       "designer/projects": { projects: [{ name: "display.lvgldesign", size: 900, revision: "sha256:bbb", updated_at: "2026-08-27T10:00:00+00:00" }] },
       "designer/revisions": { limit: 50, events: [
@@ -284,6 +301,9 @@ export async function mockApi(page) {
     const key = path.startsWith("designer/schemas") ? "designer/schemas" : path;
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payloads[key] || {}) });
   });
+  if (configurationMock) {
+    await page.routeWebSocket("**/api/v1/jobs/events", configurationMock.handleJobEvents);
+  }
   return control;
 }
 

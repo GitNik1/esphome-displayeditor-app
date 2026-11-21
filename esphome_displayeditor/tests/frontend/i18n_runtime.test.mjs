@@ -12,3 +12,11 @@ test("i18n runtime detects, persists, interpolates and falls back", () => {
   assert.equal(values.get("esphome_de_app_lang"), "de");
   assert.equal(runtime.t("missing"), "missing");
 });
+
+test("German and English tables have the same keys", async () => {
+  const { STRINGS } = await import("../../frontend/i18n.js");
+  const german = Object.keys(STRINGS.de);
+  const english = new Set(Object.keys(STRINGS.en));
+  assert.deepEqual(german.filter((key) => !english.has(key)), []);
+  assert.deepEqual([...english].filter((key) => !(key in STRINGS.de)), []);
+});

@@ -57,3 +57,19 @@ export function findMatch(content, query, selectionStart, direction) {
   if (selected < 0) selected = direction < 0 ? matches.length - 1 : 0;
   return { count: matches.length, selected, index: matches[selected] };
 }
+
+/**
+ * The text offset of a 1-based line and column - the YAML parser's own
+ * convention, and what its error message tells the user to look for.
+ * Positions past the end land on the end.
+ * @param {string} content @param {number} line @param {number} column
+ */
+export function offsetForLineColumn(content, line, column) {
+  const lines = content.split("\n");
+  let offset = 0;
+  for (let index = 0; index < Math.min(Math.max(line, 1) - 1, lines.length); index += 1) {
+    offset += lines[index].length + 1;
+  }
+  offset += Math.max(0, (Number(column) || 1) - 1);
+  return Math.min(offset, content.length);
+}

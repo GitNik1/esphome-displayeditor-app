@@ -145,14 +145,7 @@ import {
   formatDeviceLogs as formatLogs,
   mergeDeviceState,
 } from "./devices/model.js";
-import {
-  applyBuilderEvent,
-  builderAvailability,
-  builderBlockedReason,
-  builderRequest,
-  replaceBuilderJobs,
-  sortedBuilderJobs,
-} from "./builder/model.js";
+import { createBuilderView } from "./builder/view.js";
 import { pointFromClient, snapAngle } from "./canvas/geometry.js";
 import { applyWidgetLayout, configureCanvas, createCanvasLayers } from "./canvas/view.js";
 import {
@@ -169,12 +162,7 @@ import {
 import { createBasicPropertyControl } from "./properties/view.js";
 import { renderViewerMeter } from "./viewer/widget-primitives.js";
 import { assetLoadFailed, forgetFailedAssets, markAssetLoadFailed } from "./viewer/assets.js";
-import {
-  cursorPosition,
-  editorIsDirty,
-  findMatch,
-  lineNumbers,
-} from "./configurations/editor-model.js";
+import { createConfigurationWorkspace } from "./configurations/workspace.js";
 import { applyStaticTranslations, getLanguage, setLanguage, t } from "./i18n/runtime.js";
 import {
   ViewerController,
@@ -314,8 +302,37 @@ let mcpListenerStatus = null;
 let mcpListenerProbe = null;
 /** @type {any} */
 let deviceEventsClient = null;
-/** @type {any} */
-let builderEventsClient = null;
+// The configuration view (configurations/workspace.js) and its Device
+// Builder actions (builder/view.js).
+const builderView = createBuilderView({
+  els: {
+    validate: $("#validate-esphome"), compile: $("#compile-config"), install: $("#install-config"),
+    refreshJobs: $("#refresh-jobs"), panel: $("#builder-jobs"), list: $("#builder-job-list"),
+    output: $("#config-output"),
+  },
+  state, t, toast, confirm: (message) => confirm(message),
+  controller: builderController, createSocket: createJsonSocket,
+});
+const configurationWorkspace = createConfigurationWorkspace({
+  els: {
+    view: $("#configurations"), list: $("#config-list"), refresh: $("#refresh-configs"),
+    backToList: $("#back-to-configs"), title: $("#config-title"), revision: $("#revision"),
+    output: $("#config-output"), checkYaml: $("#check-yaml"), showDiff: $("#show-diff"),
+    mergeDraft: $("#merge-draft"), saveDraft: $("#save-draft"), publish: $("#publish"),
+    mergeDialog: $("#merge-dialog"), mergeName: $("#merge-config-name"),
+    mergeActive: $("#merge-active"), mergeDraftSource: $("#merge-draft-source"),
+    mergeResult: $("#merge-result"), closeMerge: $("#close-merge-dialog"),
+    cancelMerge: $("#cancel-merge"), saveMerge: $("#save-merge"),
+    editor: {
+      editor: $("#yaml-editor"), lineNumbers: $("#yaml-line-numbers"),
+      dirtyStatus: $("#yaml-dirty-status"), stateBadge: $("#yaml-state-badge"),
+      cursorStatus: $("#yaml-cursor-status"), search: $("#yaml-search"),
+      searchResult: $("#yaml-search-result"), searchPrevious: $("#yaml-search-previous"),
+      searchNext: $("#yaml-search-next"),
+    },
+  },
+  state, api, t, toast, confirm: (message) => confirm(message), builder: builderView,
+});
 /** @type {any} */
 let viewerRuntimeClient = null;
 
@@ -417,7 +434,8 @@ async function initialize() {
   bindUnloadGuard();
   bindTabs();
   bindDesigner();
-  bindConfigurations();
+  configurationWorkspace.bind();
+  builderView.bind();
   bindDevices();
   bindMcpTokens();
   bindRevisions();
@@ -446,8 +464,8 @@ async function initialize() {
     $("#assistant-card").classList.toggle("hidden", !state.capabilities["assistant.ask"]);
     $("#revision-feed-card").classList.toggle("hidden", !state.capabilities["designer.project"]);
     if (state.capabilities["assistant.ask"]) updateAssistantContext();
-    updateDraftActionButtons();
-    updateBuilderButtons();
+    configurationWorkspace.updateDraftButtons();
+    builderView.updateButtons();
     renderPalette();
     const initialLoads = [loadServerProjects(), loadDevices(), loadViewerRuntimeSources()];
     if (state.capabilities["mcp.manage"]) initialLoads.push(loadMcpTokens());
@@ -455,7 +473,7 @@ async function initialize() {
       initialLoads.push(loadRevisionFeed());
       startExternalChangeWatch();
     }
-    if (state.capabilities["configuration.list"]) initialLoads.push(loadConfigurations());
+    if (state.capabilities["configuration.list"]) initialLoads.push(configurationWorkspace.loadList());
     else {
       $("#config-list").textContent = t("configs.filesystemDisabled");
       $("#refresh-configs").disabled = true;
@@ -464,8 +482,8 @@ async function initialize() {
     await reopenLastProject();
     connectDeviceEvents();
     if (state.capabilities["firmware.compile"]) {
-      await loadBuilderJobs();
-      connectBuilderEvents();
+      await builderView.loadJobs();
+      builderView.connectEvents();
     }
   } catch (/** @type {any} */ error) {
     $("#profile").textContent = t("app.tagline.unreachable");
@@ -9747,9 +9765,9 @@ async function saveMergeDraft() {
     $$(".tab").forEach((item) => item.classList.toggle("active", item.dataset.tab === "configurations"));
     $$(".view").forEach((view) => view.classList.toggle("active", view.id === "configurations"));
     $("#configurations").classList.remove("showing-list");
-    await loadConfigurations();
+    await configurationWorkspace.loadList();
     const entry = state.configurations.find((/** @type {any} */ item) => item.name === target);
-    if (entry) await loadConfiguration(entry);
+    if (entry) await configurationWorkspace.open(entry);
   } catch (/** @type {any} */ error) {
     toast(error.message, true, error.details);
   } finally {
@@ -9845,520 +9863,6 @@ function renderIssues(/** @type {any} */ container, /** @type {any} */ issues, c
     list.append(entry);
   });
   container.append(list);
-}
-
-function bindConfigurations() {
-  $("#refresh-configs").addEventListener("click", loadConfigurations);
-  $("#save-draft").addEventListener("click", saveDraft);
-  $("#check-yaml").addEventListener("click", checkYaml);
-  $("#validate-esphome").addEventListener("click", validateEspHome);
-  $("#show-diff").addEventListener("click", showDiff);
-  $("#merge-draft").addEventListener("click", openMergeDialog);
-  $("#publish").addEventListener("click", publishDraft);
-  $("#compile-config").addEventListener("click", compileConfiguration);
-  $("#install-config").addEventListener("click", installConfiguration);
-  $("#refresh-jobs").addEventListener("click", loadBuilderJobs);
-  $("#close-merge-dialog").addEventListener("click", () => $("#merge-dialog").close());
-  $("#cancel-merge").addEventListener("click", () => $("#merge-dialog").close());
-  $("#save-merge").addEventListener("click", saveMergedDraft);
-  const editor = $("#yaml-editor");
-  editor.addEventListener("input", updateYamlEditorUi);
-  editor.addEventListener("click", updateYamlCursorStatus);
-  editor.addEventListener("keyup", updateYamlCursorStatus);
-  editor.addEventListener("select", updateYamlCursorStatus);
-  editor.addEventListener("scroll", () => {
-    $("#yaml-line-numbers").scrollTop = editor.scrollTop;
-  });
-  editor.addEventListener("keydown", (/** @type {any} */ event) => {
-    if (event.key !== "Tab") return;
-    event.preventDefault();
-    const start = editor.selectionStart;
-    editor.setRangeText("  ", start, editor.selectionEnd, "end");
-    updateYamlEditorUi();
-  });
-  $("#yaml-search-next").addEventListener("click", () => findYamlMatch(1));
-  $("#yaml-search-previous").addEventListener("click", () => findYamlMatch(-1));
-  $("#yaml-search").addEventListener("input", () => findYamlMatch(0));
-  $("#yaml-search").addEventListener("keydown", (/** @type {any} */ event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    findYamlMatch(event.shiftKey ? -1 : 1);
-  });
-  // Phone layout only: list <-> detail is one pane at a time there, so this
-  // is what "leaving" the detail view means. A no-op above the breakpoint,
-  // where both panels already show side by side regardless of the class.
-  $("#back-to-configs").addEventListener("click", () => {
-    $("#configurations").classList.add("showing-list");
-  });
-}
-
-function updateYamlEditorUi() {
-  const editor = $("#yaml-editor");
-  $("#yaml-line-numbers").textContent = lineNumbers(editor.value);
-  state.yamlDirty = editorIsDirty(
-    state.activeConfig,
-    editor.value,
-    state.yamlLoadedContent,
-  );
-  const status = $("#yaml-dirty-status");
-  status.classList.toggle("dirty", state.yamlDirty);
-  status.textContent = !state.activeConfig
-    ? t("configs.noFileLoaded")
-    : state.yamlDirty
-      ? t("configs.unsavedChanges")
-      : state.hasDraft ? t("configs.savedDraft") : t("configs.activeState");
-  const badge = $("#yaml-state-badge");
-  badge.classList.toggle("hidden", !state.activeConfig);
-  badge.classList.toggle("active-state", Boolean(state.activeConfig) && !state.hasDraft);
-  badge.classList.toggle("draft-state", Boolean(state.activeConfig) && state.hasDraft);
-  badge.textContent = state.hasDraft ? t("configs.savedDraft") : t("configs.activeState");
-  updateYamlCursorStatus();
-}
-
-function updateYamlCursorStatus() {
-  const editor = $("#yaml-editor");
-  $("#yaml-cursor-status").textContent = t(
-    "configs.cursorStatus",
-    cursorPosition(editor.value, editor.selectionStart),
-  );
-}
-
-function findYamlMatch(/** @type {any} */ direction) {
-  const editor = $("#yaml-editor");
-  const query = $("#yaml-search").value;
-  const result = $("#yaml-search-result");
-  if (!query) {
-    result.textContent = "";
-    return;
-  }
-  const match = findMatch(editor.value, query, editor.selectionStart, direction);
-  if (!match.count) {
-    result.textContent = t("configs.searchNoMatch");
-    return;
-  }
-  editor.focus();
-  editor.setSelectionRange(match.index, match.index + query.length);
-  result.textContent = t("configs.searchMatchCount", { selected: match.selected + 1, count: match.count });
-  updateYamlCursorStatus();
-}
-
-async function loadConfigurations() {
-  try {
-    const result = await api("configurations");
-    state.configurations = result.configurations;
-    const list = $("#config-list");
-    list.replaceChildren();
-    list.classList.toggle("empty", result.configurations.length === 0);
-    if (!result.configurations.length) {
-      list.textContent = t("configs.noFilesFound");
-      return;
-    }
-    result.configurations.forEach((/** @type {any} */ configuration) => {
-      const button = document.createElement("button");
-      button.className = `config-item${state.activeConfig === configuration.name ? " active" : ""}`;
-      const name = document.createElement("span");
-      name.textContent = configuration.name;
-      const meta = document.createElement("small");
-      meta.textContent = `${Math.ceil(configuration.size / 1024)} KiB${configuration.has_draft ? t("configs.listDraftSuffix") : ""}`;
-      if (configuration.has_draft) meta.className = "draft-dot";
-      button.append(name, meta);
-      button.addEventListener("click", () => {
-        $("#configurations").classList.remove("showing-list");
-        loadConfiguration(configuration);
-      });
-      list.append(button);
-    });
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-async function loadConfiguration(/** @type {any} */ configuration) {
-  if (
-    state.yamlDirty
-    && state.activeConfig
-    && state.activeConfig !== configuration.name
-    && !confirm(t("confirm.yaml.discardAndLoad"))
-  ) return;
-  try {
-    const active = await api(`configurations/${encodedName(configuration.name)}`);
-    state.activeConfig = configuration.name;
-    state.activeRevision = active.revision;
-    state.hasDraft = configuration.has_draft;
-    // The draft this view shows; saving or publishing names it, so a draft
-    // changed meanwhile (another tab, an MCP client) is refused, not lost.
-    state.draftRevision = null;
-    let content = active.content;
-    if (configuration.has_draft) {
-      const draft = await api(`configurations/${encodedName(configuration.name)}/draft`);
-      content = draft.content;
-      state.draftRevision = draft.revision;
-    }
-    $("#config-title").textContent = configuration.name;
-    setRevisionDisplay(active.revision);
-    $("#yaml-editor").value = content;
-    state.yamlLoadedContent = content;
-    state.yamlDirty = false;
-    $("#yaml-editor").disabled = !state.capabilities["configuration.write_draft"];
-    $("#yaml-search").disabled = false;
-    $("#yaml-search-previous").disabled = false;
-    $("#yaml-search-next").disabled = false;
-    $("#check-yaml").disabled = false;
-    $("#check-yaml").title = "";
-    updateDraftActionButtons();
-    updateBuilderButtons();
-    $("#config-output").classList.add("hidden");
-    updateYamlEditorUi();
-    await loadConfigurations();
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-async function saveDraft() {
-  if (!state.activeConfig || $("#save-draft").disabled) return;
-  $("#save-draft").disabled = true;
-  try {
-    const result = await api(`configurations/${encodedName(state.activeConfig)}/draft`, {
-      method: "PUT",
-      body: JSON.stringify({ content: $("#yaml-editor").value, expected_draft_revision: state.draftRevision }),
-    });
-    state.hasDraft = true;
-    state.draftRevision = result.revision;
-    state.yamlLoadedContent = $("#yaml-editor").value;
-    state.yamlDirty = false;
-    updateDraftActionButtons();
-    updateBuilderButtons();
-    updateYamlEditorUi();
-    toast(t("toast.draft.saved"));
-    await loadConfigurations();
-  } catch (/** @type {any} */ error) { toastDraftError(error); }
-  finally { updateDraftActionButtons(); }
-}
-
-function toastDraftError(/** @type {any} */ error) {
-  if (error.code === "revision_conflict" && error.details?.target === "configuration_draft") {
-    toast(t("toast.draft.changedElsewhere"), true, error.details);
-  } else {
-    toast(error.message, true, error.details);
-  }
-}
-
-// (line, column) are both 1-based, matching the YAML parser's own
-// convention and what the error message already tells the user to look for.
-function yamlOffsetForLineColumn(/** @type {any} */ text, /** @type {any} */ line, /** @type {any} */ column) {
-  const lines = text.split("\n");
-  let offset = 0;
-  for (let index = 0; index < Math.min(Math.max(line, 1) - 1, lines.length); index += 1) {
-    offset += lines[index].length + 1;
-  }
-  offset += Math.max(0, (Number(column) || 1) - 1);
-  return Math.min(offset, text.length);
-}
-
-async function checkYaml() {
-  if (!state.activeConfig) return;
-  try {
-    const source = state.hasDraft ? "draft" : "active";
-    const result = await api(`configurations/${encodedName(state.activeConfig)}/check-yaml?source=${source}`, { method: "POST" });
-    const output = $("#config-output");
-    output.classList.remove("diff-output");
-    output.textContent = result.valid
-      ? t("config.output.yamlValid", { revision: result.revision })
-      : t("config.output.yamlError", { line: result.line, column: result.column, error: result.error });
-    output.classList.remove("hidden");
-    if (!result.valid) {
-      const editor = $("#yaml-editor");
-      const offset = yamlOffsetForLineColumn(editor.value, result.line, result.column);
-      editor.focus();
-      editor.setSelectionRange(offset, offset);
-      updateYamlCursorStatus();
-    }
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-async function showDiff() {
-  if (!state.activeConfig || !state.hasDraft) return;
-  try {
-    const result = await api(`configurations/${encodedName(state.activeConfig)}/diff`);
-    const output = $("#config-output");
-    if (result.diff) renderUnifiedDiff(output, result.diff, t);
-    else {
-      output.classList.remove("diff-output");
-      output.textContent = t("config.output.noDifferences");
-    }
-    output.classList.remove("hidden");
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-async function openMergeDialog() {
-  if (!state.activeConfig || !state.hasDraft) return;
-  try {
-    const encoded = encodedName(state.activeConfig);
-    const [active, draft] = await Promise.all([
-      api(`configurations/${encoded}`),
-      api(`configurations/${encoded}/draft`),
-    ]);
-    state.activeRevision = active.revision;
-    setRevisionDisplay(active.revision);
-    $("#merge-config-name").textContent = state.activeConfig;
-    state.draftRevision = draft.revision;
-    $("#merge-active").value = active.content;
-    $("#merge-draft-source").value = draft.content;
-    $("#merge-result").value = draft.content;
-    $("#merge-dialog").showModal();
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-async function saveMergedDraft() {
-  if (!state.activeConfig) return;
-  const content = $("#merge-result").value;
-  try {
-    const result = await api(`configurations/${encodedName(state.activeConfig)}/draft`, {
-      method: "PUT", body: JSON.stringify({ content, expected_draft_revision: state.draftRevision }),
-    });
-    state.hasDraft = true;
-    state.draftRevision = result.revision;
-    state.yamlLoadedContent = content;
-    state.yamlDirty = false;
-    $("#yaml-editor").value = content;
-    $("#merge-dialog").close();
-    updateDraftActionButtons();
-    updateBuilderButtons();
-    updateYamlEditorUi();
-    await loadConfigurations();
-    toast(t("toast.draft.mergedSaved"));
-  } catch (/** @type {any} */ error) { toastDraftError(error); }
-}
-
-async function publishDraft() {
-  if (!state.activeConfig || !state.hasDraft) return;
-  if (!confirm(t("confirm.config.publish", { name: state.activeConfig }))) return;
-  $("#publish").disabled = true;
-  try {
-    const result = await api(`configurations/${encodedName(state.activeConfig)}/publish`, {
-      method: "POST",
-      body: JSON.stringify({ expected_revision: state.activeRevision, expected_draft_revision: state.draftRevision }),
-    });
-    state.activeRevision = result.revision;
-    state.hasDraft = false;
-    state.draftRevision = null;
-    state.yamlLoadedContent = $("#yaml-editor").value;
-    state.yamlDirty = false;
-    setRevisionDisplay(result.revision);
-    updateDraftActionButtons();
-    updateBuilderButtons();
-    updateYamlEditorUi();
-    toast(t("toast.config.published"));
-    await loadConfigurations();
-  } catch (/** @type {any} */ error) { toastDraftError(error); }
-  finally { updateDraftActionButtons(); }
-}
-
-// A full "sha256:<64 hex chars>" is diagnostic detail, not something anyone
-// reads at a glance next to the filename - short like a git commit, full
-// value still one hover away.
-function setRevisionDisplay(/** @type {any} */ revision) {
-  const node = $("#revision");
-  const short = String(revision || "").replace(/^sha256:/, "").slice(0, 7);
-  node.textContent = short;
-  node.title = revision || "";
-}
-
-// The pipeline toolbar has eight buttons whose disabled state depends on
-// three independent things - whether a config/draft exists, whether the
-// role has the capability, and (for builder jobs) whether one is already
-// running - none of which is visible from a plain greyed-out button. Every
-// disabled button gets a title naming the specific missing precondition.
-function updateDraftActionButtons() {
-  const hasConfig = Boolean(state.activeConfig);
-
-  const saveDraftButton = $("#save-draft");
-  const canWriteDraftAtAll = Boolean(state.capabilities["configuration.write_draft"]);
-  saveDraftButton.disabled = !hasConfig || !canWriteDraftAtAll;
-  saveDraftButton.title = !hasConfig ? t("configs.hint.noConfig")
-    : !canWriteDraftAtAll ? t("configs.hint.noPermission")
-    : "";
-
-  const showDiff = $("#show-diff");
-  showDiff.disabled = !state.hasDraft;
-  showDiff.title = !hasConfig ? t("configs.hint.noConfig")
-    : !state.hasDraft ? t("configs.hint.noDraft")
-    : "";
-
-  const mergeDraft = $("#merge-draft");
-  const canWriteDraft = Boolean(state.capabilities["configuration.write_draft"]);
-  mergeDraft.disabled = !state.hasDraft || !canWriteDraft;
-  mergeDraft.title = !hasConfig ? t("configs.hint.noConfig")
-    : !state.hasDraft ? t("configs.hint.noDraft")
-    : !canWriteDraft ? t("configs.hint.noPermission")
-    : "";
-
-  const publish = $("#publish");
-  const canPublish = Boolean(state.capabilities["configuration.publish"]);
-  publish.disabled = !state.hasDraft || !canPublish;
-  publish.title = !hasConfig ? t("configs.hint.noConfig")
-    : !state.hasDraft ? t("configs.hint.noDraft")
-    : !canPublish ? t("configs.hint.noPermission")
-    : "";
-}
-
-function updateBuilderButtons() {
-  const available = builderAvailability(state);
-  const hasConfig = Boolean(state.activeConfig);
-  const published = hasConfig && !state.hasDraft;
-  const blocked = builderBlockedReason(state.system?.builder);
-  const unavailable = blocked ? t(blocked.key, blocked.values) : t("configs.hint.noPermission");
-
-  const validate = $("#validate-esphome");
-  validate.disabled = !available.validate;
-  validate.title = !hasConfig ? t("configs.hint.noConfig")
-    : !published ? t("configs.hint.publishFirst")
-    : !state.capabilities["configuration.validate_esphome"] ? unavailable
-    : "";
-
-  const compile = $("#compile-config");
-  compile.disabled = !available.compile;
-  compile.title = !hasConfig ? t("configs.hint.noConfig")
-    : !published ? t("configs.hint.publishFirst")
-    : !state.capabilities["firmware.compile"] ? unavailable
-    : state.builderRequestsRunning.has("compile") ? t("configs.hint.alreadyRunning")
-    : "";
-
-  const install = $("#install-config");
-  install.disabled = !available.install;
-  install.title = !hasConfig ? t("configs.hint.noConfig")
-    : !published ? t("configs.hint.publishFirst")
-    : !state.capabilities["firmware.upload"] ? unavailable
-    : state.builderRequestsRunning.has("install") ? t("configs.hint.alreadyRunning")
-    : "";
-}
-
-async function validateEspHome() {
-  if (!state.activeConfig || state.hasDraft) return;
-  const output = $("#config-output");
-  output.classList.remove("diff-output");
-  output.textContent = t("config.output.validating");
-  output.classList.remove("hidden");
-  try {
-    const result = await builderController.validate(encodedName(state.activeConfig));
-    const lines = Array.isArray(result.output) ? result.output.join("\n") : "";
-    const validity = result.valid ? t("config.output.buildApprovalSuffix", { seconds: result.expires_in_seconds }) : "";
-    output.textContent = `${result.valid ? t("config.output.espValid") : t("config.output.espInvalid")}\nRevision: ${result.revision}${validity}\n\n${lines}`.trim();
-  } catch (/** @type {any} */ error) {
-    output.textContent = `${error.code || t("config.output.errorFallback")}: ${error.message}`;
-    toast(error.message, true, error.details);
-  }
-}
-
-function builderRequestKey(/** @type {any} */ operation) {
-  return builderRequest(state, operation, () => globalThis.crypto?.randomUUID?.()
-    || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-request`);
-}
-
-async function compileConfiguration() {
-  if (!state.activeConfig || state.hasDraft) return;
-  const request = builderRequestKey("compile");
-  state.builderRequestsRunning.add("compile");
-  updateBuilderButtons();
-  try {
-    const result = await builderController.compile(encodedName(state.activeConfig), request.key);
-    delete state.builderRequestKeys[request.slot];
-    state.builderJobs[result.job.job_id] = result.job;
-    renderBuilderJobs();
-    toast(result.idempotent_replay
-      ? t("toast.builder.jobRestored", { id: result.job.job_id })
-      : t("toast.builder.jobStarted", { id: result.job.job_id }));
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-  finally {
-    state.builderRequestsRunning.delete("compile");
-    updateBuilderButtons();
-  }
-}
-
-async function installConfiguration() {
-  if (!state.activeConfig || state.hasDraft) return;
-  if (!confirm(t("confirm.firmware.installOta", { name: state.activeConfig }))) return;
-  const request = builderRequestKey("install");
-  state.builderRequestsRunning.add("install");
-  updateBuilderButtons();
-  try {
-    const result = await builderController.install(encodedName(state.activeConfig), request.key);
-    delete state.builderRequestKeys[request.slot];
-    state.builderJobs[result.job.job_id] = result.job;
-    renderBuilderJobs();
-    toast(result.idempotent_replay ? `OTA-Job ${result.job.job_id} wiederhergestellt.` : `OTA-Job ${result.job.job_id} gestartet.`);
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-  finally {
-    state.builderRequestsRunning.delete("install");
-    updateBuilderButtons();
-  }
-}
-
-async function loadBuilderJobs() {
-  if (!state.capabilities["firmware.compile"]) return;
-  try {
-    state.builderJobs = replaceBuilderJobs(await builderController.jobs());
-    renderBuilderJobs();
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-function renderBuilderJobs() {
-  const panel = $("#builder-jobs");
-  const list = $("#builder-job-list");
-  const jobs = sortedBuilderJobs(state.builderJobs);
-  panel.classList.toggle("hidden", !state.capabilities["firmware.compile"]);
-  list.replaceChildren();
-  if (!jobs.length) {
-    list.textContent = t("configs.noJobs");
-    return;
-  }
-  jobs.forEach((job) => {
-    const row = document.createElement("div");
-    row.className = "builder-job";
-    const description = document.createElement("div");
-    const title = document.createElement("strong");
-    title.textContent = `${job.configuration || "—"} · ${job.job_type || t("configs.jobFallback")}`;
-    const meta = document.createElement("small");
-    meta.textContent = `${job.status || t("configs.statusUnknown")}${Number.isFinite(job.progress) ? ` · ${job.progress}%` : ""} · ${job.job_id}`;
-    description.append(title, meta);
-    if (job.last_output) {
-      const log = document.createElement("pre");
-      log.className = "builder-job-output";
-      log.textContent = job.last_output;
-      description.append(log);
-    }
-    row.append(description);
-    if (["queued", "running"].includes(job.status)) {
-      const cancel = document.createElement("button");
-      cancel.className = "button subtle compact";
-      cancel.textContent = t("configs.cancelJob");
-      cancel.addEventListener("click", async () => {
-        try {
-          await builderController.cancel(job.job_id);
-          await loadBuilderJobs();
-        } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-      });
-      row.append(cancel);
-    }
-    list.append(row);
-  });
-}
-
-function connectBuilderEvents() {
-  if (!state.capabilities["firmware.compile"] || builderEventsClient?.socket) return;
-  builderEventsClient ||= createJsonSocket({
-    path: "jobs/events",
-    onOpen: (socket) => { state.builderSocket = socket; },
-    onClose: () => { state.builderSocket = null; },
-    onMessage: (rawPayload) => {
-      const payload = /** @type {any} */ (rawPayload);
-      if (payload.type === "resync_required") {
-        loadBuilderJobs();
-        return;
-      }
-      if (payload.type !== "builder_job" || !payload.data) return;
-      applyBuilderEvent(state.builderJobs, payload);
-      renderBuilderJobs();
-    },
-  });
-  state.builderSocket = builderEventsClient.connect();
 }
 
 function clamp(/** @type {any} */ value, /** @type {any} */ minimum, /** @type {any} */ maximum) {

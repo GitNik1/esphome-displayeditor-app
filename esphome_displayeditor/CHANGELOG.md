@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Publishing waits until the editor's edits are saved.** Publishing sends
+  the saved draft, but it was possible with unsaved edits in the editor -
+  which were afterwards shown as saved although they were in neither the
+  draft nor the published file. The button now asks to save the draft first.
+- Cancelling the merge dialog no longer hides a draft that was changed
+  elsewhere (another tab, an MCP client): saving from the editor afterwards
+  overwrote that change without a warning; it is now refused like any other
+  draft conflict.
+- The "OTA job started" message is translated, and the page tells screen
+  readers which language it is in (it always said German).
+- The configuration view (file list, YAML editor, drafts, merge, publish)
+  and its Device Builder jobs moved out of `app.js` into
+  `frontend/configurations/workspace.js`, `yaml-editor.js` and
+  `frontend/builder/view.js`, with a new browser test suite for the whole
+  flow.
 - **An unexpected server error now says so.** Errors the API did not map
   ended as a plain-text "Internal Server Error" the UI could only show as
   "HTTP 500". They are now a structured response with a short reference

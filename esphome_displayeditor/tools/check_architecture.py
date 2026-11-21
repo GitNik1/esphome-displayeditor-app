@@ -59,7 +59,7 @@ MODULE_LINE_LIMIT = 500
 #: production module. They may shrink - lower the number when they do - but
 #: never grow; the composition root app.js is being split up step by step.
 OVERSIZED_BASELINE = {
-    "frontend/app.js": 10374,
+    "frontend/app.js": 9878,
     "frontend/viewer/viewer.js": 1001,
     "frontend/layout.js": 521,
     "backend/entity_bindings.py": 934,
@@ -90,6 +90,10 @@ def check_module_line_limits() -> list[str]:
         if line_count > limit:
             kind = "grew past its baseline" if relative in OVERSIZED_BASELINE else "exceeds"
             errors.append(f"{relative} {kind} {limit} lines ({line_count})")
+        elif relative in OVERSIZED_BASELINE and line_count < limit:
+            # A ratchet only holds if it follows the file down; otherwise the
+            # lines just removed could quietly grow back.
+            errors.append(f"{relative} shrank to {line_count} lines - lower its baseline ({limit})")
     return errors
 
 
