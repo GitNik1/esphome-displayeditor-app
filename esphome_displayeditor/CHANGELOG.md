@@ -23,6 +23,13 @@
   MCP access management no longer block the server while they read files.
 - A device connection that dropped late can no longer mark the following
   reconnection attempt as stopped.
+- **One firmware workflow for the web UI and MCP.** Validating, compiling,
+  installing and publishing had two copies that had drifted apart. Now
+  shared, MCP clients get the same safeguards as the web UI: one job at a
+  time per configuration, no publishing while a firmware job for it is still
+  running, and `secrets.yaml` is refused for publishing too. Merging a
+  project into a draft likewise uses one implementation for both, with the
+  same error messages.
 - **Saving into an existing configuration no longer duplicates widgets.** A
   commented-out line at column 0 inside `lvgl:` (for example
   `#        pad_left: 6`) used to end the block early: only its first part was

@@ -9,7 +9,7 @@ from mcp.server import MCPServer
 from ..assistant_tools import AssistantToolService
 from ..assistant_tools.operations import PlacementOperation
 from .identity import MCPAuthorization
-from .support import APPLY, READ_ONLY, scoped_tool_result
+from .support import APPLY, READ_ONLY, scoped_async_tool_result, scoped_tool_result
 
 
 def register_write_api(
@@ -166,17 +166,17 @@ def register_write_api(
         )
 
     @server.tool(name="display_configuration_apply", annotations=APPLY)
-    def display_configuration_apply(
+    async def display_configuration_apply(
         name: str, expected_revision: str, expected_draft_revision: str | None = None
     ) -> dict[str, Any]:
         """Publish an already-reviewed draft as the active ESPHome YAML.
 
         Pass the reviewed draft's revision as expected_draft_revision so a
         draft changed since the review is refused instead of published."""
-        return scoped_tool_result(
+        return await scoped_async_tool_result(
             ("configuration:publish",),
             fallback,
-            lambda authorization: service.publish_configuration(
+            lambda authorization: service.firmware.publish(
                 name,
                 expected_revision,
                 identity=authorization.identity,

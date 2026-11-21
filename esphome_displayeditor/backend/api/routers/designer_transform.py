@@ -7,17 +7,12 @@ from fastapi import APIRouter, Query, Request, Response
 
 from ...audit import AuditStore
 from ...designer import DesignerService
+from ...draft_merge import merge_for_draft
 from ...errors import ApiError
 from ...filesystem import FilesystemBackend
 from ..drafts import expected_draft_revision
 from ...lvgl_bundle import build_project_zip
-from ...lvgl_merge import (
-    DisplayTakeoverRequired,
-    MergeError,
-    build_project_yaml_for_bundle,
-    choose_merge_base,
-    merge_project_into_yaml,
-)
+from ...lvgl_merge import build_project_yaml_for_bundle
 from ...entity_bindings import parse_custom_binding_yaml
 from ...viewer_scenarios import parse_viewer_scenarios
 from ...designer_core.yamlimport import LvglImportError
@@ -104,24 +99,10 @@ def create_designer_transform_router(
             if exc.error != "draft_not_found":
                 raise
             draft = None
-        existing, base_issues = choose_merge_base(
-            draft, filesystem.read_config(body.target)["content"])
-        try:
-            merged = merge_project_into_yaml(
-                project, existing,
-                display_takeover="comment" if body.confirm_display_takeover else "ask",
-            )
-        except DisplayTakeoverRequired as exc:
-            raise ApiError("display_takeover_required", str(exc), 409,
-                           {"displays": exc.conflicts}) from exc
-        except MergeError as exc:
-            raise ApiError("merge_failed", str(exc), 422) from exc
-        merged.issues[:0] = base_issues
-        blocking = [issue for issue in merged.issues if issue.severity == "A"]
-        if blocking:
-            raise ApiError("invalid_project", "Project validation failed.", 422,
-                           {"issues": [{"severity": issue.severity,
-                                        "message": issue.message} for issue in blocking]})
+        merged, _base = merge_for_draft(
+            project, draft, filesystem.read_config(body.target)["content"],
+            confirm_display_takeover=body.confirm_display_takeover,
+        )
         old_revision = None
         try:
             try:

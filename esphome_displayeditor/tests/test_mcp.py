@@ -1263,8 +1263,8 @@ def test_mcp_publish_refuses_a_draft_changed_since_review(tmp_path: Path) -> Non
     service.filesystem.save_draft("panel.yaml", "esphome:\n  name: changed\n")
 
     with pytest.raises(ApiError) as refused:
-        service.publish_configuration("panel.yaml", active, identity="mcp:test",
-                                      expected_draft_revision=reviewed)
+        asyncio.run(service.firmware.publish("panel.yaml", active, identity="mcp:test",
+                                             expected_draft_revision=reviewed))
     assert refused.value.error == "revision_conflict"
     assert service.read_configuration("panel.yaml")["content"] == "esphome:\n  name: old\n"
 

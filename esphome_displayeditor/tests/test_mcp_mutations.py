@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import closing
 from pathlib import Path
 import json
@@ -454,14 +455,14 @@ def test_publish_configuration_writes_active_yaml_and_checks_revision(
     service.filesystem.save_draft("panel.yaml", "esphome:\n  name: published\n")
 
     with pytest.raises(ApiError) as stale:
-        service.publish_configuration(
+        asyncio.run(service.firmware.publish(
             "panel.yaml", "sha256:" + "0" * 64, identity="mcp:lan"
-        )
+        ))
     assert stale.value.error == "revision_conflict"
 
-    published = service.publish_configuration(
+    published = asyncio.run(service.firmware.publish(
         "panel.yaml", active["revision"], identity="mcp:lan"
-    )
+    ))
 
     assert published["old_revision"] == active["revision"]
     assert (
@@ -486,9 +487,9 @@ def test_publish_configuration_requires_project_write_mode(tmp_path: Path) -> No
     service.filesystem.save_draft("panel.yaml", "esphome:\n  name: published\n")
 
     with pytest.raises(ApiError) as denied:
-        service.publish_configuration(
+        asyncio.run(service.firmware.publish(
             "panel.yaml", active["revision"], identity="mcp:lan"
-        )
+        ))
     assert denied.value.error == "mcp_write_disabled"
 
 
