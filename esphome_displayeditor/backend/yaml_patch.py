@@ -27,6 +27,7 @@ old whole-block replacement.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +36,8 @@ import yaml
 from .designer_core.yamlexport import ESPHomeDumper
 from .designer_core.yamlimport import TaggedScalar, _ImportLoader, load_lvgl_yaml
 from .yaml_strict import load_yaml_strict
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class _Unpatchable(Exception):
@@ -56,7 +59,7 @@ def same_yaml_value(a: Any, b: Any) -> bool:
                 and all(same_yaml_value(a[key], b[key]) for key in a))
     if isinstance(a, list):
         return (isinstance(b, list) and len(a) == len(b)
-                and all(same_yaml_value(x, y) for x, y in zip(a, b)))
+                and all(same_yaml_value(x, y) for x, y in zip(a, b, strict=True)))
     if isinstance(a, TaggedScalar) or isinstance(b, TaggedScalar):
         if not (isinstance(a, TaggedScalar) and isinstance(b, TaggedScalar)) or a.tag != b.tag:
             return False
@@ -210,7 +213,7 @@ class _Patcher:
     def mapping(self, node: yaml.MappingNode, old: dict, new: dict, raw: dict) -> None:
         if len(old) != len(node.value):
             raise _Unpatchable("duplicate or merged keys")
-        entries = list(zip(old, node.value))
+        entries = list(zip(old, node.value, strict=True))
         column = entries[0][1][0].start_mark.column
         skip = self._delete_list_entry_leader(entries, new, column)
         for key, (key_node, value_node) in entries[skip:]:
@@ -365,7 +368,8 @@ def patch_top_level_block(lines: list[str], key: str, value: Any) -> list[str] |
         root = yaml.compose(text, Loader=_ImportLoader)
         old = load_lvgl_yaml(text).get(key)
         target = load_lvgl_yaml("".join(_dump({key: value}))).get(key)
-    except Exception:  # any doubt means falling back
+    except Exception as exc:  # noqa: BLE001 - any doubt means falling back
+        _LOGGER.debug("%s: cannot patch, rewriting the block (%s)", key, exc)
         return None
     if not isinstance(root, yaml.MappingNode) or len(root.value) != 1:
         return None
@@ -379,7 +383,8 @@ def patch_top_level_block(lines: list[str], key: str, value: Any) -> list[str] |
             return None
         patched = patcher.apply()
         check = load_yaml_strict("".join(patched))
-    except Exception:  # _Unpatchable, a repeated key, or a bug: fall back
+    except Exception as exc:  # noqa: BLE001 - _Unpatchable, a repeated key, or a bug
+        _LOGGER.debug("%s: patch not applicable, rewriting the block (%s)", key, exc)
         return None
     if not isinstance(check, dict) or set(check) != {key} or not same_yaml_value(check[key], target):
         return None

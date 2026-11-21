@@ -33,7 +33,7 @@ def create_designer_assets_router(
     router = APIRouter(prefix="/api/v1/designer", tags=["designer assets"])
 
     @router.get("/assets/images")
-    async def list_images() -> dict:
+    def list_images() -> dict:
         ensure_capability_available("designer.asset_read")
         return {"images": filesystem.list_image_assets()}
 

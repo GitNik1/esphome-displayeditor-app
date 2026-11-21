@@ -12,5 +12,5 @@ def expected_draft_revision(body: BaseModel) -> object:
     when the client sent it. A client that does not send the field - an
     older frontend, a script - is not checked."""
     if "expected_draft_revision" in body.model_fields_set:
-        return getattr(body, "expected_draft_revision")
+        return body.expected_draft_revision  # type: ignore[attr-defined]
     return DRAFT_UNCHECKED

@@ -15,6 +15,11 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-# Start with correctness-focused rules. Broader style rules can be enabled as
-# the two large application modules are split into smaller units.
-select = ["E4", "E7", "E9", "F"]
+# Correctness rules: pyflakes/pycodestyle errors, blocking calls in async
+# code, likely bugs, and blind "except Exception" (allowed only with a
+# reason in a noqa comment).
+select = ["E4", "E7", "E9", "F", "ASYNC", "B", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+# A byte copy of the desktop application (tests/test_core_sync.py) - fixed there.
+"backend/designer_core/*" = ["B", "BLE"]

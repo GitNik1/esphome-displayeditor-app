@@ -74,7 +74,7 @@ def _validate_host(host: str) -> None:
         ):
             raise ApiError(
                 "invalid_device_host", "Only local device host names are allowed.", 422
-            )
+            ) from None
         return
     if (
         address.is_loopback

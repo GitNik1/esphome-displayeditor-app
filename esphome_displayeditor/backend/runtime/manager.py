@@ -201,7 +201,9 @@ class DeviceManager:
                 continue
             stopped = asyncio.Event()
 
-            async def on_stop(_expected: bool) -> None:
+            # Bound now: a late callback from this connection must not set
+            # the event of the next attempt.
+            async def on_stop(_expected: bool, stopped: asyncio.Event = stopped) -> None:
                 stopped.set()
 
             client = None
@@ -226,7 +228,7 @@ class DeviceManager:
                     self._set_status(config.id, "disconnected", "connection_lost")
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # dependency exceptions vary between supported releases
+            except Exception as exc:  # noqa: BLE001 - dependency exceptions vary between releases
                 code = self._classify_error(exc)
                 self._set_status(config.id, "auth_failed" if code == "invalid_encryption_key" else "disconnected", code)
                 _LOGGER.warning("ESPHome device %s connection failed (%s)", config.id, code)
@@ -235,7 +237,7 @@ class DeviceManager:
                 if client is not None:
                     try:
                         await client.disconnect()
-                    except Exception:  # connection is already gone
+                    except Exception:  # noqa: BLE001 - the connection is already gone
                         pass
             if self._running:
                 await asyncio.sleep(backoff)

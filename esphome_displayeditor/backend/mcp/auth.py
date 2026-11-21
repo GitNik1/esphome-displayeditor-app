@@ -149,7 +149,7 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
             return False, False
         try:
             raw = await request.body()
-        except Exception:
+        except Exception:  # noqa: BLE001 - an unreadable body is refused like an oversized one
             return True, False
         if len(raw) > MCP_REQUEST_MAX_BYTES:
             return True, False

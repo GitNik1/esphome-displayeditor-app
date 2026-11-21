@@ -19,6 +19,10 @@
   only its owner could read it. Every file the app writes now goes through
   one helper that keeps the replaced file's permissions (secrets explicitly
   stay 0600) and fsyncs file and directory alike.
+- The version history (feed, list, compare, restore), the image list and the
+  MCP access management no longer block the server while they read files.
+- A device connection that dropped late can no longer mark the following
+  reconnection attempt as stopped.
 - **Saving into an existing configuration no longer duplicates widgets.** A
   commented-out line at column 0 inside `lvgl:` (for example
   `#        pad_left: 6`) used to end the block early: only its first part was

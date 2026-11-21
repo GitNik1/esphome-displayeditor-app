@@ -92,7 +92,7 @@ async def run() -> dict:
 if __name__ == "__main__":
     try:
         print(json.dumps(asyncio.run(run()), indent=2, ensure_ascii=False))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - report any failure as JSON, never a traceback
         print(
             json.dumps(
                 {"encrypted_connection": False, "error": type(exc).__name__},
