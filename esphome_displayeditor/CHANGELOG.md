@@ -17,8 +17,9 @@
   `frontend/configurations/workspace.js`, `yaml-editor.js` and
   `frontend/builder/view.js`, with a new browser test suite for the whole
   flow. The version history dialog with the change feed, and an earlier
-  version in the viewer with its graph, moved to `frontend/revisions/`.
-  `app.js` is down from 10,374 to 9,169 lines.
+  version in the viewer with its graph, moved to `frontend/revisions/`,
+  the colour library to `frontend/libraries/color-library.js` (with its
+  first browser test). `app.js` is down from 10,374 to 9,028 lines.
 - **An unexpected server error now says so.** Errors the API did not map
   ended as a plain-text "Internal Server Error" the UI could only show as
   "HTTP 500". They are now a structured response with a short reference

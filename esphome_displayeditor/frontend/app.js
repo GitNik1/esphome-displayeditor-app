@@ -63,11 +63,8 @@ import { createNotifications } from "./shell/notifications.js";
 import { copyText } from "./shell/clipboard.js";
 import { capabilitySummary, roleOnboarding, systemStatusRows } from "./system/status.js";
 import { buildImportPayload, summarizeImport } from "./project/import.js";
-import {
-  colorReferenceLocations as findColorReferences,
-  normalizeLibraryHex,
-  projectIdIsUsed as idIsUsedInProject,
-} from "./project/colors.js";
+import { projectIdIsUsed as idIsUsedInProject } from "./project/colors.js";
+import { createColorLibrary } from "./libraries/color-library.js";
 import {
   fontReferenceLocations as findFontReferences,
   fontSourceMetadataMap as sourceMetadataForProject,
@@ -292,6 +289,17 @@ const revisionsDialog = createRevisionsDialog({
   onOpen: () => hideExternalChangeBanner(),
   onRestored: reloadRestoredProject,
   onPreview: (request) => viewerHistory.preview(request),
+});
+const colorLibraryView = createColorLibrary({
+  els: {
+    list: $("#color-library-list"), form: $("#color-library-form"), id: $("#color-library-id"),
+    hex: $("#color-library-hex"), picker: $("#color-library-picker"),
+    error: $("#color-library-error"), save: $("#save-color-library-entry"),
+    cancel: $("#cancel-color-library-edit"), exportHint: $("#color-library-export-hint"),
+    options: $("#project-color-options"),
+  },
+  state, t, toast, confirm: (message) => confirm(message),
+  beginChange: () => pushUndo(), commitChange: () => markProjectDirty(), rerender: () => renderDesigner(),
 });
 const viewerHistory = createViewerHistory({
   els: {
@@ -1328,7 +1336,8 @@ function bindDesignerPaneSwitch() {
 function bindDesigner() {
   bindDesignerPaneSwitch();
   bindThemeEditor();
-  bindColorLibrary();
+  colorLibraryView.bind();
+  bindLinkedColorPickers();
   bindFontLibrary();
   $("#palette-search").addEventListener("input", (/** @type {any} */ event) => {
     paletteQuery = event.target.value;
@@ -3458,7 +3467,8 @@ function renderDesigner() {
   renderLineProperties();
   renderTree();
   renderThemeEditor();
-  renderColorLibrary();
+  colorLibraryView.render();
+  syncLinkedColorPickers();
   renderFontLibrary();
   renderMsgboxList();
   renderDesignerStatus();
@@ -5776,7 +5786,7 @@ function projectWidgetEntries() {
 function widgetIdCollides(/** @type {any} */ candidateId, /** @type {any} */ widget) {
   return projectWidgetEntries().some((entry) => entry !== widget && entry.id === candidateId)
     || (state.project.reserved_ids || []).includes(candidateId)
-    || [state.project.styles, state.project.fonts, state.project.images, colorLibrary()]
+    || [state.project.styles, state.project.fonts, state.project.images, state.project.colors]
       .some((entries) => (entries || []).some((/** @type {any} */ entry) => entry.id === candidateId));
 }
 
@@ -6103,156 +6113,14 @@ function toggleWidgetFlag(/** @type {any} */ flag) {
   renderTree();
 }
 
-// --- Project colour library ------------------------------------------
-
-function colorLibrary() {
-  if (!Array.isArray(state.project.colors)) state.project.colors = [];
-  return state.project.colors;
-}
-
-function colorReferenceLocations(/** @type {any} */ id, replacement = null) {
-  return findColorReferences(state.project, id, replacement);
-}
+// --- Project colour library (libraries/color-library.js) ---------------
 
 function projectIdIsUsed(/** @type {any} */ id, ignoredColorId = null) {
   return idIsUsedInProject(state.project, id, ignoredColorId);
 }
 
-function resetColorLibraryForm() {
-  state.editingColorId = null;
-  $("#color-library-id").value = "";
-  $("#color-library-hex").value = "";
-  $("#color-library-picker").value = "#00a000";
-  $("#color-library-error").classList.add("hidden");
-  $("#save-color-library-entry").textContent = t("colorlib.form.add");
-  $("#cancel-color-library-edit").classList.add("hidden");
-}
-
-function editColorLibraryEntry(/** @type {any} */ id) {
-  const entry = colorLibrary().find((/** @type {any} */ item) => item.id === id);
-  if (!entry) return;
-  state.editingColorId = id;
-  $("#color-library-id").value = entry.id;
-  $("#color-library-hex").value = normalizeLibraryHex(entry.hex) || "FFFFFF";
-  $("#color-library-picker").value = `#${normalizeLibraryHex(entry.hex) || "FFFFFF"}`;
-  $("#color-library-error").classList.add("hidden");
-  $("#save-color-library-entry").textContent = t("colorlib.form.save");
-  $("#cancel-color-library-edit").classList.remove("hidden");
-  $("#color-library-id").focus();
-}
-
-function saveColorLibraryEntry(/** @type {any} */ event) {
-  event.preventDefault();
-  const id = $("#color-library-id").value.trim();
-  const hex = normalizeLibraryHex($("#color-library-hex").value);
-  const error = $("#color-library-error");
-  const fail = (/** @type {any} */ message) => {
-    error.textContent = message;
-    error.classList.remove("hidden");
-  };
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
-    fail(t("validation.id.format"));
-    return;
-  }
-  if (!hex) {
-    fail(t("validation.color.needsHex"));
-    return;
-  }
-  if (projectIdIsUsed(id, state.editingColorId)) {
-    fail(t("validation.id.usedInProject", { id }));
-    return;
-  }
-
-  pushUndo();
-  if (state.editingColorId) {
-    const entry = colorLibrary().find((/** @type {any} */ item) => item.id === state.editingColorId);
-    if (!entry) return resetColorLibraryForm();
-    const previousId = entry.id;
-    entry.id = id;
-    entry.hex = hex;
-    if (previousId !== id) colorReferenceLocations(previousId, id);
-  } else {
-    colorLibrary().push({ id, hex });
-  }
-  markProjectDirty();
-  resetColorLibraryForm();
-  renderDesigner();
-  toast(t("toast.color.saved", { id }));
-}
-
-function deleteColorLibraryEntry(/** @type {any} */ id) {
-  const entry = colorLibrary().find((/** @type {any} */ item) => item.id === id);
-  if (!entry) return;
-  const references = colorReferenceLocations(id);
-  if (references.length && !confirm(
-    t("confirm.color.deleteWithRefs", { id, count: references.length, hex: entry.hex }),
-  )) return;
-  pushUndo();
-  if (references.length) colorReferenceLocations(id, normalizeLibraryHex(entry.hex) || entry.hex);
-  state.project.colors = colorLibrary().filter((/** @type {any} */ item) => item !== entry);
-  if (state.editingColorId === id) resetColorLibraryForm();
-  markProjectDirty();
-  renderDesigner();
-  toast(references.length
-    ? t("toast.color.deletedWithRefs", { id, count: references.length })
-    : t("toast.color.deleted", { id }));
-}
-
-function renderColorLibrary() {
-  const list = $("#color-library-list");
-  list.replaceChildren();
-  colorLibrary().forEach((/** @type {any} */ entry) => {
-    const hex = normalizeLibraryHex(entry.hex) || "FFFFFF";
-    const row = document.createElement("div");
-    row.className = "color-library-item";
-    const swatch = document.createElement("span");
-    swatch.className = "color-library-swatch";
-    swatch.style.backgroundColor = `#${hex}`;
-    const name = document.createElement("span");
-    name.className = "color-library-name";
-    name.textContent = entry.id;
-    const value = document.createElement("small");
-    value.textContent = `#${hex}`;
-    name.append(value);
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "icon-button";
-    edit.title = t("library.editTooltip", { id: entry.id });
-    edit.textContent = "✎";
-    edit.addEventListener("click", () => editColorLibraryEntry(entry.id));
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "icon-button";
-    remove.title = t("library.deleteTooltip", { id: entry.id });
-    remove.textContent = "×";
-    remove.addEventListener("click", () => deleteColorLibraryEntry(entry.id));
-    row.append(swatch, name, edit, remove);
-    list.append(row);
-  });
-  if (!colorLibrary().length) {
-    const empty = document.createElement("p");
-    empty.className = "color-library-empty";
-    empty.textContent = t("colorlib.noProjectColors");
-    list.append(empty);
-  }
-
-  const options = $("#project-color-options");
-  options.replaceChildren();
-  colorLibrary().forEach((/** @type {any} */ entry) => {
-    const option = document.createElement("option");
-    option.value = entry.id;
-    option.label = `#${normalizeLibraryHex(entry.hex) || entry.hex}`;
-    options.append(option);
-  });
-  $("#color-library-export-hint").classList.toggle(
-    "hidden", (state.project.export_sections || []).includes("color"),
-  );
-  if (state.editingColorId && !colorLibrary().some((/** @type {any} */ entry) => entry.id === state.editingColorId)) {
-    resetColorLibraryForm();
-  }
-  syncLinkedColorPickers();
-}
-
+// A colour input with a picker next to it: either shows what the other
+// holds, whether that is a hex value or a library colour's id.
 function syncLinkedColorPickers() {
   $$(".linked-color-picker").forEach((picker) => {
     const target = picker.dataset.colorTarget
@@ -6263,16 +6131,7 @@ function syncLinkedColorPickers() {
   });
 }
 
-function bindColorLibrary() {
-  $("#color-library-form").addEventListener("submit", saveColorLibraryEntry);
-  $("#cancel-color-library-edit").addEventListener("click", resetColorLibraryForm);
-  $("#color-library-picker").addEventListener("input", (/** @type {any} */ event) => {
-    $("#color-library-hex").value = event.target.value.slice(1).toUpperCase();
-  });
-  $("#color-library-hex").addEventListener("input", (/** @type {any} */ event) => {
-    const hex = normalizeLibraryHex(event.target.value);
-    if (hex) $("#color-library-picker").value = `#${hex}`;
-  });
+function bindLinkedColorPickers() {
   $$(".linked-color-picker").forEach((picker) => {
     const target = $(`#${picker.dataset.colorTarget}`);
     picker.addEventListener("input", () => {
