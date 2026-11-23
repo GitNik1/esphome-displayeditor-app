@@ -502,3 +502,72 @@ def _diff(a, b, path: str, out: list[str]) -> None:
                 _diff(x, y, f"{path}[{index}]", out)
     elif a != b:
         out.append(f"CHANGED {path}: {a!r} -> {b!r}")
+
+
+def test_initial_checked_state_round_trips_as_a_state_flag() -> None:
+    text = (
+        "lvgl:\n"
+        "  widgets:\n"
+        "    - switch:\n"
+        "        id: night\n"
+        "        state:\n"
+        "          checked: true\n"
+        "          disabled: true\n"
+    )
+    project = import_esphome_yaml(text).project
+    node = project.find_widget("night")
+    assert node.properties["state_checked"] is True
+    assert node.extra["state"] == {"disabled": True}
+
+    node.properties["state_checked"] = False
+    with tempfile.TemporaryDirectory() as tmp:
+        exported = export_project(project, str(Path(tmp) / "ui.yaml")).yaml_text
+    widget = yaml.safe_load(exported)["lvgl"]["widgets"][0]["switch"]
+    assert "state_checked" not in widget
+    assert widget["state"] == {"disabled": True, "checked": False}
+
+
+def test_dropdown_list_styles_round_trip_under_dropdown_list() -> None:
+    text = (
+        "lvgl:\n"
+        "  widgets:\n"
+        "    - dropdown:\n"
+        "        id: mode_select\n"
+        "        options: [A, B]\n"
+        "        dir: TOP\n"
+        "        dropdown_list:\n"
+        "          bg_color: 0x101010\n"
+        "          max_height: 120\n"
+        "          pressed:\n"
+        "            bg_color: 0x303030\n"
+        "          selected:\n"
+        "            bg_color: 0x20C7B7\n"
+        "          scrollbar:\n"
+        "            bg_opa: TRANSP\n"
+    )
+    project = import_esphome_yaml(text).project
+    node = project.find_widget("mode_select")
+    assert node.properties["dir"] == "TOP"
+    assert "bg_color" in node.style_tree["list"]
+    assert node.style_tree["scrollbar"] == {"bg_opa": "TRANSP"}
+    assert node.style_tree["list"]["max_height"] == 120
+    assert node.extra["dropdown_list"] == {"pressed": {"bg_color": 0x303030}}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        exported = export_project(project, str(Path(tmp) / "ui.yaml")).yaml_text
+    widget = yaml.safe_load(exported)["lvgl"]["widgets"][0]["dropdown"]
+    assert "selected" not in widget and "scrollbar" not in widget and "list" not in widget
+    assert widget["dropdown_list"] == {
+        "bg_color": 0x101010, "selected": {"bg_color": 0x20C7B7},
+        "scrollbar": {"bg_opa": "TRANSP"}, "max_height": 120,
+        "pressed": {"bg_color": 0x303030},
+    }
+
+
+def test_dropdown_legacy_direction_is_written_as_esphome_names() -> None:
+    project = import_esphome_yaml(
+        "lvgl:\n  widgets:\n    - dropdown:\n        id: d1\n        options: [A]\n").project
+    project.find_widget("d1").properties["dir"] = "DOWN"
+    with tempfile.TemporaryDirectory() as tmp:
+        exported = export_project(project, str(Path(tmp) / "ui.yaml")).yaml_text
+    assert yaml.safe_load(exported)["lvgl"]["widgets"][0]["dropdown"]["dir"] == "BOTTOM"

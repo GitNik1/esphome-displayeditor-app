@@ -141,9 +141,9 @@ import {
 import {
   applyBuilderEvent,
   builderAvailability,
+  builderJobGroups,
   builderRequest,
   replaceBuilderJobs,
-  sortedBuilderJobs,
 } from "./builder/model.js";
 import { pointFromClient, snapAngle } from "./canvas/geometry.js";
 import { applyWidgetLayout, configureCanvas, createCanvasLayers } from "./canvas/view.js";
@@ -10088,36 +10088,42 @@ async function loadBuilderJobs() {
 function renderBuilderJobs() {
   const panel = $("#builder-jobs");
   const list = $("#builder-job-list");
-  const jobs = sortedBuilderJobs(state.builderJobs);
+  const groups = builderJobGroups(state.builderJobs);
   panel.classList.toggle("hidden", !state.capabilities["firmware.compile"]);
   list.replaceChildren();
-  if (!jobs.length) {
+  if (!groups.length) {
     list.textContent = t("configs.noJobs");
     return;
   }
-  jobs.forEach((job) => {
+  groups.forEach(({ job, dependents, status, active }) => {
     const row = document.createElement("div");
     row.className = "builder-job";
     const description = document.createElement("div");
     const title = document.createElement("strong");
-    title.textContent = `${job.configuration || "—"} · ${job.job_type || t("configs.jobFallback")}`;
+    const steps = [job, ...dependents].map((item) => item.job_type || t("configs.jobFallback"));
+    title.textContent = `${job.configuration || "—"} · ${steps.join(" → ")}`;
     const meta = document.createElement("small");
-    meta.textContent = `${job.status || t("configs.statusUnknown")}${Number.isFinite(job.progress) ? ` · ${job.progress}%` : ""} · ${job.job_id}`;
+    const current = active || dependents.at(-1) || job;
+    const progress = Number.isFinite(current.progress) ? ` · ${current.progress}%` : "";
+    const step = dependents.length ? ` (${current.job_type || t("configs.jobFallback")})` : "";
+    const peer = job.remote_peer_label ? ` · ${t("configs.jobRemotePeer", { peer: job.remote_peer_label })}` : "";
+    meta.textContent = `${status || t("configs.statusUnknown")}${step}${progress}${peer} · ${job.job_id}`;
     description.append(title, meta);
-    if (job.last_output) {
+    const output = current.last_output || job.last_output;
+    if (output) {
       const log = document.createElement("pre");
       log.className = "builder-job-output";
-      log.textContent = job.last_output;
+      log.textContent = output;
       description.append(log);
     }
     row.append(description);
-    if (["queued", "running"].includes(job.status)) {
+    if (active) {
       const cancel = document.createElement("button");
       cancel.className = "button subtle compact";
       cancel.textContent = t("configs.cancelJob");
       cancel.addEventListener("click", async () => {
         try {
-          await builderController.cancel(job.job_id);
+          await builderController.cancel(active.job_id);
           await loadBuilderJobs();
         } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
       });

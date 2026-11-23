@@ -48,3 +48,44 @@ export function applyBuilderEvent(jobs, payload) {
   }
   return jobs;
 }
+
+const TERMINAL_JOB_STATUSES = new Set(["success", "succeeded", "completed", "done", "failed", "error", "cancelled", "canceled"]);
+const UNSUCCESSFUL_JOB_STATUSES = new Set(["failed", "error", "cancelled", "canceled"]);
+
+/** @param {BuilderJob} job */
+function jobStatus(job) {
+  return String(job.status || "").trim().toLowerCase();
+}
+
+/**
+ * An install is a COMPILE job plus an upload job whose `depends_on` names
+ * it; the compile job alone says "completed" even when the upload fails.
+ * Same rule as the backend's chain_status.
+ * @param {BuilderJob} job @param {BuilderJob[]} dependents
+ */
+export function builderChainStatus(job, dependents) {
+  const own = jobStatus(job);
+  if (UNSUCCESSFUL_JOB_STATUSES.has(own) || !TERMINAL_JOB_STATUSES.has(own)) return own;
+  const states = dependents.map(jobStatus);
+  const pending = states.find((state) => !TERMINAL_JOB_STATUSES.has(state));
+  if (pending !== undefined) return pending || "queued";
+  return states.find((state) => UNSUCCESSFUL_JOB_STATUSES.has(state)) || own;
+}
+
+/**
+ * Jobs newest first, each dependent job folded into the job it waits on.
+ * `active` is the job a cancel should target: the first one still queued
+ * or running, else null.
+ * @param {Record<string, BuilderJob>} jobs
+ * @returns {{job: BuilderJob, dependents: BuilderJob[], status: string, active: BuilderJob | null}[]}
+ */
+export function builderJobGroups(jobs) {
+  const sorted = sortedBuilderJobs(jobs);
+  const isDependent = (/** @type {BuilderJob} */ job) => Boolean(job.depends_on && jobs[job.depends_on]);
+  return sorted.filter((job) => !isDependent(job)).map((job) => {
+    const dependents = sorted.filter((other) => other.depends_on === job.job_id).reverse();
+    const chain = [job, ...dependents];
+    const active = chain.find((item) => ["queued", "running"].includes(jobStatus(item))) || null;
+    return { job, dependents, status: builderChainStatus(job, dependents), active };
+  });
+}

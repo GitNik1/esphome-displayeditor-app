@@ -276,11 +276,30 @@ def _find_top_level_block(lines: list[str], key: str) -> tuple[int, int] | None:
         start = index
     if start is None:
         return None
+    def inside(line: str) -> bool:
+        return line in ("\n", "\r\n") or line.startswith((" ", "\t", "-"))
+
+    def comment(line: str) -> bool:
+        return line.startswith("#")
+
     end = start + 1
-    while end < len(lines) and (
-        lines[end] in ("\n", "\r\n") or lines[end].startswith((" ", "\t", "-"))
-    ):
-        end += 1
+    while end < len(lines):
+        if inside(lines[end]):
+            end += 1
+            continue
+        if comment(lines[end]):
+            # A line commented out at column 0 (`#        pad_left: 6`) still
+            # sits inside the block when indented content follows it; ending
+            # the block there left the rest of it behind, and the merge then
+            # wrote those keys a second time. Comments right before the next
+            # top-level key (or the end of file) belong to what follows.
+            ahead = end
+            while ahead < len(lines) and (comment(lines[ahead]) or lines[ahead] in ("\n", "\r\n")):
+                ahead += 1
+            if ahead < len(lines) and inside(lines[ahead]):
+                end = ahead
+                continue
+        break
     return start, end
 
 

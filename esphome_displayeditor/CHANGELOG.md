@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Checked against ESPHome 2026.11.0: generated YAML validates the same as on
+  2026.9 and 2026.10. The Device Builder is now accepted for ESPHome 2026.6
+  through 2026.11; before, compile and install stayed disabled on 2026.9 and
+  later.
+- Fixed: a switch's or checkbox's initial state was written as
+  `state_checked: true`, which ESPHome rejects. It is now written as
+  `state: {checked: true}` and read back from there; other state flags
+  next to it are preserved.
+- Fixed: a line commented out at column 0 inside `lvgl:`
+  (`#        pad_left: 6`) ended the block for the merge, so saving wrote
+  everything after it - `layout:`, `widgets:` - a second time and ESPHome
+  refused the file with "Duplicate key".
+- Fixed: a dropdown's open direction offered `UP`/`DOWN`, which ESPHome
+  rejects; it now offers `BOTTOM`/`TOP`/`LEFT`/`RIGHT`, and a stored
+  `DOWN`/`UP` is written as `BOTTOM`/`TOP`. The styles of the opened list
+  (`selected`, `scrollbar` and the list itself) are written under
+  `dropdown_list:` instead of on the dropdown, and read back from there; the
+  dropdown also offers its `indicator` part.
+- Fixed: an OTA install reported `completed` as soon as the firmware was
+  compiled, even when flashing then failed. The Device Builder answers
+  `firmware/install` with its compile job and runs the upload as a second
+  job that depends on it; jobs now carry `dependent_jobs` and a
+  `chain_status` that only completes once the upload has (REST, assistant
+  and MCP). The job list shows an install as one row
+  (`compile → upload`), cancels whichever step is running, and names the
+  build server when a paired remote builder compiled it. Verified against
+  Device Builder 1.28.1 with ESPHome 2026.11.0.
+
 ## 0.401.0
 
 - Opening a stored project now re-reads the ESPHome configuration it was

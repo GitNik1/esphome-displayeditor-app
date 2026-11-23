@@ -34,6 +34,19 @@ _LEGACY_STYLE_REMAP = {
 
 _BORDER_SIDE_FULL = ["TOP", "BOTTOM", "LEFT", "RIGHT"]
 
+_LEGACY_DROPDOWN_DIR = {"DOWN": "BOTTOM", "UP": "TOP"}
+
+#: A dropdown's opened list is its own LVGL object. ESPHome styles it under
+#: ``dropdown_list:`` - flat keys for the list itself, ``selected:`` and
+#: ``scrollbar:`` for its parts - and rejects those parts on the dropdown.
+#: Keys are the editor's style-tree parts, values the keys under
+#: ``dropdown_list:`` (None = flat).
+DROPDOWN_LIST_PARTS = {"list": None, "selected": "selected", "scrollbar": "scrollbar"}
+
+#: Passthrough keys whose preserved mapping is merged with the edited one
+#: instead of being dropped when the editor sets the same key.
+_MERGED_PASSTHROUGH_KEYS = frozenset({"state", "dropdown_list"})
+
 _STYLE_PART_KEYS = {"indicator", "knob", "items", "ticks", "selected", "scrollbar", "cursor", "list"}
 
 
@@ -189,6 +202,15 @@ def _widget_content_dict(node: WidgetNode) -> dict[str, Any]:
             # frameCount * 300) always store it as a plain millisecond
             # count, so the unit is always "ms" here.
             out[key] = f"{value}ms"
+        elif node.widget_type == "dropdown" and key == "dir":
+            # ESPHome names the directions BOTTOM/TOP; older projects stored
+            # DOWN/UP, which it rejects.
+            out[key] = _LEGACY_DROPDOWN_DIR.get(value, value)
+        elif key == "state_checked":
+            # The initial checked state is an LVGL state flag, set through
+            # ``state: {checked: ...}``. A flat ``state_checked:`` key is
+            # rejected by ESPHome ("[state_checked] is an invalid option").
+            out["state"] = {"checked": bool(value)}
         else:
             out[key] = value
     return out
@@ -240,7 +262,20 @@ def _widget_dict(node: WidgetNode, registry: IdRegistry, issues: list[ExportIssu
     if node.style_mode == "named" and node.style_refs:
         out["styles"] = node.style_refs[0] if len(node.style_refs) == 1 else list(node.style_refs)
     if node.style_tree:
-        out.update(clean_style_dict(node.style_tree))
+        styles = clean_style_dict(node.style_tree)
+        if node.widget_type == "dropdown":
+            dropdown_list: dict[str, Any] = {}
+            for part, target in DROPDOWN_LIST_PARTS.items():
+                part_styles = styles.pop(part, None)
+                if not part_styles:
+                    continue
+                if target is None:
+                    dropdown_list.update(part_styles)
+                else:
+                    dropdown_list[target] = part_styles
+            if dropdown_list:
+                styles["dropdown_list"] = dropdown_list
+        out.update(styles)
 
     for trigger, actions in node.events.items():
         if actions:
@@ -297,6 +332,13 @@ def _merge_passthrough(out: dict[str, Any], extra: dict[str, Any],
     editor is responsible for - if both produced the same key, the edited one
     is the newer truth."""
     for key, value in extra.items():
+        if (key in _MERGED_PASSTHROUGH_KEYS and isinstance(out.get(key), dict)
+                and isinstance(value, dict)):
+            # Preserved state flags (``disabled: true``, ...) sit next to the
+            # edited ``checked`` flag, preserved list keys next to the edited
+            # list styles; the edited value wins on a clash.
+            out[key] = {**copy.deepcopy(value), **out[key]}
+            continue
         if key in out:
             issues.append(ExportIssue(
                 "C", f"Preserved key '{key}' also set by the editor; kept the edited value.",

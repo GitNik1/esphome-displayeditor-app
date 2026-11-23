@@ -91,7 +91,8 @@ def make_settings(tmp_path: Path, *, access_level: str = "write_with_builder") -
 def test_compatibility_matrix_is_fail_closed() -> None:
     assert evaluate("1.0.0", "2026.6.0").compatible
     assert evaluate("1.0.0", "2026.8.99").compatible
-    assert not evaluate("1.0.0", "2026.9.0").compatible
+    assert evaluate("1.0.0", "2026.11.0").compatible
+    assert not evaluate("1.0.0", "2026.12.0").compatible
     assert not evaluate("1.0.0", "dev").compatible
     assert not evaluate("", "2026.7.0").compatible
 
@@ -373,3 +374,27 @@ def test_job_websocket_replays_snapshot_and_requests_resync(
         "data": manager.adapter.job,
     }
     assert resync["type"] == "resync_required"
+
+
+def test_install_job_reports_the_upload_that_depends_on_it() -> None:
+    from backend.builder.manager import chain_status, with_dependents
+
+    compile_job = {"job_id": "c1", "job_type": "compile", "status": "completed", "depends_on": ""}
+    upload = {"job_id": "u1", "job_type": "upload", "status": "running", "depends_on": "c1"}
+    other = {"job_id": "x", "status": "failed", "depends_on": ""}
+
+    running = with_dependents(compile_job, [compile_job, upload, other])
+    assert running["chain_status"] == "running"
+    assert running["dependent_jobs"][0]["job_id"] == "u1"
+    assert running["status"] == "completed"
+
+    upload["status"] = "failed"
+    assert with_dependents(compile_job, [compile_job, upload])["chain_status"] == "failed"
+    upload["status"] = "completed"
+    assert with_dependents(compile_job, [compile_job, upload])["chain_status"] == "completed"
+
+    # A failed compile never starts the upload; its own state is the answer.
+    assert chain_status({"status": "failed"}, [{"status": "queued"}]) == "failed"
+    assert chain_status({"status": "running"}, [{"status": "queued"}]) == "running"
+    alone = with_dependents(other, [other])
+    assert alone["chain_status"] == "failed" and alone["dependent_jobs"] == []

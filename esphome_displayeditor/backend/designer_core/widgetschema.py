@@ -511,7 +511,9 @@ _register(WidgetSchema(
 _register(WidgetSchema(
     type_key="dropdown", label_de="Dropdown", label_en="Dropdown",
     default_size=(150, 40),
-    parts=("main", "selected", "list", "scrollbar"),
+    # ``list``/``selected``/``scrollbar`` style the opened list; ESPHome
+    # nests them under ``dropdown_list:`` (see yamlexport).
+    parts=("main", "indicator", "list", "selected", "scrollbar"),
     properties=(
         PropertyDef("options", "text_list", CONTENT,
                     label_de="Optionen", label_en="Options"),
@@ -519,8 +521,8 @@ _register(WidgetSchema(
                     label_de="Ausgewählter Index", label_en="Selected index"),
         PropertyDef("symbol", "text", CONTENT,
                     label_de="Symbol", label_en="Symbol"),
-        PropertyDef("dir", "enum", CONTENT, default="DOWN",
-                    enum_values=("UP", "DOWN", "LEFT", "RIGHT"),
+        PropertyDef("dir", "enum", CONTENT, default="BOTTOM",
+                    enum_values=("BOTTOM", "TOP", "LEFT", "RIGHT"),
                     label_de="Öffnungsrichtung", label_en="Open direction"),
         PropertyDef("max_height", "int", CONTENT,
                     label_de="Maximale Höhe", label_en="Max height"),

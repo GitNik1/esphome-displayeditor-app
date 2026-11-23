@@ -213,6 +213,7 @@ export const STRINGS = {
     "configs.noJobs": "Keine Jobs.",
     "configs.jobFallback": "Job",
     "configs.statusUnknown": "unbekannt",
+    "configs.jobRemotePeer": "gebaut auf {peer}",
     "configs.cancelJob": "Abbrechen",
 
     "system.status": "STATUS",
@@ -1308,6 +1309,7 @@ export const STRINGS = {
     "configs.noJobs": "No jobs.",
     "configs.jobFallback": "Job",
     "configs.statusUnknown": "unknown",
+    "configs.jobRemotePeer": "built on {peer}",
     "configs.cancelJob": "Cancel",
 
     "system.status": "STATUS",
