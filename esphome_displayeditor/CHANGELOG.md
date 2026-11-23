@@ -2,6 +2,204 @@
 
 ## Unreleased
 
+- **Publishing waits until the editor's edits are saved.** Publishing sends
+  the saved draft, but it was possible with unsaved edits in the editor -
+  which were afterwards shown as saved although they were in neither the
+  draft nor the published file. The button now asks to save the draft first.
+- Cancelling the merge dialog no longer hides a draft that was changed
+  elsewhere (another tab, an MCP client): saving from the editor afterwards
+  overwrote that change without a warning; it is now refused like any other
+  draft conflict.
+- The "OTA job started" message is translated, and the page tells screen
+  readers which language it is in (it always said German).
+- The configuration view (file list, YAML editor, drafts, merge, publish)
+  and its Device Builder jobs moved out of `app.js` into
+  `frontend/configurations/workspace.js`, `yaml-editor.js` and
+  `frontend/builder/view.js`, with a new browser test suite for the whole
+  flow. The version history dialog with the change feed, and an earlier
+  version in the viewer with its graph, moved to `frontend/revisions/`,
+  the colour library to `frontend/libraries/color-library.js` (with its
+  first browser test). `app.js` is down from 10,374 to 9,028 lines.
+- **An unexpected server error now says so.** Errors the API did not map
+  ended as a plain-text "Internal Server Error" the UI could only show as
+  "HTTP 500". They are now a structured response with a short reference
+  that also appears in the app log next to the traceback.
+- A failed audit entry - a full disk, the database briefly locked by the MCP
+  process - no longer turns an already completed save or publish into an
+  error; it is logged instead. The audit log keeps the newest 50,000 entries
+  instead of growing without limit, and the app's SQLite databases use
+  write-ahead logging, so the app and the MCP server no longer block each
+  other while one of them reads.
+- Validation errors no longer repeat the submitted values in the response
+  (which could echo an API key or a whole YAML file into logs).
+- **Publishing keeps the file's permissions.** The active ESPHome YAML was
+  replaced by a temporary file created with mode 0600, so after publishing
+  only its owner could read it. Every file the app writes now goes through
+  one helper that keeps the replaced file's permissions (secrets explicitly
+  stay 0600) and fsyncs file and directory alike.
+- The version history (feed, list, compare, restore), the image list and the
+  MCP access management no longer block the server while they read files.
+- A device connection that dropped late can no longer mark the following
+  reconnection attempt as stopped.
+- **One firmware workflow for the web UI and MCP.** Validating, compiling,
+  installing and publishing had two copies that had drifted apart. Now
+  shared, MCP clients get the same safeguards as the web UI: one job at a
+  time per configuration, no publishing while a firmware job for it is still
+  running, and `secrets.yaml` is refused for publishing too. Merging a
+  project into a draft likewise uses one implementation for both, with the
+  same error messages.
+- The live event streams (firmware jobs, device states, viewer data) now
+  check access in the same order as every other route: Ingress first, then
+  whether the feature is switched on. A client outside Ingress could
+  previously learn that the device runtime was off. A stream for a feature
+  that is off now closes with `capability_unavailable` instead of
+  `permission_denied`. The app and its built-in assistant now share one set
+  of stores instead of opening every database twice.
+- **Saving into an existing configuration no longer duplicates widgets.** A
+  commented-out line at column 0 inside `lvgl:` (for example
+  `#        pad_left: 6`) used to end the block early: only its first part was
+  rewritten, the rest stayed behind, and the draft defined every following
+  widget twice - which publishing then refused. Block boundaries now come
+  from the YAML structure instead of indentation, so comments inside a block
+  stay inside it and comments after it are kept even when a block has to be
+  rewritten as a whole.
+- Every merge result is now loaded strictly (a repeated key is an error) and
+  compared with what it should contain. If the comment-preserving patch does
+  not come out right, the affected blocks are rewritten as a whole; if even
+  that fails, nothing is written and the merge is refused with a message.
+- A draft that is no longer valid YAML (left behind by the bug above, or
+  edited by hand) no longer blocks merging: the active configuration becomes
+  the base and the result says so. Merging into a configuration that YAML
+  cannot read, or that repeats a key, is refused with its line and column.
+- Whole-block rewrites keep a file's CRLF line endings.
+- An unchanged import now saves back byte for byte. Three things used to
+  change anyway: the MDI glyph list was re-sorted (losing its `"\U..."`
+  escapes and per-glyph comments), defaults the source spelled out
+  (`align: TOP_LEFT`, `x: 0`) were dropped, and an empty `bottom_layer` got
+  `widgets: []`. Each is now kept as the source wrote it as long as the
+  project did not change it.
+- **Missing images no longer flood the API.** The Viewer created a new image
+  for every frame of an animated image, and a failed load is not cached by
+  the browser - so a missing frame was requested again on every tick until
+  the API's own rate limit refused everything else, saving included. Frames
+  are now created once and only shown or hidden; an image that failed to
+  load is not requested again during the page view (also on the canvas), and
+  the list is cleared after an upload.
+- Image and font reads have their own, larger rate-limit budget, separate
+  from the one saving and loading use, and are revalidated through an ETag
+  (answered with 304 without reading the file) instead of being re-sent in
+  full every time.
+- A read refused by the rate limit is retried once when the server says it
+  frees up within three seconds; writes are never repeated automatically.
+- **Redo survives selecting a widget.** Clicking a widget or focusing a
+  property field recorded an undo step on the spot - emptying the redo stack
+  before anything had changed, and leaving steps that undid nothing (the
+  first Ctrl+Z seemed to do nothing). The state is now only remembered and
+  becomes an undo step once the project actually changes.
+- **Restored work can be saved again.** Restoring an autosave dropped the
+  stored version it was based on and left the project-name field at its
+  default, so "In App speichern" either failed with "load it first" (which
+  would have discarded the restored work) or saved under the wrong name.
+  The autosave now keeps both.
+- Saving over a version that changed in the meantime - in another tab, by
+  the MCP server - opens a dialog: overwrite (the previous version stays
+  under "Versionen …") or save under a new name. The save button is disabled
+  while a save is running.
+- **Keyboard shortcuts behave.** Ctrl+Shift+Z used to *undo* (Shift was not
+  looked at); it now redoes, like Ctrl+Y. Cmd works like Ctrl on a Mac. While
+  a dialog is open - the Viewer, for example - Delete and the arrow keys no
+  longer act on the widget selected behind it, and Ctrl+Z inside a text field
+  undoes the typing instead of the whole project.
+- Ctrl/Cmd+S now saves into the app storage (Ctrl/Cmd+Shift+S downloads the
+  project file, which Ctrl+S used to do). New: Ctrl/Cmd+C and +V copy and
+  paste widgets, Ctrl/Cmd+A selects every widget of the current surface, and
+  Backspace deletes like Delete.
+- **Live data in the Viewer can drive text areas, checkboxes, dropdowns and
+  rollers.** The editor offered these targets, but saving such a binding
+  failed with HTTP 422 because the backend only knew labels, sliders, bars,
+  arcs and switches. Both sides now use the same list (MCP included), checked
+  against one shared test fixture. A dropdown/roller follows a `select`
+  entity by its option *text* (as Home Assistant and ESPHome report it);
+  numeric states still work as an index.
+- **The ESPHome Device Builder works with ESPHome 2026.9 and 2026.10.** The
+  compatibility check accepted only 2026.6 to 2026.8, so "ESPHome prüfen",
+  "Kompilieren" and "OTA installieren" (and the matching MCP tools) were
+  unavailable with current ESPHome. It now accepts 2026.6 to 2026.10 and
+  still refuses every other version.
+- When those buttons are unavailable because of the builder - not connected,
+  not reachable, an unsupported ESPHome version - their tooltip now says so,
+  instead of "Keine Berechtigung für diese Aktion".
+- The container's health check works: it probes `/api/v1/health` from inside
+  the container, which the Ingress boundary refused like any other outside
+  client, so the container was reported "unhealthy" forever. That single
+  read-only route (status and version only) is now answered on loopback.
+- **A draft changed elsewhere is no longer overwritten or published
+  unseen.** Saving a draft and publishing checked only the active file, so a
+  draft changed in another tab or by an MCP client after you looked at it
+  was replaced by your save - or published although nobody reviewed it. The
+  Konfigurationen view now names the draft it shows; if that draft changed,
+  saving and publishing are refused with a hint to reload. The API accepts
+  `expected_draft_revision` on draft save, merge and publish (and the MCP
+  tool `display_configuration_apply`); requests without it behave as before.
+- The MCP server answers a bearer token with non-ASCII characters with 401
+  instead of an HTTP 500 (tokens are now compared as bytes).
+- **Slow requests no longer freeze the app.** The AI help panel's question,
+  YAML import, export, merging, saving and loading projects and drafts ran
+  their blocking work - HTTPS calls to the model API, YAML parsing, file
+  locks, SQLite - directly on the server's event loop, so the UI, both
+  live-update connections and the device connections stalled until they
+  finished. These requests now run in a worker thread; publishing moves its
+  file work off the loop as well.
+- **"Speichern" in the toolbar.** Saving into the app storage was only
+  reachable in the collapsed "Projektverwaltung" section; the toolbar now
+  has a Speichern button (Ctrl/Cmd+S) next to Download.
+- After a reload the editor opens the project last opened or saved in this
+  browser again instead of an empty "Lokales Projekt" (a restored autosave
+  still takes precedence; "Neu" forgets it).
+- The flow-preview tooltip no longer promises an F5 shortcut - F5 reloads
+  the page.
+- **Messages no longer overwrite each other.** There was a single message
+  slot, so a success notice replaced an error before anyone had read it.
+  Messages now stack: errors stay until closed and are announced to screen
+  readers as alerts, other notices fade out, and a repeated message is not
+  stacked twice.
+- **Typing in theme and layout fields keeps the focus.** Every keystroke
+  rebuilt the whole theme editor or properties panel, so values like
+  `FF0000` or `FR(1), 200` could only be typed one character at a time. The
+  panels are now rebuilt only when the set of fields changes (a different
+  layout type).
+- **Read-only users learn how to get edit rights.** Every Ingress user gets
+  `default_role` (viewer unless configured), and the only hint was a
+  disabled button. A banner now shows the user's Home Assistant user id and
+  a ready-to-copy `user_roles` entry.
+- The System view reads like a status page - version, access level, user and
+  role, and whether configurations, devices and the Device Builder are
+  available, each with how to switch it on - instead of a raw JSON dump
+  (still available under "Rohdaten"). The Devices view says how to turn the
+  Native API on.
+- Copy buttons work over plain `http://` too (Home Assistant opened as
+  `http://homeassistant.local:8123` has no Clipboard API), and say so when
+  copying is not possible.
+- **No more browser prompts for styles and images.** Naming a new style and
+  picking a new image source used `prompt()` - for images a numbered text
+  list whose number had to be typed back. Both are app dialogs now: the
+  style name is checked in place (a typo no longer discards the input), and
+  existing images are a list to pick from, next to a URL field. The list is
+  read fresh each time, so an image copied into `images/` shows up without
+  a reload.
+- Load, "Entwurf speichern" and "Veröffentlichen" are disabled while their
+  request runs, so a double click no longer sends two.
+- **More of the UI follows the language setting.** About twenty texts were
+  hard-coded in German - role hints, the font preview status, meter needle
+  types, "(fehlt)" markers, the Viewer's WASM status and page events, the
+  renderer choice, the colour placeholder. Common backend errors (rate
+  limit, missing permission, conflicts, busy, too large, timeout, invalid
+  YAML, failed merge, ...) are now shown in the UI language instead of the
+  backend's English text; the original details stay available.
+- Messages raised while a dialog is open - a failed "Als Entwurf speichern",
+  for example - now appear inside that dialog instead of behind it, and notes
+  about the merge are shown with the success message.
+
 ## 0.401.0
 
 - Opening a stored project now re-reads the ESPHome configuration it was

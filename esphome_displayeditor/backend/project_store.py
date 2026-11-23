@@ -6,11 +6,11 @@ import json
 import logging
 import os
 import re
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .atomic_files import write_atomic
 from .designer import DesignerService
 from .errors import ApiError
 from .filesystem import revision_for
@@ -166,7 +166,7 @@ class ProjectStore:
                 {"expected_revision": expected_revision, "actual_revision": None},
             )
 
-        self._atomic_write(path, raw)
+        write_atomic(path, raw)
         verified = self._read_bytes(path)
         new_revision = revision_for(verified)
         if verified != raw:
@@ -313,34 +313,3 @@ class ProjectStore:
             if descriptor >= 0:
                 os.close(descriptor)
 
-    @staticmethod
-    def _atomic_write(path: Path, raw: bytes) -> None:
-        temporary_name: str | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                dir=path.parent,
-                prefix=f".{path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                temporary_name = handle.name
-                handle.write(raw)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_name, path)
-            temporary_name = None
-            try:
-                directory_fd = os.open(path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
-            except OSError:
-                pass
-        finally:
-            if temporary_name:
-                try:
-                    Path(temporary_name).unlink()
-                except FileNotFoundError:
-                    pass

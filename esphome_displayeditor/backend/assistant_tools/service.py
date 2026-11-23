@@ -5,17 +5,10 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
-from ..audit import AuditStore
 from ..builder import BuilderManager
-from ..designer import DesignerService
-from ..errors import ApiError
-from ..filesystem import FilesystemBackend
-from ..project_store import ProjectStore
-from ..runtime.registry import DeviceRegistry
 from ..settings import Settings
+from ..stores import Stores
 from ..version import APP_VERSION
-from ..viewer_bindings import ViewerBindingStore
-from ..workflow import WorkflowStore
 from .binding_operations import ProjectBindingOperation
 from .viewer_scenario_service import read_viewer_scenarios
 from .limits import (
@@ -63,20 +56,25 @@ class AssistantToolService:
     module under the project's backend line limit.
     """
 
-    def __init__(self, settings: Settings, *, builder: BuilderManager | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        builder: BuilderManager | None = None,
+        stores: Stores | None = None,
+    ) -> None:
+        """``stores`` are the application's own instances (``create_app``);
+        without them - the MCP listener process, tests - they are opened here."""
+        stores = stores or Stores.open(settings)
         self.settings = settings
-        self.designer = DesignerService(settings.data_root)
-        self.filesystem = FilesystemBackend(settings)
-        self.projects = ProjectStore(
-            settings.data_root,
-            self.designer,
-            settings.max_file_size,
-        )
-        self.audit = AuditStore(settings.data_root)
-        self.workflow = WorkflowStore(settings.data_root)
+        self.designer = stores.designer
+        self.filesystem = stores.filesystem
+        self.projects = stores.projects
+        self.audit = stores.audit
+        self.workflow = stores.workflow
         self.changesets = ChangeSetStore(settings.data_root)
-        self.viewer_bindings = ViewerBindingStore(settings.data_root)
-        self.device_registry = DeviceRegistry(settings.data_root)
+        self.viewer_bindings = stores.viewer_bindings
+        self.device_registry = stores.device_registry
         self.device_discovery = DeviceDiscoveryService(
             self.device_registry,
             runtime_available=settings.runtime_provider == "native",
@@ -317,54 +315,6 @@ class AssistantToolService:
             source_name=source_name,
             identity=identity,
         )
-
-    def publish_configuration(
-        self,
-        name: str,
-        expected_revision: str,
-        *,
-        identity: str,
-    ) -> dict[str, Any]:
-        """Publish an already-reviewed draft as the active ESPHome YAML.
-
-        Unlike the change-set tools, this has no separate propose step: the
-        draft's content was already reviewed when it was created or merged
-        via ``display_configuration_draft_propose`` /
-        ``display_changeset_apply``. Publishing is the further, deliberately
-        separate and revision-checked step that makes it active, mirroring
-        the app's own ``configuration.publish`` capability.
-        """
-        if self.settings.mcp_access != "project_write" or self.settings.access_level not in {
-            "write",
-            "write_with_builder",
-        }:
-            raise ApiError(
-                "mcp_write_disabled",
-                "MCP project writes are disabled by the app configuration.",
-                403,
-            )
-        try:
-            result = self.filesystem.publish(name, expected_revision)
-        except ApiError as exc:
-            self.audit.record(
-                user_id=identity,
-                action="mcp.configuration.publish",
-                configuration=name,
-                old_revision=expected_revision,
-                new_revision=None,
-                result=exc.error,
-            )
-            raise
-        self.workflow.invalidate_validation(name)
-        self.audit.record(
-            user_id=identity,
-            action="mcp.configuration.publish",
-            configuration=name,
-            old_revision=result["old_revision"],
-            new_revision=result["revision"],
-            result="success",
-        )
-        return result
 
     # Firmware validate/compile/install operations are exposed directly via
     # ``self.firmware`` (a ``FirmwareService``) rather than facade methods

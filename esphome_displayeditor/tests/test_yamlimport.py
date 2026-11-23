@@ -498,7 +498,7 @@ def _diff(a, b, path: str, out: list[str]) -> None:
         else:
             if len(a) != len(b):
                 out.append(f"LENGTH  {path}: {len(a)} -> {len(b)}")
-            for index, (x, y) in enumerate(zip(a, b)):
+            for index, (x, y) in enumerate(zip(a, b, strict=False)):
                 _diff(x, y, f"{path}[{index}]", out)
     elif a != b:
         out.append(f"CHANGED {path}: {a!r} -> {b!r}")

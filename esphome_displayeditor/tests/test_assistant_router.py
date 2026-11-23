@@ -211,3 +211,43 @@ def client_audit_events(settings: Settings) -> list[dict]:
     from backend.audit import AuditStore
 
     return AuditStore(settings.data_root).recent()
+
+
+def test_a_slow_assistant_answer_does_not_block_other_requests(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """/assistant/ask makes several blocking HTTPS calls to the model API. Run
+    on the event loop, they stalled the UI, both WebSockets and the device
+    connections; in the threadpool a parallel request is answered at once."""
+    import asyncio
+    import time
+
+    import httpx
+
+    settings = assistant_app_settings(tmp_path)
+    _seed_project(settings)
+
+    def slow_conversation(**_kwargs):
+        time.sleep(0.6)
+        return {"reply": "fertig", "tool_calls": []}
+
+    monkeypatch.setattr("backend.api.routers.assistant.run_conversation", slow_conversation)
+    app = create_app(settings, serve_frontend=False)
+
+    async def scenario() -> tuple[float, float]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            started = time.monotonic()
+            ask = asyncio.create_task(client.post(
+                "/api/v1/assistant/ask", headers={"X-Remote-User-Id": "admin"},
+                json={"project_name": "display.lvgldesign", "message": "hallo"}))
+            await asyncio.sleep(0.1)
+            await client.get("/api/v1/health")
+            health_done = time.monotonic() - started
+            await ask
+            return health_done, time.monotonic() - started
+
+    health_done, ask_done = asyncio.run(scenario())
+
+    assert ask_done >= 0.6
+    assert health_done < 0.5

@@ -291,6 +291,25 @@ def test_read_asset_http_endpoint_serves_the_file_without_a_user(tmp_path: Path)
     assert response.headers["content-type"] == "image/png"
 
 
+def test_read_asset_is_revalidated_by_etag_instead_of_refetched(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    image = settings.config_root / "images" / "panel_bg.png"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(PNG_1X1)
+    client = TestClient(create_app(settings, serve_frontend=False))
+    url = "/api/v1/designer/assets/read/images/panel_bg.png"
+
+    first = client.get(url)
+    etag = first.headers["ETag"]
+    assert first.headers["Cache-Control"] == "private, no-cache"
+    unchanged = client.get(url, headers={"If-None-Match": etag})
+    assert unchanged.status_code == 304 and unchanged.content == b""
+
+    image.write_bytes(PNG_1X1 + b"\0")  # an upload replaces the file in place
+    changed = client.get(url, headers={"If-None-Match": etag})
+    assert changed.status_code == 200 and changed.headers["ETag"] != etag
+
+
 def test_read_asset_http_endpoint_unavailable_in_native_only_profile(tmp_path: Path) -> None:
     settings = _settings(tmp_path, access_level="none")
     (settings.config_root / "images").mkdir(parents=True, exist_ok=True)

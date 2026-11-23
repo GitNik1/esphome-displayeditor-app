@@ -30,7 +30,7 @@ def create_admin_mcp_router(
     )
 
     @router.get("/tokens")
-    async def list_tokens(request: Request) -> dict:
+    def list_tokens(request: Request) -> dict:
         require_capability(request, "mcp.manage")
         return {
             "clients": store.list(),
@@ -39,7 +39,7 @@ def create_admin_mcp_router(
         }
 
     @router.get("/status")
-    async def listener_status(request: Request) -> dict:
+    def listener_status(request: Request) -> dict:
         require_capability(request, "mcp.manage")
         store.list()  # refresh the skipped-record diagnostic below
         return {
@@ -66,7 +66,7 @@ def create_admin_mcp_router(
         return await probe_mcp_listener()
 
     @router.post("/tokens", status_code=201)
-    async def create_token(
+    def create_token(
         body: MCPTokenCreateRequest,
         request: Request,
     ) -> JSONResponse:
@@ -105,7 +105,7 @@ def create_admin_mcp_router(
         )
 
     @router.delete("/tokens/{token_id}")
-    async def revoke_token(token_id: str, request: Request) -> dict:
+    def revoke_token(token_id: str, request: Request) -> dict:
         user_id = require_capability(request, "mcp.manage")
         client = store.revoke(token_id)
         audit.record(

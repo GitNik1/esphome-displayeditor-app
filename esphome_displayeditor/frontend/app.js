@@ -2,31 +2,20 @@
 
 import { computeLayout, contentOrigin, fontFamilyId, resolvedFontFamily } from "./layout.js";
 import { createApiClient, encodedName } from "./api/client.js";
-import { renderUnifiedDiff } from "./configurations/diff-view.js";
 import { createRevisionsController } from "./controllers/revisions-controller.js";
 import { createResyncController } from "./controllers/resync-controller.js";
 import {
   canApply as canApplyResync,
-  canUndoImport,
   changeText as resyncChangeText,
   defaultGroups as defaultResyncGroups,
   groupSummary as resyncGroupSummary,
   hasChanges as sourceHasChanges,
-  replacedVersion,
   selectedLosses as selectedResyncLosses,
-  sourceMove,
   unavailableKey as resyncUnavailableKey,
 } from "./project/resync-view.js";
-import {
-  actionKey as revisionActionKey,
-  actorLabel as revisionActorLabel,
-  carriesContent,
-  entryModifier,
-  groupFeedByDay,
-  lockQuota,
-  originKey as revisionOriginKey,
-  versionTitle,
-} from "./project/revisions-view.js";
+import { originKey as revisionOriginKey } from "./project/revisions-view.js";
+import { createRevisionsDialog } from "./revisions/dialog.js";
+import { createViewerHistory } from "./revisions/viewer-history.js";
 import { blobToBase64, uploadImageAsset } from "./api/assets.js";
 import {
   actionIdsForEditor,
@@ -56,7 +45,7 @@ import {
 } from "./project/model.js";
 import {
   cloneProject,
-  pushHistory,
+  commitPendingUndo,
   redoHistory,
   undoHistory,
 } from "./project/history.js";
@@ -66,12 +55,16 @@ import {
   surfaceLayoutProject,
 } from "./project/surfaces.js";
 import { normalizeProjectName } from "./project/names.js";
+import { askSaveConflict, suggestedCopyName } from "./dialogs/save-conflict.js";
+import { askText } from "./dialogs/text-prompt.js";
+import { askImageSource } from "./dialogs/image-source.js";
+import { designerShortcut } from "./designer/shortcuts.js";
+import { createNotifications } from "./shell/notifications.js";
+import { copyText } from "./shell/clipboard.js";
+import { capabilitySummary, roleOnboarding, systemStatusRows } from "./system/status.js";
 import { buildImportPayload, summarizeImport } from "./project/import.js";
-import {
-  colorReferenceLocations as findColorReferences,
-  normalizeLibraryHex,
-  projectIdIsUsed as idIsUsedInProject,
-} from "./project/colors.js";
+import { projectIdIsUsed as idIsUsedInProject } from "./project/colors.js";
+import { createColorLibrary } from "./libraries/color-library.js";
 import {
   fontReferenceLocations as findFontReferences,
   fontSourceMetadataMap as sourceMetadataForProject,
@@ -138,13 +131,7 @@ import {
   formatDeviceLogs as formatLogs,
   mergeDeviceState,
 } from "./devices/model.js";
-import {
-  applyBuilderEvent,
-  builderAvailability,
-  builderRequest,
-  replaceBuilderJobs,
-  sortedBuilderJobs,
-} from "./builder/model.js";
+import { createBuilderView } from "./builder/view.js";
 import { pointFromClient, snapAngle } from "./canvas/geometry.js";
 import { applyWidgetLayout, configureCanvas, createCanvasLayers } from "./canvas/view.js";
 import {
@@ -160,12 +147,8 @@ import {
 } from "./properties/model.js";
 import { createBasicPropertyControl } from "./properties/view.js";
 import { renderViewerMeter } from "./viewer/widget-primitives.js";
-import {
-  cursorPosition,
-  editorIsDirty,
-  findMatch,
-  lineNumbers,
-} from "./configurations/editor-model.js";
+import { assetLoadFailed, forgetFailedAssets, markAssetLoadFailed } from "./viewer/assets.js";
+import { createConfigurationWorkspace } from "./configurations/workspace.js";
 import { applyStaticTranslations, getLanguage, setLanguage, t } from "./i18n/runtime.js";
 import {
   ViewerController,
@@ -270,7 +253,16 @@ function selectSurface(/** @type {any} */ key) {
   renderDesigner();
 }
 
-const api = createApiClient();
+// Backend messages are English; a known error code is shown in the UI
+// language instead (with the original message where the text needs it).
+const api = createApiClient({
+  pathname: window.location.pathname,
+  describeError: (/** @type {string | undefined} */ code, /** @type {string} */ message) => {
+    const key = `error.${code}`;
+    const text = code ? t(key, { message }) : key;
+    return text === key ? message : text;
+  },
+});
 const projectsController = createProjectsController(api);
 const devicesController = createDevicesController(api);
 const builderController = createBuilderController(api);
@@ -278,12 +270,56 @@ const mcpTokensController = createMcpTokensController(api);
 const assistantController = createAssistantController(api);
 const revisionsController = createRevisionsController(api);
 const resyncController = createResyncController(api);
+// Versions of a stored project (revisions/dialog.js) and an earlier version
+// in the viewer (revisions/viewer-history.js).
+const revisionsDialog = createRevisionsDialog({
+  els: {
+    dialog: $("#revisions-dialog"), open: $("#open-revisions"), close: $("#close-revisions"),
+    closeFooter: $("#close-revisions-footer"), list: $("#revisions-list"),
+    diff: $("#revisions-diff"), lockQuota: $("#revision-lock-quota"),
+    label: $("#revision-label"), saveLabel: $("#save-revision-label"),
+    toggleLock: $("#toggle-revision-lock"), preview: $("#preview-revision"),
+    restore: $("#restore-revision"), undoImport: $("#undo-import"),
+    compare: $("#revision-compare"), feed: $("#revision-feed"),
+    refreshFeed: $("#refresh-revision-feed"),
+  },
+  state, t, toast, confirm: (message) => confirm(message),
+  controller: revisionsController, language: getLanguage,
+  selectedProjectName: () => $("#server-projects").value,
+  onOpen: () => hideExternalChangeBanner(),
+  onRestored: reloadRestoredProject,
+  onPreview: (request) => viewerHistory.preview(request),
+});
+const colorLibraryView = createColorLibrary({
+  els: {
+    list: $("#color-library-list"), form: $("#color-library-form"), id: $("#color-library-id"),
+    hex: $("#color-library-hex"), picker: $("#color-library-picker"),
+    error: $("#color-library-error"), save: $("#save-color-library-entry"),
+    cancel: $("#cancel-color-library-edit"), exportHint: $("#color-library-export-hint"),
+    options: $("#project-color-options"),
+  },
+  state, t, toast, confirm: (message) => confirm(message),
+  beginChange: () => pushUndo(), commitChange: () => markProjectDirty(), rerender: () => renderDesigner(),
+});
+const viewerHistory = createViewerHistory({
+  els: {
+    bar: $("#viewer-history-bar"), label: $("#viewer-history-label"),
+    date: $("#viewer-history-date"), versionButton: $("#viewer-history-version"),
+    compare: $("#viewer-history-compare"), back: $("#viewer-history-back"),
+    viewerDialog: $("#viewer-dialog"), graphNodes: $("#revision-graph-nodes"),
+    graphEdges: $("#revision-graph-edges"),
+  },
+  t, toast, language: getLanguage, revisions: revisionsController,
+  loadCurrent: async (name) => (await projectsController.load(name)).project,
+  viewer: () => viewer,
+  hideScenarios: () => {
+    closeViewerScenarioEditor();
+    $("#viewer-scenarios").classList.add("hidden");
+  },
+  reopenDialog: (name, id, compareTo) => revisionsDialog.open(name, id, compareTo),
+});
 /** @type {{name: string | null, plan: any, selected: string[]}} */
 let resyncState = { name: null, plan: null, selected: [] };
-/** @typedef {"current" | number | null} CompareTarget */
-/** @type {{name: string | null, listing: any, selectedId: number | null,
- *   compareTo: CompareTarget}} */
-let revisionState = { name: null, listing: null, selectedId: null, compareTo: "current" };
 // Revision a banner has already been shown for, so dismissing it sticks
 // until the *next* external change rather than reappearing on every poll.
 /** @type {string | null} */
@@ -296,56 +332,102 @@ let mcpListenerStatus = null;
 let mcpListenerProbe = null;
 /** @type {any} */
 let deviceEventsClient = null;
-/** @type {any} */
-let builderEventsClient = null;
+// The configuration view (configurations/workspace.js) and its Device
+// Builder actions (builder/view.js).
+const builderView = createBuilderView({
+  els: {
+    validate: $("#validate-esphome"), compile: $("#compile-config"), install: $("#install-config"),
+    refreshJobs: $("#refresh-jobs"), panel: $("#builder-jobs"), list: $("#builder-job-list"),
+    output: $("#config-output"),
+  },
+  state, t, toast, confirm: (message) => confirm(message),
+  controller: builderController, createSocket: createJsonSocket,
+});
+const configurationWorkspace = createConfigurationWorkspace({
+  els: {
+    view: $("#configurations"), list: $("#config-list"), refresh: $("#refresh-configs"),
+    backToList: $("#back-to-configs"), title: $("#config-title"), revision: $("#revision"),
+    output: $("#config-output"), checkYaml: $("#check-yaml"), showDiff: $("#show-diff"),
+    mergeDraft: $("#merge-draft"), saveDraft: $("#save-draft"), publish: $("#publish"),
+    mergeDialog: $("#merge-dialog"), mergeName: $("#merge-config-name"),
+    mergeActive: $("#merge-active"), mergeDraftSource: $("#merge-draft-source"),
+    mergeResult: $("#merge-result"), closeMerge: $("#close-merge-dialog"),
+    cancelMerge: $("#cancel-merge"), saveMerge: $("#save-merge"),
+    editor: {
+      editor: $("#yaml-editor"), lineNumbers: $("#yaml-line-numbers"),
+      dirtyStatus: $("#yaml-dirty-status"), stateBadge: $("#yaml-state-badge"),
+      cursorStatus: $("#yaml-cursor-status"), search: $("#yaml-search"),
+      searchResult: $("#yaml-search-result"), searchPrevious: $("#yaml-search-previous"),
+      searchNext: $("#yaml-search-next"),
+    },
+  },
+  state, api, t, toast, confirm: (message) => confirm(message), builder: builderView,
+});
 /** @type {any} */
 let viewerRuntimeClient = null;
 
-/** @type {ReturnType<typeof setTimeout> | undefined} */
-let toastTimer;
 /** @param {unknown} error */
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
-function dismissToast() {
-  $("#toast").className = "";
-  clearTimeout(toastTimer);
+
+/** @type {ReturnType<typeof createNotifications> | null} */
+let notifications = null;
+
+function toast(/** @type {any} */ message, error = false, /** @type {any} */ details = undefined) {
+  notifications ||= createNotifications({
+    region: $("#toast"),
+    closeLabel: () => t("toast.close"),
+    detailsLabel: () => t("toast.detailsToggle"),
+  });
+  notifications.show(String(message), { error, details });
 }
 
-// Errors stay until dismissed (a validation or compile error is often longer
-// than 3.5s worth of reading), the text is selectable so it can be copied
-// into a search or bug report, and error.details - already attached by the
-// api() client whenever the backend sends it - gets a place to show up
-// instead of being silently dropped at the call site.
-function toast(/** @type {any} */ message, error = false, /** @type {any} */ details = undefined) {
-  const node = $("#toast");
-  node.replaceChildren();
-  const text = document.createElement("span");
-  text.className = "toast-message";
-  text.textContent = String(message);
-  node.append(text);
-  if (error && details !== undefined && details !== null) {
-    const block = document.createElement("details");
-    block.className = "toast-details";
-    const summary = document.createElement("summary");
-    summary.textContent = t("toast.detailsToggle");
-    const pre = document.createElement("pre");
-    pre.textContent = typeof details === "string" ? details : JSON.stringify(details, null, 2);
-    block.append(summary, pre);
-    node.append(block);
-  }
-  if (error) {
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "toast-dismiss";
-    close.textContent = "×";
-    close.setAttribute("aria-label", t("toast.close"));
-    close.addEventListener("click", dismissToast);
-    node.append(close);
-  }
-  node.className = error ? "show error" : "show";
-  clearTimeout(toastTimer);
-  if (!error) toastTimer = setTimeout(() => { node.className = ""; }, 3500);
+// The System view used to dump the raw JSON of system and capabilities; it
+// now reads like a status page, and the JSON stays one click away.
+function renderSystemStatus(/** @type {any} */ system, /** @type {Record<string, unknown>} */ capabilities) {
+  const list = $("#system-summary");
+  list.replaceChildren();
+  systemStatusRows(system, t).forEach((row) => {
+    const term = document.createElement("dt");
+    term.textContent = row.label;
+    const value = document.createElement("dd");
+    value.textContent = row.value;
+    if (row.tone) value.className = row.tone;
+    if (row.hint) {
+      const hint = document.createElement("small");
+      hint.className = "system-hint";
+      hint.textContent = row.hint;
+      value.append(hint);
+    }
+    list.append(term, value);
+  });
+  const chips = $("#system-capabilities");
+  chips.replaceChildren();
+  const summary = capabilitySummary(capabilities);
+  [...summary.available.map((key) => [key, ""]), ...summary.unavailable.map((key) => [key, "off"])]
+    .forEach(([key, tone]) => {
+      const chip = document.createElement("span");
+      chip.textContent = key;
+      if (tone) chip.className = tone;
+      chips.append(chip);
+    });
+}
+
+// Someone who can open the app but not edit gets their Home Assistant user id
+// and a ready-to-paste user_roles entry, instead of greyed-out buttons.
+function renderRoleBanner(/** @type {any} */ system, /** @type {Record<string, unknown>} */ capabilities) {
+  const onboarding = roleOnboarding(system, capabilities);
+  const banner = $("#role-banner");
+  banner.classList.toggle("hidden", !onboarding);
+  if (!onboarding) return;
+  $("#role-banner-message").textContent = t("role.banner.message", { role: onboarding.role });
+  $("#role-banner-snippet").textContent = onboarding.snippet;
+  $("#role-banner-copy").onclick = async () => {
+    if (await copyText(onboarding.snippet)) toast(t("role.banner.copied"));
+    else toast(t("clipboard.failed"), true);
+  };
+  $("#role-banner-dismiss").onclick = () => banner.classList.add("hidden");
 }
 
 function bindLanguageSwitch() {
@@ -382,10 +464,13 @@ async function initialize() {
   bindUnloadGuard();
   bindTabs();
   bindDesigner();
-  bindConfigurations();
+  configurationWorkspace.bind();
+  builderView.bind();
   bindDevices();
   bindMcpTokens();
-  bindRevisions();
+  revisionsDialog.bind();
+  viewerHistory.bind();
+  bindExternalChangeBanner();
   bindResync();
   bindAssistant();
   offerAutosaveRecovery();
@@ -405,29 +490,32 @@ async function initialize() {
     $("#health").classList.toggle("ok", health.status === "ok");
     $("#profile").textContent = `${system.access_level} · ${system.user.role} · ${system.user.display_name || system.user.name || "Ingress"}`;
     $("#system-json").textContent = JSON.stringify({ system, ...capabilityData }, null, 2);
+    renderSystemStatus(system, capabilityData.capabilities || {});
+    renderRoleBanner(system, capabilityData.capabilities || {});
     $("#mcp-token-card").classList.toggle("hidden", !state.capabilities["mcp.manage"]);
     $("#assistant-card").classList.toggle("hidden", !state.capabilities["assistant.ask"]);
     $("#revision-feed-card").classList.toggle("hidden", !state.capabilities["designer.project"]);
     if (state.capabilities["assistant.ask"]) updateAssistantContext();
-    updateDraftActionButtons();
-    updateBuilderButtons();
+    configurationWorkspace.updateDraftButtons();
+    builderView.updateButtons();
     renderPalette();
     const initialLoads = [loadServerProjects(), loadDevices(), loadViewerRuntimeSources()];
     if (state.capabilities["mcp.manage"]) initialLoads.push(loadMcpTokens());
     if (state.capabilities["designer.project"]) {
-      initialLoads.push(loadRevisionFeed());
+      initialLoads.push(revisionsDialog.loadFeed());
       startExternalChangeWatch();
     }
-    if (state.capabilities["configuration.list"]) initialLoads.push(loadConfigurations());
+    if (state.capabilities["configuration.list"]) initialLoads.push(configurationWorkspace.loadList());
     else {
       $("#config-list").textContent = t("configs.filesystemDisabled");
       $("#refresh-configs").disabled = true;
     }
     await Promise.all(initialLoads);
+    await reopenLastProject();
     connectDeviceEvents();
     if (state.capabilities["firmware.compile"]) {
-      await loadBuilderJobs();
-      connectBuilderEvents();
+      await builderView.loadJobs();
+      builderView.connectEvents();
     }
   } catch (/** @type {any} */ error) {
     $("#profile").textContent = t("app.tagline.unreachable");
@@ -686,7 +774,7 @@ async function copyMcpTokenSecret() {
   const secret = $("#mcp-token-secret").value;
   if (!secret) return;
   try {
-    await navigator.clipboard.writeText(secret);
+    if (!(await copyText(secret))) throw new Error(t("clipboard.failed"));
     toast(t("mcp.tokens.secretCopied"));
   } catch (/** @type {any} */ error) {
     toast(errorMessage(error), true);
@@ -697,7 +785,7 @@ async function copyMcpClientConfig(/** @type {string} */ selector) {
   const value = $(selector).value;
   if (!value) return;
   try {
-    await navigator.clipboard.writeText(value);
+    if (!(await copyText(value))) throw new Error(t("clipboard.failed"));
     toast(t("mcp.clientConfig.copied"));
   } catch (/** @type {any} */ error) {
     toast(errorMessage(error), true);
@@ -1120,7 +1208,7 @@ function clearViewerBindings() {
 }
 
 async function openLiveViewer() {
-  clearViewerHistory();
+  viewerHistory.clear();
   // Glow-line strokes only become real image/animimg widgets through
   // bakeAllStrokes() (see there) - without this, a stroke's flow action
   // would reference widget ids the viewer (which only simulates
@@ -1248,7 +1336,8 @@ function bindDesignerPaneSwitch() {
 function bindDesigner() {
   bindDesignerPaneSwitch();
   bindThemeEditor();
-  bindColorLibrary();
+  colorLibraryView.bind();
+  bindLinkedColorPickers();
   bindFontLibrary();
   $("#palette-search").addEventListener("input", (/** @type {any} */ event) => {
     paletteQuery = event.target.value;
@@ -1310,6 +1399,7 @@ function bindDesigner() {
   $("#open-project").addEventListener("click", () => $("#project-file").click());
   $("#project-file").addEventListener("change", openDesignerProject);
   $("#save-project").addEventListener("click", downloadDesignerProject);
+  $("#toolbar-save").addEventListener("click", saveFromShortcut);
   $("#export-project").addEventListener("click", exportDesignerYaml);
   $("#undo").addEventListener("click", undoDesignerChange);
   $("#redo").addEventListener("click", redoDesignerChange);
@@ -1550,8 +1640,8 @@ function bindDesigner() {
   $("#do-import").addEventListener("click", runImport);
   $("#close-dialog").addEventListener("click", () => $("#yaml-dialog").close());
   $("#copy-yaml").addEventListener("click", async () => {
-    await navigator.clipboard.writeText($("#yaml-output").textContent);
-    toast(t("toast.yaml.copied"));
+    if (await copyText($("#yaml-output").textContent)) toast(t("toast.yaml.copied"));
+    else toast(t("clipboard.failed"), true);
   });
   $("#merge-draft-target").addEventListener("change", () => {
     $("#merge-draft-save").disabled = !$("#merge-draft-target").value;
@@ -1563,97 +1653,123 @@ function bindDesigner() {
   linkBuilderSection.addEventListener("toggle", () => togglePropertyGroup("widgetLinks", !linkBuilderSection.open));
   document.addEventListener("keydown", (event) => {
     if (!$("#designer").classList.contains("active")) return;
-    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(
-      event.target instanceof HTMLElement ? event.target.tagName : "",
-    );
-
-    if (state.canvasMode === "lines" && !typing && !event.ctrlKey) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (state.drawingStroke) {
-          removeStroke(state.drawingStroke);
-          state.drawingStroke = null;
-          state.selectedStroke = null;
-          setLineTool("select");
-          renderDesigner();
-        }
-        return;
-      }
-      if (event.key === "Backspace" && state.drawingStroke) {
-        event.preventDefault();
-        state.drawingStroke.points.pop();
-        markProjectDirty();
-        renderGlowCanvas();
-        renderGlowHandles();
-        return;
-      }
-      if (event.key === "Enter" && state.drawingStroke) {
-        event.preventDefault();
-        finishDrawing();
-        return;
-      }
-      if (event.key === "Delete" && state.selectedStroke && !state.drawingStroke) {
-        event.preventDefault();
-        deleteSelectedStroke();
-        return;
-      }
-      if (event.key.toLowerCase() === "p") {
-        event.preventDefault();
-        setLineTool("draw");
-        return;
-      }
-      if (event.key.toLowerCase() === "v") {
-        event.preventDefault();
-        setLineTool("select");
-        return;
-      }
-    }
-
-    if (event.key === "Delete" && !typing) {
-      event.preventDefault();
-      deleteSelectedWidget();
-      return;
-    }
-    // Clicking empty canvas already clears the selection - Escape is the
-    // keyboard-only equivalent of that same click, for widget mode too.
-    if (event.key === "Escape" && !typing && state.canvasMode === "widgets" && state.selectedWidget) {
-      event.preventDefault();
-      deselectWidget();
-      return;
-    }
-    // Arrow-key nudge: the only way to set an exact position was the X/Y
-    // number fields, forcing a mouse round-trip even for a 1px correction
-    // (drag rounds to whole pixels but offers no way to type just one).
-    // Shift steps 10px, matching drag's existing pixel-rounding rather than
-    // adding a second unit.
-    if (!typing && !event.ctrlKey && state.canvasMode === "widgets" && state.selectedWidget
-      && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
-      event.preventDefault();
-      nudgeSelectedWidget(event.key, event.shiftKey ? 10 : 1);
-      return;
-    }
-    if (!event.ctrlKey) return;
-
-    const key = event.key.toLowerCase();
-    /** @type {Record<string, () => unknown>} */
-    const actions = {
-      z: undoDesignerChange,
-      y: redoDesignerChange,
-      n: newDesignerProject,
-      o: () => $("#project-file").click(),
-      s: downloadDesignerProject,
-      e: exportDesignerYaml,
-      d: () => { if (state.canvasMode === "widgets" && state.selectedWidget) duplicateSelectedWidgets(); },
-      0: fitCanvasToView,
-      1: () => setZoom(1),
-      "+": () => setZoom(state.zoom * 1.25),
-      "-": () => setZoom(state.zoom / 1.25),
-    };
-    if (actions[key]) {
-      event.preventDefault();
-      actions[key]();
-    }
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const shortcut = designerShortcut(event, {
+      typing: Boolean(target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)),
+      dialogOpen: Boolean(document.querySelector("dialog[open]")),
+      canvasMode: state.canvasMode,
+      hasSelection: Boolean(state.selectedWidget),
+      drawing: Boolean(state.drawingStroke),
+      hasSelectedStroke: Boolean(state.selectedStroke),
+    });
+    if (!shortcut) return;
+    event.preventDefault();
+    runDesignerShortcut(shortcut, event.key);
   });
+}
+
+// What each shortcut from designer/shortcuts.js does; which key means what
+// (and when nothing should fire at all) is decided there.
+function runDesignerShortcut(/** @type {{command: string, step?: number}} */ shortcut, /** @type {string} */ key) {
+  /** @type {Record<string, () => unknown>} */
+  const commands = {
+    "line.escape": () => {
+      if (!state.drawingStroke) return;
+      removeStroke(state.drawingStroke);
+      state.drawingStroke = null;
+      state.selectedStroke = null;
+      setLineTool("select");
+      renderDesigner();
+    },
+    "line.removePoint": () => {
+      state.drawingStroke.points.pop();
+      markProjectDirty();
+      renderGlowCanvas();
+      renderGlowHandles();
+    },
+    "line.finish": finishDrawing,
+    "line.deleteStroke": deleteSelectedStroke,
+    "line.toolDraw": () => setLineTool("draw"),
+    "line.toolSelect": () => setLineTool("select"),
+    delete: deleteSelectedWidget,
+    // Clicking empty canvas already clears the selection - Escape is the
+    // keyboard-only equivalent of that same click.
+    deselect: deselectWidget,
+    // Arrow-key nudge: the X/Y fields were the only way to a 1px correction.
+    nudge: () => nudgeSelectedWidget(key, shortcut.step || 1),
+    undo: undoDesignerChange,
+    redo: redoDesignerChange,
+    save: saveFromShortcut,
+    download: downloadDesignerProject,
+    open: () => $("#project-file").click(),
+    new: newDesignerProject,
+    export: exportDesignerYaml,
+    duplicate: duplicateSelectedWidgets,
+    copy: copySelectedWidgets,
+    paste: pasteWidgets,
+    selectAll: selectAllWidgets,
+    fit: fitCanvasToView,
+    zoomReset: () => setZoom(1),
+    zoomIn: () => setZoom(state.zoom * 1.25),
+    zoomOut: () => setZoom(state.zoom / 1.25),
+  };
+  commands[shortcut.command]?.();
+}
+
+// The id/x/y fields commit on "change", which only fires when they lose
+// focus - so leave the field first, or the save would miss the last edit.
+function saveFromShortcut() {
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  if ($("#save-server-project").disabled) {
+    if (!state.capabilities["designer.project_write"]) toast(t("configs.hint.noPermission"), true);
+    return;
+  }
+  saveServerProject();
+}
+
+/** Widgets copied with Mod+C - snapshots, so later edits do not change them. */
+/** @type {any[]} */
+let widgetClipboard = [];
+
+function copySelectedWidgets() {
+  const group = selectedWidgetGroup();
+  if (!group.length) return;
+  widgetClipboard = group.map((/** @type {any} */ widget) => JSON.parse(JSON.stringify(widget)));
+  toast(t("toast.widgets.copied", { count: group.length }));
+}
+
+// Pasted after the current selection (or at the end of the active surface),
+// with fresh ids and offset a little so the copy is visible next to the original.
+function pasteWidgets() {
+  if (!widgetClipboard.length) return;
+  pushUndo();
+  const anchor = state.selectedWidget ? findWidgetLocation(activeWidgetRoots(), state.selectedWidget) : null;
+  const target = anchor ? anchor.array : activeWidgetRoots();
+  let index = anchor ? anchor.index + 1 : target.length;
+  const clones = widgetClipboard.map((/** @type {any} */ snapshot) => {
+    const clone = cloneWidgetSubtree(snapshot);
+    if (typeof clone.x === "number") clone.x += 10;
+    if (typeof clone.y === "number") clone.y += 10;
+    target.splice(index++, 0, clone);
+    return clone;
+  });
+  if (state.canvasMode !== "widgets") setCanvasMode("widgets");
+  state.selectedWidget = clones[0];
+  state.selectedWidgets.clear();
+  clones.slice(1).forEach((/** @type {any} */ clone) => state.selectedWidgets.add(clone));
+  markProjectDirty();
+  renderDesigner();
+}
+
+function selectAllWidgets() {
+  const roots = activeWidgetRoots();
+  if (!roots.length) return;
+  state.selectedWidget = roots[0];
+  state.selectedWidgets.clear();
+  roots.slice(1).forEach((/** @type {any} */ widget) => state.selectedWidgets.add(widget));
+  renderProperties();
+  renderTree();
+  renderCanvasSelectionClasses();
 }
 
 // A session preference, not project data - opt-in, off by default so
@@ -1705,6 +1821,7 @@ function newDesignerProject() {
   state.project = freshProject();
   state.activeSurface = "root";
   state.projectName = null;
+  rememberLastProject(null);
   clearViewerBindings();
   state.projectRevision = null;
   markProjectClean();
@@ -1933,12 +2050,14 @@ async function loadServerProjects() {
 function updateServerProjectButtons() {
   const selected = Boolean($("#server-projects").value);
   const canWrite = Boolean(state.capabilities["designer.project_write"]);
-  const writeHint = canWrite ? "" : "Erfordert mindestens die Rolle \"editor\" (siehe Add-on-Konfiguration: default_role/user_roles).";
+  const writeHint = canWrite ? "" : t("project.hint.needsEditorRole");
   $("#load-server-project").disabled = !selected;
   $("#delete-server-project").disabled = !selected || !canWrite;
   $("#delete-server-project").title = canWrite ? "" : writeHint;
   $("#save-server-project").disabled = !canWrite;
   $("#save-server-project").title = writeHint;
+  $("#toolbar-save").disabled = !canWrite;
+  $("#toolbar-save").title = canWrite ? t("toolbar.saveTitle") : writeHint;
   $("#open-revisions").disabled = !selected;
   // Bound to the project in the editor, not to the dropdown: a re-sync adopts
   // into the open document, so offering it for a merely highlighted name would
@@ -1946,10 +2065,51 @@ function updateServerProjectButtons() {
   $("#check-source").disabled = !state.projectName;
 }
 
+// After a reload the editor used to start with an empty "Lokales Projekt",
+// even though the work lives in the app storage - the last project opened or
+// saved is opened again (a per-browser convenience, not project data).
+const LAST_PROJECT_KEY = "designer.lastProject.v1";
+
+function rememberLastProject(/** @type {string | null} */ name) {
+  try {
+    if (name) window.localStorage.setItem(LAST_PROJECT_KEY, name);
+    else window.localStorage.removeItem(LAST_PROJECT_KEY);
+  } catch {
+    // Unavailable storage just means no reopening.
+  }
+}
+
+async function reopenLastProject() {
+  // A restored autosave or anything else already in the editor wins.
+  if (state.projectDirty || state.projectName) return;
+  let name = "";
+  try {
+    name = window.localStorage.getItem(LAST_PROJECT_KEY) || "";
+  } catch {
+    return;
+  }
+  const stored = [...$("#server-projects").options].some((/** @type {any} */ option) => option.value === name);
+  if (!name || !stored) return;
+  try {
+    adoptLoadedProject(await projectsController.load(name));
+    await loadViewerBindings(name);
+    $("#server-projects").value = name;
+    updateServerProjectButtons();
+    renderDesigner();
+    toast(t("toast.project.reopened", { name }));
+    await checkSourceChanges(true);
+  } catch {
+    rememberLastProject(null);
+  }
+}
+
 async function loadSelectedServerProject() {
   const name = $("#server-projects").value;
   if (!name) return;
   if (state.projectDirty && !confirm(t("confirm.discardUnsaved"))) return;
+  const button = $("#load-server-project");
+  if (button.disabled) return;
+  button.disabled = true;
   try {
     adoptLoadedProject(await projectsController.load(name));
     await loadViewerBindings(name);
@@ -1959,6 +2119,8 @@ async function loadSelectedServerProject() {
     await checkSourceChanges(true);
   } catch (/** @type {any} */ error) {
     toast(error.message, true, error.details);
+  } finally {
+    updateServerProjectButtons();
   }
 }
 
@@ -1972,6 +2134,7 @@ function adoptLoadedProject(result) {
   state.activeSurface = result.project.pages?.[0] ? `page:${result.project.pages[0].id}` : "root";
   state.projectName = result.name;
   state.projectRevision = result.revision;
+  rememberLastProject(result.name);
   markProjectClean();
   state.selectedWidget = null;
   state.selectedStroke = null;
@@ -1989,19 +2152,51 @@ async function saveServerProject() {
   const name = normalizeProjectName($("#project-name").value);
   $("#project-name").value = name;
   const expectedRevision = state.projectName === name ? state.projectRevision : null;
+  // A second click while the first save is in flight would collide with it.
+  const button = $("#save-server-project");
+  button.disabled = true;
   try {
-    const result = await projectsController.save(name, state.project, expectedRevision);
-    state.projectName = name;
-    state.projectRevision = result.revision;
-    markProjectClean();
-    renderDesignerStatus();
-    renderProperties();
-    await loadServerProjects();
-    $("#server-projects").value = name;
-    updateServerProjectButtons();
-    toast(t("toast.project.savedToStorage"));
+    await storeServerProject(name, expectedRevision);
   } catch (/** @type {any} */ error) {
-    toast(error.code === "project_exists" ? t("toast.project.alreadyExists") : error.message, true);
+    if (error.code === "project_exists" || error.code === "revision_conflict") {
+      await resolveSaveConflict(name, error.details?.actual_revision ?? null);
+    } else {
+      toast(error.message, true, error.details);
+    }
+  } finally {
+    updateServerProjectButtons();
+  }
+}
+
+async function storeServerProject(/** @type {string} */ name, /** @type {string | null} */ expectedRevision) {
+  const result = await projectsController.save(name, state.project, expectedRevision);
+  state.projectName = name;
+  state.projectRevision = result.revision;
+  rememberLastProject(name);
+  $("#project-name").value = name;
+  markProjectClean();
+  renderDesignerStatus();
+  renderProperties();
+  await loadServerProjects();
+  $("#server-projects").value = name;
+  toast(t("toast.project.savedToStorage"));
+}
+
+// The stored version is newer than the one this edit started from - saved
+// in another tab or by the MCP server, or the editor holds a restored
+// autosave. That used to end in "load it first", which would have thrown the
+// work in the editor away; now the user decides, and nothing is lost either
+// way: an overwritten version stays in the version history.
+async function resolveSaveConflict(/** @type {string} */ name, /** @type {string | null} */ actualRevision) {
+  const choice = await askSaveConflict($("#save-conflict-dialog"), {
+    message: t("dialog.saveConflict.message", { name }),
+    suggestedName: suggestedCopyName(name),
+  });
+  try {
+    if (choice.action === "overwrite") await storeServerProject(name, actualRevision);
+    if (choice.action === "rename") await storeServerProject(normalizeProjectName(choice.name), null);
+  } catch (/** @type {any} */ error) {
+    toast(error.code === "project_exists" ? t("toast.project.alreadyExists") : error.message, true, error.details);
   }
 }
 
@@ -2211,11 +2406,28 @@ async function applySourceChanges() {
     toast(t("toast.resync.applied")
       + (dropped ? t("toast.resync.appliedDropped", { count: dropped }) : "")
       + (lockFailed ? t("toast.resync.lockFailed") : ""), lockFailed);
-    await loadRevisionFeed();
+    await revisionsDialog.loadFeed();
   } catch (/** @type {any} */ error) {
     toast(error.message, true, error.details);
     $("#resync-apply").disabled = false;
   }
+}
+
+/** After a restore: only touch the editor when it shows this very project -
+ * the feed can open the history for any project, and silently swapping what
+ * the user is editing (or discarding unsaved work) would be worse than the
+ * change they just undid. @param {string} name */
+async function reloadRestoredProject(name) {
+  if (state.projectName === name
+      && (!state.projectDirty || confirm(t("confirm.discardUnsaved")))) {
+    adoptLoadedProject(await projectsController.load(name));
+    await loadViewerBindings(name);
+    renderDesigner();
+  }
+  externalChangeSeen = null;
+  hideExternalChangeBanner();
+  await loadServerProjects();
+  updateServerProjectButtons();
 }
 
 // --- Externe Aenderungen ---------------------------------------------------
@@ -2252,7 +2464,7 @@ async function checkExternalChanges() {
     if (marker === externalChangeSeen) return;
     externalChangeSeen = marker;
     showExternalChangeBanner(name, deleted, listing.versions?.[0]);
-    await loadRevisionFeed();
+    await revisionsDialog.loadFeed();
   } catch {
     // A failed poll is not worth bothering the user about; the next one runs
     // in twenty seconds, and a real problem surfaces on the next save.
@@ -2275,764 +2487,28 @@ function hideExternalChangeBanner() {
 
 function bindExternalChangeBanner() {
   $("#external-change-open").addEventListener("click", () => {
-    if (state.projectName) openRevisionsDialog(state.projectName);
+    if (state.projectName) revisionsDialog.open(state.projectName);
   });
   $("#external-change-dismiss").addEventListener("click", hideExternalChangeBanner);
 }
 
-// --- Historische Fassung ansehen -------------------------------------------
+/** The project as it was before a change that may be about to happen. */
+/** @type {string | null} */
+let pendingUndo = null;
 
-/** @typedef {{name: string, versions: any[], exists: boolean, inspectedId: number,
- *   compareTo: CompareTarget, cache: Record<string, any>,
- *   side: "version" | "compare"}} ViewerHistory */
-/** @type {ViewerHistory | null} */
-let viewerHistory = null;
-
-/** @param {number} id */
-function viewerVersionAt(id) {
-  const versions = viewerHistory?.versions || [];
-  const index = versions.findIndex((/** @type {any} */ item) => item.id === id);
-  return index < 0 ? null : { version: versions[index], index };
-}
-
-/** @param {CompareTarget} target */
-function viewerTargetLabel(target) {
-  if (target === "current" || target === null) return t("revisions.compareCurrent");
-  const found = viewerVersionAt(target);
-  return found ? versionTitle(found.version, found.index, t) : t("revisions.compareCurrent");
-}
-
-async function previewSelectedRevision() {
-  const name = revisionState.name;
-  const version = selectedRevision();
-  if (!name || !version || !carriesContent(version)) return;
-  try {
-    const loaded = await revisionsController.read(name, version.id);
-    viewerHistory = {
-      name,
-      versions: revisionState.listing?.versions || [],
-      exists: Boolean(revisionState.listing?.exists),
-      inspectedId: version.id,
-      compareTo: revisionState.compareTo,
-      cache: { [String(version.id)]: loaded.project },
-      side: "version",
-    };
-    // One modal at a time: the viewer replaces the dialog, and "Zurück zur
-    // Historie" brings it back on the same version and target.
-    $("#revisions-dialog").close();
-    renderViewerHistoryBar();
-    openHistoricProject();
-  } catch (/** @type {any} */ error) {
-    toast(error.message, true, error.details);
-  }
-}
-
-/** Fetch a version (or the current state) once and keep it, so moving around
- * the graph stays instant. @param {CompareTarget} target */
-async function loadViewerProject(target) {
-  if (!viewerHistory || target === null) return false;
-  const key = String(target);
-  if (viewerHistory.cache[key]) return true;
-  try {
-    viewerHistory.cache[key] = target === "current"
-      ? (await projectsController.load(viewerHistory.name)).project
-      : (await revisionsController.read(viewerHistory.name, target)).project;
-    return true;
-  } catch (/** @type {any} */ error) {
-    toast(error.message, true, error.details);
-    return false;
-  }
-}
-
-/** Open whichever side is active, keeping the user's zoom and rotation so
- * flipping actually compares like with like. */
-function openHistoricProject() {
-  if (!viewerHistory) return;
-  const { zoom, rotation, fitMode } = viewer;
-  const showingCompare = viewerHistory.side === "compare";
-  const key = String(showingCompare ? viewerHistory.compareTo : viewerHistory.inspectedId);
-  // Like runtime bindings below: today's scenarios on a past layout would
-  // show a state that never existed.
-  viewer.setScenarios([]);
-  closeViewerScenarioEditor();
-  $("#viewer-scenarios").classList.add("hidden");
-  viewer.open(viewerHistory.cache[key], {
-    name: t("viewer.history.versionTitle", {
-      name: viewerHistory.name,
-      version: showingCompare
-        ? viewerTargetLabel(viewerHistory.compareTo)
-        : viewerTargetLabel(viewerHistory.inspectedId),
-    }),
-    // Deliberately no runtime bindings: showing a past layout with today's
-    // live values would be a state that never existed.
-    runtimeBindings: [],
-  });
-  if (!fitMode) {
-    viewer.setZoom(zoom);
-    viewer.setRotation(rotation);
-  }
-}
-
-/** @param {"version" | "compare"} side */
-async function showViewerHistorySide(side) {
-  if (!viewerHistory || viewerHistory.side === side) return;
-  const target = side === "compare" ? viewerHistory.compareTo : viewerHistory.inspectedId;
-  if (!(await loadViewerProject(target))) return;
-  viewerHistory.side = side;
-  renderViewerHistoryBar();
-  openHistoricProject();
-}
-
-/** Choosing a target also shows it - picking something you then have to click
- * to see would be a pointless second step. @param {CompareTarget} target */
-async function setViewerCompareTarget(target) {
-  if (!viewerHistory || target === null) return;
-  if (!(await loadViewerProject(target))) {
-    renderViewerHistoryBar();
-    return;
-  }
-  viewerHistory.compareTo = target;
-  viewerHistory.side = "compare";
-  renderViewerHistoryBar();
-  openHistoricProject();
-}
-
-/** Move the inspected version, driven by the graph. @param {number} id */
-async function setViewerInspectedVersion(id) {
-  if (!viewerHistory) return;
-  if (viewerHistory.inspectedId === id) {
-    await showViewerHistorySide("version");
-    return;
-  }
-  if (!(await loadViewerProject(id))) return;
-  viewerHistory.inspectedId = id;
-  // Nothing compares with itself.
-  if (viewerHistory.compareTo === id) {
-    viewerHistory.compareTo = viewerHistory.exists ? "current" : null;
-  }
-  viewerHistory.side = "version";
-  renderViewerHistoryBar();
-  openHistoricProject();
-}
-
-function renderViewerHistoryBar() {
-  const bar = $("#viewer-history-bar");
-  if (!viewerHistory) {
-    bar.classList.add("hidden");
-    return;
-  }
-  const showingVersion = viewerHistory.side === "version";
-  const inspected = viewerVersionAt(viewerHistory.inspectedId);
-  $("#viewer-history-label").textContent = viewerTargetLabel(viewerHistory.inspectedId);
-  $("#viewer-history-date").textContent = inspected
-    ? formatRevisionDate(inspected.version.created_at)
-    : "";
-  $("#viewer-history-version").classList.toggle("active", showingVersion);
-  $("#viewer-history-version").setAttribute("aria-pressed", String(showingVersion));
-  renderViewerCompareOptions();
-  $("#viewer-history-compare").classList.toggle("active", !showingVersion);
-  renderRevisionGraph();
-  bar.classList.remove("hidden");
-}
-
-function renderViewerCompareOptions() {
-  const select = $("#viewer-history-compare");
-  select.replaceChildren();
-  // Held locally: the module-level binding is mutable, so it cannot be
-  // narrowed inside the callback below.
-  const history = viewerHistory;
-  if (!history) return;
-  if (history.exists) {
-    const option = document.createElement("option");
-    option.value = "current";
-    option.textContent = t("revisions.compareCurrent");
-    select.append(option);
-  }
-  history.versions.forEach((/** @type {any} */ version, /** @type {number} */ index) => {
-    if (version.id === history.inspectedId || !carriesContent(version)) return;
-    const option = document.createElement("option");
-    option.value = String(version.id);
-    option.textContent = versionTitle(version, index, t);
-    select.append(option);
-  });
-  select.value = history.compareTo === null ? "" : String(history.compareTo);
-  select.disabled = !select.options.length;
-}
-
-async function returnToRevisions() {
-  const previous = viewerHistory;
-  viewer.close();
-  if (!previous) return;
-  // Carry both choices back, so the dialog shows what the viewer ended on.
-  await openRevisionsDialog(previous.name, previous.inspectedId, previous.compareTo);
-}
-
-function clearViewerHistory() {
-  viewerHistory = null;
-  $("#viewer-history-bar").classList.add("hidden");
-}
-
-function bindViewerHistory() {
-  $("#preview-revision").addEventListener("click", previewSelectedRevision);
-  $("#viewer-history-version").addEventListener("click", () => showViewerHistorySide("version"));
-  $("#viewer-history-compare").addEventListener("change", () => {
-    setViewerCompareTarget(parseCompareTarget($("#viewer-history-compare").value));
-  });
-  // Clicking the select without changing it should still switch sides.
-  $("#viewer-history-compare").addEventListener("click", () => showViewerHistorySide("compare"));
-  $("#viewer-history-back").addEventListener("click", returnToRevisions);
-  // Covers every way out - the viewer's own close button, Escape, and
-  // returnToRevisions - so the bar can never linger over a live preview.
-  $("#viewer-dialog").addEventListener("close", clearViewerHistory);
-  // Arcs are drawn from measured node positions, so they have to be redrawn
-  // whenever the row is laid out again.
-  new ResizeObserver(() => drawRevisionGraphEdges()).observe($("#revision-graph-nodes"));
-}
-
-// --- Revisions-Graph --------------------------------------------------------
-
-// The history is not a plain line: a restore creates a version whose content
-// comes from an older one, and that relationship is what the arcs show. Nodes
-// are real buttons so the graph is keyboard-navigable; the arcs are a
-// decorative SVG layer measured from those buttons after layout.
-
-function renderRevisionGraph() {
-  const row = $("#revision-graph-nodes");
-  row.replaceChildren();
-  const history = viewerHistory;
-  if (!history) return;
-  // Oldest on the left, so the graph reads in the direction time runs.
-  const ordered = [...history.versions].reverse();
-  ordered.forEach((version) => {
-    const index = history.versions.indexOf(version);
-    row.append(revisionGraphNode(version, index, history));
-  });
-  drawRevisionGraphEdges();
-}
-
-/** @param {any} version @param {number} index @param {ViewerHistory} history */
-function revisionGraphNode(version, index, history) {
-  const node = document.createElement("button");
-  node.type = "button";
-  node.className = `revision-node ${entryModifier(version)}`;
-  node.dataset.revisionId = String(version.id);
-  const showing = history.side === "version"
-    ? version.id === history.inspectedId
-    : version.id === history.compareTo;
-  node.classList.toggle("showing", showing);
-  node.classList.toggle("inspected", version.id === history.inspectedId);
-  node.classList.toggle("target", version.id === history.compareTo);
-  node.classList.toggle("locked", Boolean(version.locked));
-  node.disabled = !carriesContent(version);
-
-  // The configuration's own track: a flag above the node marks the version
-  // that carried a YAML change in, so the graph shows two kinds of event on
-  // one timeline rather than only the project following along. Rendered
-  // inside the node so it needs no second measuring pass.
-  const move = sourceMove(version);
-  if (move) {
-    const flag = document.createElement("span");
-    flag.className = `revision-node-source${move.changed ? " moved" : ""}`;
-    flag.textContent = move.changed ? "▲" : "▵";
-    node.append(flag);
-  }
-
-  const dot = document.createElement("span");
-  dot.className = "revision-node-dot";
-  node.append(dot);
-
-  const caption = document.createElement("span");
-  caption.className = "revision-node-caption";
-  caption.textContent = versionTitle(version, index, t);
-  node.append(caption);
-
-  node.title = [
-    versionTitle(version, index, t),
-    formatRevisionDate(version.created_at),
-    t(version.action === "delete" ? revisionActionKey(version.action) : revisionOriginKey(version.origin)),
-    version.locked ? t("revisions.lockedBadge") : "",
-    version.restored_from ? t("revisions.restoredFrom", { id: version.restored_from }) : "",
-    move && (move.changed
-      ? t("revisions.sourceMoved", { name: move.name, from: move.from, to: move.to })
-      : t("revisions.sourceSame", { name: move.name })),
-  ].filter(Boolean).join(" · ");
-
-  if (!node.disabled) {
-    node.addEventListener("click", () => setViewerInspectedVersion(version.id));
-  }
-  return node;
-}
-
-/** Draw the restore relationships as arcs between measured node centres. */
-function drawRevisionGraphEdges() {
-  const svg = $("#revision-graph-edges");
-  const row = $("#revision-graph-nodes");
-  svg.replaceChildren();
-  if (!viewerHistory) return;
-  const box = row.getBoundingClientRect();
-  if (!box.width) return;
-  svg.setAttribute("viewBox", `0 0 ${Math.round(box.width)} 26`);
-
-  /** @param {number} id */
-  const centreOf = (id) => {
-    const node = row.querySelector(`[data-revision-id="${id}"]`);
-    if (!node) return null;
-    const rect = node.getBoundingClientRect();
-    return rect.left - box.left + rect.width / 2;
-  };
-
-  viewerHistory.versions.forEach((/** @type {any} */ version) => {
-    if (!version.restored_from) return;
-    const to = centreOf(version.id);
-    const from = centreOf(version.restored_from);
-    if (to === null || from === null) return;
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    const lift = Math.min(22, Math.max(10, Math.abs(to - from) / 4));
-    path.setAttribute("d", `M ${from} 24 C ${from} ${24 - lift}, ${to} ${24 - lift}, ${to} 24`);
-    path.setAttribute("class", "revision-edge");
-    svg.append(path);
-  });
-}
-
-// --- Versionen -------------------------------------------------------------
-
-function bindRevisions() {
-  // Wrapped, not passed directly: the listener would hand the PointerEvent to
-  // the first parameter and the dialog would ask for a project called
-  // "[object PointerEvent]".
-  $("#open-revisions").addEventListener("click", () => openRevisionsDialog());
-  $("#close-revisions").addEventListener("click", () => $("#revisions-dialog").close());
-  $("#close-revisions-footer").addEventListener("click", () => $("#revisions-dialog").close());
-  $("#restore-revision").addEventListener("click", restoreSelectedRevision);
-  $("#undo-import").addEventListener("click", undoSelectedImport);
-  $("#save-revision-label").addEventListener("click", saveRevisionLabel);
-  $("#toggle-revision-lock").addEventListener("click", toggleRevisionLock);
-  $("#refresh-revision-feed").addEventListener("click", loadRevisionFeed);
-  bindExternalChangeBanner();
-  bindViewerHistory();
-  $("#revisions-dialog").addEventListener("close", () => {
-    revisionState = { name: null, listing: null, selectedId: null, compareTo: "current" };
-  });
-  $("#revision-compare").addEventListener("change", () => {
-    revisionState.compareTo = parseCompareTarget($("#revision-compare").value);
-    loadRevisionDiff();
-  });
-}
-
-/** @param {string} [projectName] @param {number} [preselectId]
- * @param {CompareTarget} [compareTo] */
-async function openRevisionsDialog(projectName, preselectId, compareTo) {
-  const name = projectName || $("#server-projects").value;
-  if (!name) return;
-  revisionState = {
-    name, listing: null, selectedId: null,
-    compareTo: compareTo === undefined ? "current" : compareTo,
-  };
-  hideExternalChangeBanner();
-  $("#revisions-list").replaceChildren();
-  $("#revisions-diff").replaceChildren();
-  $("#revisions-dialog").showModal();
-  $("#close-revisions").focus();
-  await loadRevisions(preselectId);
-}
-
-/** @param {number} [preselectId] */
-async function loadRevisions(preselectId) {
-  const name = revisionState.name;
-  if (!name) return;
-  try {
-    revisionState.listing = await revisionsController.list(name);
-    if (revisionState.compareTo === "current" && !revisionState.listing.exists) {
-      revisionState.compareTo = defaultCompareTarget(revisionState.selectedId);
-    }
-    renderRevisionList();
-    const versions = revisionState.listing.versions || [];
-    // Fall back to the newest when the requested version has since been
-    // pruned out of the rolling window.
-    const wanted = versions.find((/** @type {any} */ item) => item.id === preselectId);
-    const target = wanted || versions[0];
-    if (target) await selectRevision(target.id);
-    else updateRevisionControls();
-  } catch (/** @type {any} */ error) {
-    toast(error.message, true, error.details);
-  }
-}
-
-function renderRevisionList() {
-  const list = $("#revisions-list");
-  const versions = revisionState.listing?.versions || [];
-  list.replaceChildren();
-  list.classList.toggle("empty", !versions.length);
-  if (!versions.length) {
-    list.textContent = t("revisions.empty");
-    $("#revision-lock-quota").textContent = "";
-    return;
-  }
-  versions.forEach((/** @type {any} */ version, /** @type {number} */ index) => {
-    list.append(revisionRow(version, index));
-  });
-  $("#revision-lock-quota").textContent = t("revisions.lockQuota", lockQuota(revisionState.listing || {}));
-}
-
-/** @param {any} version @param {number} index */
-function revisionRow(version, index) {
-  const row = document.createElement("button");
-  row.type = "button";
-  row.className = "revision-row";
-  row.setAttribute("role", "option");
-  row.classList.toggle("selected", version.id === revisionState.selectedId);
-  row.classList.toggle("locked", Boolean(version.locked));
-  row.setAttribute("aria-selected", String(version.id === revisionState.selectedId));
-
-  const title = document.createElement("strong");
-  title.textContent = versionTitle(version, index, t);
-  row.append(title);
-
-  const when = document.createElement("small");
-  when.textContent = formatRevisionDate(version.created_at);
-  row.append(when);
-
-  row.append(revisionMeta(version, { current: true }));
-  row.addEventListener("click", () => selectRevision(version.id));
-  return row;
-}
-
-/** Chips shared by the dialog list and the global feed.
- * @param {any} entry @param {{current?: boolean, missingProject?: boolean}} options */
-function revisionMeta(entry, options = {}) {
-  const meta = document.createElement("div");
-  meta.className = "revision-meta";
-
-  const origin = document.createElement("span");
-  origin.className = `revision-chip ${entryModifier(entry)}`;
-  origin.textContent = entry.action === "delete"
-    ? t(revisionActionKey(entry.action))
-    : t(revisionOriginKey(entry.origin));
-  meta.append(origin);
-
-  if (options.current && entry.is_current) {
-    const current = document.createElement("span");
-    current.className = "revision-chip current";
-    current.textContent = t("revisions.current");
-    meta.append(current);
-  }
-  if (entry.locked) {
-    const locked = document.createElement("span");
-    locked.className = "revision-chip locked";
-    locked.textContent = t("revisions.lockedBadge");
-    meta.append(locked);
-  }
-
-  const actor = document.createElement("span");
-  actor.textContent = revisionActorLabel(entry.actor, t);
-  meta.append(actor);
-
-  if (entry.restored_from) {
-    const from = document.createElement("span");
-    from.textContent = t("revisions.restoredFrom", { id: entry.restored_from });
-    meta.append(from);
-  }
-  const move = sourceMove(entry);
-  if (move) {
-    const source = document.createElement("span");
-    source.className = "revision-chip source";
-    source.textContent = move.changed
-      ? t("revisions.sourceMoved", { name: move.name, from: move.from, to: move.to })
-      : t("revisions.sourceSame", { name: move.name });
-    meta.append(source);
-    if (move.groups.length) {
-      const groups = document.createElement("span");
-      groups.textContent = move.groups
-        .map((/** @type {string} */ key) => t(`resync.group.${key}`)).join(", ");
-      meta.append(groups);
-    }
-  }
-  if (options.missingProject) {
-    const gone = document.createElement("span");
-    gone.className = "revision-chip delete";
-    gone.textContent = t("revisions.feed.deletedProject");
-    meta.append(gone);
-  }
-  return meta;
-}
-
-/** @param {number} id */
-async function selectRevision(id) {
-  revisionState.selectedId = id;
-  // Nothing is compared with itself, so a target that just became the
-  // selection has to give way.
-  if (revisionState.compareTo === id) revisionState.compareTo = defaultCompareTarget(id);
-  renderRevisionList();
-  renderCompareOptions();
-  const version = selectedRevision();
-  $("#revision-label").value = version?.label || "";
-  updateRevisionControls();
-  await loadRevisionDiff();
-}
-
-/** @param {string} value @returns {CompareTarget} */
-function parseCompareTarget(value) {
-  return value === "current" ? "current" : Number(value);
-}
-
-/** @param {number | null} selectedId @returns {CompareTarget} */
-function defaultCompareTarget(selectedId) {
-  if (revisionState.listing?.exists) return "current";
-  // A deleted project has no current state, so fall back to the newest other
-  // version that still carries content.
-  const other = (revisionState.listing?.versions || []).find(
-    (/** @type {any} */ item) => item.id !== selectedId && carriesContent(item),
-  );
-  return other ? other.id : null;
-}
-
-/** @param {CompareTarget} target */
-function compareTargetLabel(target) {
-  if (target === "current") return t("revisions.compareCurrent");
-  const versions = revisionState.listing?.versions || [];
-  const index = versions.findIndex((/** @type {any} */ item) => item.id === target);
-  return index >= 0 ? versionTitle(versions[index], index, t) : t("revisions.compareCurrent");
-}
-
-function renderCompareOptions() {
-  const select = $("#revision-compare");
-  const listing = revisionState.listing;
-  const versions = listing?.versions || [];
-  select.replaceChildren();
-  if (listing?.exists) {
-    const option = document.createElement("option");
-    option.value = "current";
-    option.textContent = t("revisions.compareCurrent");
-    select.append(option);
-  }
-  versions.forEach((/** @type {any} */ version, /** @type {number} */ index) => {
-    if (version.id === revisionState.selectedId || !carriesContent(version)) return;
-    const option = document.createElement("option");
-    option.value = String(version.id);
-    option.textContent = versionTitle(version, index, t);
-    select.append(option);
-  });
-  select.value = String(revisionState.compareTo);
-  // The stored target may have been pruned away or become the selection.
-  if (!select.value) {
-    revisionState.compareTo = select.options.length
-      ? parseCompareTarget(select.options[0].value)
-      : null;
-    select.value = revisionState.compareTo === null ? "" : String(revisionState.compareTo);
-  }
-  select.disabled = select.options.length < 2;
-}
-
-function selectedRevision() {
-  const versions = revisionState.listing?.versions || [];
-  return versions.find((/** @type {any} */ item) => item.id === revisionState.selectedId) || null;
-}
-
-function updateRevisionControls() {
-  const version = selectedRevision();
-  const canWrite = Boolean(state.capabilities["designer.project_write"]);
-  const restorable = Boolean(version) && carriesContent(version) && !version.is_current;
-  $("#revision-label").disabled = !version || !canWrite;
-  $("#save-revision-label").disabled = !version || !canWrite;
-  $("#toggle-revision-lock").disabled = !version || !canWrite;
-  $("#toggle-revision-lock").textContent = version?.locked ? t("revisions.unlock") : t("revisions.lock");
-  $("#preview-revision").disabled = !version || !carriesContent(version);
-  $("#restore-revision").disabled = !restorable || !canWrite;
-  $("#restore-revision").title = version && !carriesContent(version) ? t("revisions.noContent") : "";
-  const versions = revisionState.listing?.versions || [];
-  const undoable = canUndoImport(version, versions);
-  // Shown only where it means something: an import whose predecessor is still
-  // in the history. Once that has rotated out, ordinary restore is all there is.
-  $("#undo-import").classList.toggle("hidden", version?.origin !== "resync");
-  $("#undo-import").disabled = !undoable || !canWrite;
-  $("#undo-import").title = version?.origin === "resync" && !undoable
-    ? t("revisions.undoImportGone") : "";
-}
-
-async function loadRevisionDiff() {
-  const version = selectedRevision();
-  const output = $("#revisions-diff");
-  if (!revisionState.name || !version) return;
-  if (!carriesContent(version)) {
-    output.classList.remove("diff-output");
-    output.textContent = t("revisions.noContent");
-    return;
-  }
-  if (revisionState.compareTo === null) {
-    output.classList.remove("diff-output");
-    output.textContent = t("revisions.compareNone");
-    return;
-  }
-  try {
-    const result = await revisionsController.diff(
-      revisionState.name, version.id, revisionState.compareTo,
-    );
-    if (result.diff) {
-      renderUnifiedDiff(output, result.diff, t);
-      if (result.diff_truncated) {
-        const note = document.createElement("p");
-        note.className = "hint";
-        note.textContent = t("revisions.diffTruncated");
-        output.prepend(note);
-      }
-    } else {
-      output.classList.remove("diff-output");
-      output.textContent = t("revisions.diffEmpty", {
-        target: compareTargetLabel(revisionState.compareTo),
-      });
-    }
-  } catch (/** @type {any} */ error) {
-    output.classList.remove("diff-output");
-    output.textContent = error.message;
-  }
-}
-
-async function saveRevisionLabel() {
-  const version = selectedRevision();
-  if (!revisionState.name || !version) return;
-  try {
-    await revisionsController.setLabel(revisionState.name, version.id, $("#revision-label").value);
-    await loadRevisions();
-    await selectRevision(version.id);
-    toast(t("toast.revisions.labelSaved"));
-  } catch (/** @type {any} */ error) {
-    toast(error.message, true, error.details);
-  }
-}
-
-async function toggleRevisionLock() {
-  const version = selectedRevision();
-  if (!revisionState.name || !version) return;
-  const next = !version.locked;
-  if (!next && !confirm(t("confirm.revisions.unlock"))) return;
-  try {
-    await revisionsController.setLocked(revisionState.name, version.id, next);
-    await loadRevisions();
-    await selectRevision(version.id);
-    toast(t(next ? "toast.revisions.locked" : "toast.revisions.unlocked"));
-  } catch (/** @type {any} */ error) {
-    toast(error.message, true, error.details);
-  }
-}
-
-async function restoreSelectedRevision() {
-  const version = selectedRevision();
-  const exists = Boolean(revisionState.listing?.exists);
-  await restoreVersion(version, exists
-    ? t("confirm.revisions.restore", { date: formatRevisionDate(version?.created_at) })
-    : t("confirm.revisions.restoreDeleted", { name: revisionState.name }));
-}
-
-/** Take back the import the selected version made, by restoring the state it
- * displaced. Ordinary restore underneath - the import is not rewound, it is
- * followed by its own reversal, which stays as undoable as anything else. */
-async function undoSelectedImport() {
-  const version = selectedRevision();
-  const target = replacedVersion(version, revisionState.listing?.versions || []);
-  const move = sourceMove(version);
-  if (!target || !move) return;
-  await restoreVersion(target, t("confirm.revisions.undoImport", {
-    name: move.name,
-    date: formatRevisionDate(target.created_at),
-  }));
-}
-
-/** @param {any} version @param {string} question */
-async function restoreVersion(version, question) {
-  const name = revisionState.name;
-  if (!name || !version || !state.capabilities["designer.project_write"]) return;
-  const exists = Boolean(revisionState.listing?.exists);
-  if (!confirm(question)) return;
-  // A project open in the editor may be further along than the listing, so
-  // prefer its revision - the freshness rule deleteServerProject uses.
-  const expectedRevision = !exists
-    ? null
-    : (state.projectName === name ? state.projectRevision : revisionState.listing.current_revision);
-  try {
-    await revisionsController.restore(name, version.id, expectedRevision);
-    // Only touch the editor when it is showing this very project - the feed
-    // can open this dialog for any project, and silently swapping what the
-    // user is editing (or discarding their unsaved work) would be worse than
-    // the change they just undid.
-    if (state.projectName === name
-        && (!state.projectDirty || confirm(t("confirm.discardUnsaved")))) {
-      adoptLoadedProject(await projectsController.load(name));
-      await loadViewerBindings(name);
-      renderDesigner();
-    }
-    externalChangeSeen = null;
-    hideExternalChangeBanner();
-    await Promise.all([loadServerProjects(), loadRevisions(version.id), loadRevisionFeed()]);
-    updateServerProjectButtons();
-    toast(t("toast.revisions.restored"));
-  } catch (/** @type {any} */ error) {
-    toast(
-      error.code === "revision_conflict" ? t("toast.revisions.conflict") : error.message,
-      true,
-      error.details,
-    );
-    await loadRevisions();
-  }
-}
-
-async function loadRevisionFeed() {
-  if (!state.capabilities["designer.project"]) return;
-  try {
-    renderRevisionFeed(await revisionsController.feed(50));
-  } catch (/** @type {any} */ error) {
-    $("#revision-feed").textContent = error.message;
-  }
-}
-
-/** @param {any[]} events */
-function renderRevisionFeed(events) {
-  const feed = $("#revision-feed");
-  const items = events || [];
-  feed.replaceChildren();
-  feed.classList.toggle("empty", !items.length);
-  if (!items.length) {
-    feed.textContent = t("revisions.feed.empty");
-    return;
-  }
-  groupFeedByDay(items).forEach((group) => {
-    const heading = document.createElement("p");
-    heading.className = "revision-feed-day";
-    heading.textContent = formatRevisionDate(group.events[0].created_at, true);
-    feed.append(heading);
-    group.events.forEach((event) => feed.append(revisionFeedRow(event)));
-  });
-}
-
-/** @param {any} event */
-function revisionFeedRow(event) {
-  const row = document.createElement("button");
-  row.type = "button";
-  row.className = "revision-row";
-  row.addEventListener("click", () => openRevisionsDialog(event.project_name, event.id));
-  const title = document.createElement("strong");
-  title.textContent = event.project_name;
-  row.append(title);
-  const when = document.createElement("small");
-  when.textContent = formatRevisionDate(event.created_at);
-  row.append(when);
-  row.append(revisionMeta(event, { missingProject: !event.project_exists }));
-  return row;
-}
-
-/** @param {any} value @param {boolean} [dateOnly] */
-function formatRevisionDate(value, dateOnly = false) {
-  if (!value) return "—";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return String(value);
-  return new Intl.DateTimeFormat(getLanguage() === "de" ? "de-CH" : "en-GB", {
-    dateStyle: "medium",
-    ...(dateOnly ? {} : { timeStyle: "short" }),
-  }).format(parsed);
-}
-
+// Called before anything that *might* change the project - a pointer-down on
+// a widget, a field getting focus. It only remembers the state; it becomes
+// an undo step once something actually changed (markProjectDirty).
 function pushUndo() {
-  state.undo = pushHistory(state.undo, state.project);
-  state.redo = [];
+  if (pendingUndo === null) pendingUndo = JSON.stringify(state.project);
+}
+
+function flushPendingUndo() {
+  const result = commitPendingUndo(state.undo, state.redo, pendingUndo, state.project);
+  pendingUndo = null;
+  if (!result.committed) return;
+  state.undo = result.undo;
+  state.redo = result.redo;
   updateUndoButtons();
 }
 
@@ -3046,6 +2522,7 @@ function reselectAfterHistoryChange(/** @type {any} */ widgetId, /** @type {any}
 }
 
 function undoDesignerChange() {
+  flushPendingUndo();
   const history = undoHistory(state.undo, state.redo, state.project);
   if (!history) return;
   const widgetId = state.selectedWidget?.id;
@@ -3058,6 +2535,7 @@ function undoDesignerChange() {
 }
 
 function redoDesignerChange() {
+  flushPendingUndo();
   const history = redoHistory(state.undo, state.redo, state.project);
   if (!history) return;
   const widgetId = state.selectedWidget?.id;
@@ -3070,6 +2548,7 @@ function redoDesignerChange() {
 }
 
 function resetHistory() {
+  pendingUndo = null;
   state.undo = [];
   state.redo = [];
   updateUndoButtons();
@@ -3081,6 +2560,7 @@ function updateUndoButtons() {
 }
 
 function markProjectDirty() {
+  flushPendingUndo();
   actions.set("projectDirty", true);
 }
 
@@ -3114,6 +2594,10 @@ function saveAutosave() {
     window.localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({
       project: state.project,
       projectName: state.projectName,
+      // Which stored version the edit started from - without it, saving
+      // the restored work could only ever end in a conflict.
+      projectRevision: state.projectRevision,
+      nameField: $("#project-name").value,
       savedAt: Date.now(),
     }));
   } catch {
@@ -3149,7 +2633,13 @@ function offerAutosaveRecovery() {
   state.project = saved.project;
   state.activeSurface = "root";
   state.projectName = saved.projectName || null;
-  state.projectRevision = null;
+  // Older autosaves have no revision; saving them then goes through the
+  // conflict dialog instead of silently taking the newest stored version.
+  state.projectRevision = saved.projectRevision || null;
+  // Saving reads this field, not projectName - restore it, or the work
+  // would be saved under the default name.
+  const nameField = saved.nameField || saved.projectName;
+  if (nameField) $("#project-name").value = nameField;
   state.projectDirty = true;
   state.selectedWidget = null;
   state.selectedStroke = null;
@@ -3977,7 +3467,8 @@ function renderDesigner() {
   renderLineProperties();
   renderTree();
   renderThemeEditor();
-  renderColorLibrary();
+  colorLibraryView.render();
+  syncLinkedColorPickers();
   renderFontLibrary();
   renderMsgboxList();
   renderDesignerStatus();
@@ -4774,13 +4265,15 @@ function renderStrokeFrame(/** @type {any} */ doc, /** @type {any} */ rect, /** 
     ctx.putImageData(image, 0, 0);
     canvas.toBlob((blob) => {
       if (blob) resolve(blob);
-      else reject(new Error("PNG-Erzeugung ist fehlgeschlagen."));
+      else reject(new Error(t("glow.bake.pngFailed")));
     }, "image/png");
   });
 }
 
 async function uploadBakedFrame(/** @type {any} */ name, /** @type {any} */ blob) {
-  return uploadImageAsset(api, name, blob);
+  const path = await uploadImageAsset(api, name, blob);
+  forgetFailedAssets();
+  return path;
 }
 
 // Only ever called for a baked glow-line frame (see bakeStroke()):
@@ -4915,20 +4408,29 @@ function renderWidget(/** @type {any} */ item) {
   } else if (widget.widget_type === "meter") {
     node.append(renderViewerMeter(state.project, widget, previewState ? [previewState] : []));
   } else if (imageSource) {
-    const picture = document.createElement("img");
-    picture.className = "widget-image";
-    picture.src = imageSource;
-    picture.draggable = false;
-    picture.alt = "";
     // Fall back to a label if the URL cannot be loaded in the browser. Replace
     // only the image - setting textContent here would drop the resize handle.
-    picture.addEventListener("error", () => {
-      const fallback = document.createElement("span");
-      fallback.textContent = `${imageReference || widget.id} ⚠`;
-      picture.replaceWith(fallback);
+    const fallback = () => {
+      const element = document.createElement("span");
+      element.textContent = `${imageReference || widget.id} ⚠`;
       node.title = t("canvas.imageLoadFailedTitle");
-    });
-    node.append(picture);
+      return element;
+    };
+    if (assetLoadFailed(imageSource)) {
+      node.append(fallback());
+    } else {
+      const picture = document.createElement("img");
+      picture.className = "widget-image";
+      picture.src = imageSource;
+      picture.draggable = false;
+      picture.alt = "";
+      picture.addEventListener("error", () => {
+        // Every canvas re-render would otherwise request the missing file again.
+        markAssetLoadFailed(imageSource);
+        picture.replaceWith(fallback());
+      });
+      node.append(picture);
+    }
   } else if (!(widget.widget_type === "button" && widget.children?.length
       && !Object.hasOwn(widget.properties || {}, "text"))) {
     const text = document.createElement("span");
@@ -5427,7 +4929,7 @@ function eventImageSource(/** @type {any} */ widget, /** @type {any} */ trigger,
 function populateImageChoice(/** @type {any} */ control, /** @type {any} */ value) {
   control.replaceChildren(new Option(t("imgbtn.notSet"), ""));
   imageLibrary().forEach((/** @type {any} */ entry) => control.append(new Option(entry.id, entry.id)));
-  if (value && !imageEntry(value)) control.append(new Option(`${value} (fehlt)`, value));
+  if (value && !imageEntry(value)) control.append(new Option(t("common.missingValue", { value }), value));
   control.value = value || "";
 }
 
@@ -5604,7 +5106,7 @@ function renderWidgetLinks(/** @type {any} */ widget) {
         triggerLabel: ACTION_TRIGGER_LABELS[trigger] || trigger,
         text: description.text,
         invalid: !description.supported || Boolean(missing.length),
-        missingText: missing.length ? ` · Ziel fehlt: ${missing.join(", ")}` : "",
+        missingText: missing.length ? t("binding.missingTargets", { ids: missing.join(", ") }) : "",
         badge: description.supported ? t("actions.link.badge.action") : t("actions.link.badge.custom"),
       });
     });
@@ -5719,7 +5221,7 @@ function renderWidgetActionBuilder(/** @type {any} */ widget) {
   const previous = target.value;
   const choices = flow ? []
     : type === "page_show"
-      ? (state.project.pages || []).map((/** @type {any} */ page) => ({ value: page.id, label: `${page.id} · Seite` }))
+      ? (state.project.pages || []).map((/** @type {any} */ page) => ({ value: page.id, label: t("action.pageOption", { id: page.id }) }))
       : (indicatorUpdate ? meterIndicatorEntries() : projectWidgetEntries())
         .filter((item) => !animimgOnly || item.widget_type === "animimg")
         .map((item) => ({ value: item.id, label: `${item.id} · ${item.widget_type}` }));
@@ -6284,7 +5786,7 @@ function projectWidgetEntries() {
 function widgetIdCollides(/** @type {any} */ candidateId, /** @type {any} */ widget) {
   return projectWidgetEntries().some((entry) => entry !== widget && entry.id === candidateId)
     || (state.project.reserved_ids || []).includes(candidateId)
-    || [state.project.styles, state.project.fonts, state.project.images, colorLibrary()]
+    || [state.project.styles, state.project.fonts, state.project.images, state.project.colors]
       .some((entries) => (entries || []).some((/** @type {any} */ entry) => entry.id === candidateId));
 }
 
@@ -6611,156 +6113,14 @@ function toggleWidgetFlag(/** @type {any} */ flag) {
   renderTree();
 }
 
-// --- Project colour library ------------------------------------------
-
-function colorLibrary() {
-  if (!Array.isArray(state.project.colors)) state.project.colors = [];
-  return state.project.colors;
-}
-
-function colorReferenceLocations(/** @type {any} */ id, replacement = null) {
-  return findColorReferences(state.project, id, replacement);
-}
+// --- Project colour library (libraries/color-library.js) ---------------
 
 function projectIdIsUsed(/** @type {any} */ id, ignoredColorId = null) {
   return idIsUsedInProject(state.project, id, ignoredColorId);
 }
 
-function resetColorLibraryForm() {
-  state.editingColorId = null;
-  $("#color-library-id").value = "";
-  $("#color-library-hex").value = "";
-  $("#color-library-picker").value = "#00a000";
-  $("#color-library-error").classList.add("hidden");
-  $("#save-color-library-entry").textContent = t("colorlib.form.add");
-  $("#cancel-color-library-edit").classList.add("hidden");
-}
-
-function editColorLibraryEntry(/** @type {any} */ id) {
-  const entry = colorLibrary().find((/** @type {any} */ item) => item.id === id);
-  if (!entry) return;
-  state.editingColorId = id;
-  $("#color-library-id").value = entry.id;
-  $("#color-library-hex").value = normalizeLibraryHex(entry.hex) || "FFFFFF";
-  $("#color-library-picker").value = `#${normalizeLibraryHex(entry.hex) || "FFFFFF"}`;
-  $("#color-library-error").classList.add("hidden");
-  $("#save-color-library-entry").textContent = t("colorlib.form.save");
-  $("#cancel-color-library-edit").classList.remove("hidden");
-  $("#color-library-id").focus();
-}
-
-function saveColorLibraryEntry(/** @type {any} */ event) {
-  event.preventDefault();
-  const id = $("#color-library-id").value.trim();
-  const hex = normalizeLibraryHex($("#color-library-hex").value);
-  const error = $("#color-library-error");
-  const fail = (/** @type {any} */ message) => {
-    error.textContent = message;
-    error.classList.remove("hidden");
-  };
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
-    fail(t("validation.id.format"));
-    return;
-  }
-  if (!hex) {
-    fail(t("validation.color.needsHex"));
-    return;
-  }
-  if (projectIdIsUsed(id, state.editingColorId)) {
-    fail(t("validation.id.usedInProject", { id }));
-    return;
-  }
-
-  pushUndo();
-  if (state.editingColorId) {
-    const entry = colorLibrary().find((/** @type {any} */ item) => item.id === state.editingColorId);
-    if (!entry) return resetColorLibraryForm();
-    const previousId = entry.id;
-    entry.id = id;
-    entry.hex = hex;
-    if (previousId !== id) colorReferenceLocations(previousId, id);
-  } else {
-    colorLibrary().push({ id, hex });
-  }
-  markProjectDirty();
-  resetColorLibraryForm();
-  renderDesigner();
-  toast(t("toast.color.saved", { id }));
-}
-
-function deleteColorLibraryEntry(/** @type {any} */ id) {
-  const entry = colorLibrary().find((/** @type {any} */ item) => item.id === id);
-  if (!entry) return;
-  const references = colorReferenceLocations(id);
-  if (references.length && !confirm(
-    t("confirm.color.deleteWithRefs", { id, count: references.length, hex: entry.hex }),
-  )) return;
-  pushUndo();
-  if (references.length) colorReferenceLocations(id, normalizeLibraryHex(entry.hex) || entry.hex);
-  state.project.colors = colorLibrary().filter((/** @type {any} */ item) => item !== entry);
-  if (state.editingColorId === id) resetColorLibraryForm();
-  markProjectDirty();
-  renderDesigner();
-  toast(references.length
-    ? t("toast.color.deletedWithRefs", { id, count: references.length })
-    : t("toast.color.deleted", { id }));
-}
-
-function renderColorLibrary() {
-  const list = $("#color-library-list");
-  list.replaceChildren();
-  colorLibrary().forEach((/** @type {any} */ entry) => {
-    const hex = normalizeLibraryHex(entry.hex) || "FFFFFF";
-    const row = document.createElement("div");
-    row.className = "color-library-item";
-    const swatch = document.createElement("span");
-    swatch.className = "color-library-swatch";
-    swatch.style.backgroundColor = `#${hex}`;
-    const name = document.createElement("span");
-    name.className = "color-library-name";
-    name.textContent = entry.id;
-    const value = document.createElement("small");
-    value.textContent = `#${hex}`;
-    name.append(value);
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "icon-button";
-    edit.title = t("library.editTooltip", { id: entry.id });
-    edit.textContent = "✎";
-    edit.addEventListener("click", () => editColorLibraryEntry(entry.id));
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "icon-button";
-    remove.title = t("library.deleteTooltip", { id: entry.id });
-    remove.textContent = "×";
-    remove.addEventListener("click", () => deleteColorLibraryEntry(entry.id));
-    row.append(swatch, name, edit, remove);
-    list.append(row);
-  });
-  if (!colorLibrary().length) {
-    const empty = document.createElement("p");
-    empty.className = "color-library-empty";
-    empty.textContent = t("colorlib.noProjectColors");
-    list.append(empty);
-  }
-
-  const options = $("#project-color-options");
-  options.replaceChildren();
-  colorLibrary().forEach((/** @type {any} */ entry) => {
-    const option = document.createElement("option");
-    option.value = entry.id;
-    option.label = `#${normalizeLibraryHex(entry.hex) || entry.hex}`;
-    options.append(option);
-  });
-  $("#color-library-export-hint").classList.toggle(
-    "hidden", (state.project.export_sections || []).includes("color"),
-  );
-  if (state.editingColorId && !colorLibrary().some((/** @type {any} */ entry) => entry.id === state.editingColorId)) {
-    resetColorLibraryForm();
-  }
-  syncLinkedColorPickers();
-}
-
+// A colour input with a picker next to it: either shows what the other
+// holds, whether that is a hex value or a library colour's id.
 function syncLinkedColorPickers() {
   $$(".linked-color-picker").forEach((picker) => {
     const target = picker.dataset.colorTarget
@@ -6771,16 +6131,7 @@ function syncLinkedColorPickers() {
   });
 }
 
-function bindColorLibrary() {
-  $("#color-library-form").addEventListener("submit", saveColorLibraryEntry);
-  $("#cancel-color-library-edit").addEventListener("click", resetColorLibraryForm);
-  $("#color-library-picker").addEventListener("input", (/** @type {any} */ event) => {
-    $("#color-library-hex").value = event.target.value.slice(1).toUpperCase();
-  });
-  $("#color-library-hex").addEventListener("input", (/** @type {any} */ event) => {
-    const hex = normalizeLibraryHex(event.target.value);
-    if (hex) $("#color-library-picker").value = `#${hex}`;
-  });
+function bindLinkedColorPickers() {
   $$(".linked-color-picker").forEach((picker) => {
     const target = $(`#${picker.dataset.colorTarget}`);
     picker.addEventListener("input", () => {
@@ -6945,7 +6296,7 @@ async function ensureMdiPreviewFont() {
     ? assetUrl(mdiFont.file_path)
     : state.system?.mdi_local ? mdiLocalFontUrl() : MDI_WEBFONT_URL;
   glyphPreviewState = { status: "loading", family: "inherit" };
-  updateGlyphPreviewStatus("Vorschaufont wird geladen …", "loading");
+  updateGlyphPreviewStatus(t("glyph.preview.loading"), "loading");
   renderIconCatalog();
   try {
     const cssSource = `url(${JSON.stringify(cssUrl)})`;
@@ -6953,11 +6304,11 @@ async function ensureMdiPreviewFont() {
     if (request !== glyphPreviewRequest) return;
     document.fonts.add(loaded);
     glyphPreviewState = { status: "loaded", family: "esphome_mdi_preview" };
-    updateGlyphPreviewStatus("Vorschaufont geladen.", "loaded");
+    updateGlyphPreviewStatus(t("glyph.preview.loaded"), "loaded");
   } catch (/** @type {any} */ error) {
     if (request !== glyphPreviewRequest) return;
     glyphPreviewState = { status: "failed", family: "inherit" };
-    updateGlyphPreviewStatus("Vorschaufont konnte nicht geladen werden.", "failed");
+    updateGlyphPreviewStatus(t("glyph.preview.failed"), "failed");
   }
   renderIconCatalog();
 }
@@ -7588,7 +6939,7 @@ function renderStyleControls(/** @type {any} */ widget) {
   styleLibrary().forEach((/** @type {any} */ entry) => select.append(new Option(entry.id, entry.id)));
   const current = (widget.style_refs || [])[0] || "";
   if (current && !styleLibrary().some((/** @type {any} */ entry) => entry.id === current)) {
-    select.append(new Option(`${current} (fehlt)`, current));
+    select.append(new Option(t("common.missingValue", { value: current }), current));
   }
   select.value = current;
 
@@ -7619,24 +6970,23 @@ function changeStyleRef() {
   renderCanvas();
 }
 
-function saveCurrentStyleAsNamed() {
+async function saveCurrentStyleAsNamed() {
   const widget = state.selectedWidget;
   if (!widget) return;
   if (!Object.keys(widget.style_tree || {}).length) {
     toast(t("toast.style.noStyleToSave"), true);
     return;
   }
-  const suggestion = `style_${styleLibrary().length + 1}`;
-  const name = (prompt(t("prompt.style.name"), suggestion) || "").trim();
-  if (!name) return;
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-    toast(t("toast.style.invalidName"), true);
-    return;
-  }
-  if (styleLibrary().some((/** @type {any} */ entry) => entry.id === name)) {
-    toast(t("toast.style.nameExists", { name }), true);
-    return;
-  }
+  // The dialog checks the name in place, so a typo does not throw the input away.
+  const name = await askText($("#text-prompt-dialog"), {
+    title: t("prompt.style.title"),
+    label: t("prompt.style.name"),
+    value: `style_${styleLibrary().length + 1}`,
+    validate: (value) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value) ? t("toast.style.invalidName")
+      : styleLibrary().some((/** @type {any} */ entry) => entry.id === value) ? t("toast.style.nameExists", { name: value })
+      : "",
+  });
+  if (!name || state.selectedWidget !== widget) return;
   pushUndo();
   styleLibrary().push({ id: name, style_tree: JSON.parse(JSON.stringify(widget.style_tree)) });
   widget.style_tree = {};
@@ -8083,7 +7433,8 @@ function renderMeterIndicators(/** @type {any} */ scale) {
     const header = document.createElement("div");
     header.className = "meter-indicator-card-header";
     const type = document.createElement("select");
-    [["line", "Zeiger (Linie)"], ["arc", "Bogen"], ["image", "Bildzeiger"], ["tick_style", "Tick-Farbbereich"]]
+    [["line", t("meter.indicator.line")], ["arc", t("meter.indicator.arc")],
+      ["image", t("meter.indicator.image")], ["tick_style", t("meter.indicator.tickStyle")]]
       .forEach(([value, label]) => type.append(new Option(label, value)));
     type.value = kind;
     type.addEventListener("change", () => {
@@ -8339,9 +7690,7 @@ function renderThemeEditor() {
   stateSelect.value = state.themeState;
 
   const schema = state.schemas.find((/** @type {any} */ item) => item.type_key === state.themeType);
-  const entry = themeLibrary()[state.themeType];
-  $("#delete-theme-entry").disabled = !entry;
-  $("#theme-empty").classList.toggle("hidden", Boolean(entry));
+  refreshThemeEntryState();
 
   const container = $("#theme-properties");
   container.replaceChildren();
@@ -8353,7 +7702,7 @@ function renderThemeEditor() {
     if (property.part !== previousPart) {
       const heading = document.createElement("div");
       heading.className = "property-section";
-      heading.textContent = property.part === "main" ? "Stil" : property.part;
+      heading.textContent = property.part === "main" ? t("theme.mainPart") : property.part;
       container.append(heading);
       previousPart = property.part;
     }
@@ -8417,7 +7766,15 @@ async function updateThemeProperty(/** @type {any} */ property, /** @type {any} 
 
   markProjectDirty();
   renderCanvas();
-  renderThemeEditor();
+  // Only whether an entry exists can change here - rebuilding every field
+  // on each keystroke took the focus away after one character.
+  refreshThemeEntryState();
+}
+
+function refreshThemeEntryState() {
+  const entry = themeLibrary()[state.themeType];
+  $("#delete-theme-entry").disabled = !entry;
+  $("#theme-empty").classList.toggle("hidden", Boolean(entry));
 }
 
 function renderGridCellSection(/** @type {any} */ widget) {
@@ -8702,20 +8059,14 @@ function registerServerImageAsset(/** @type {any} */ path) {
 }
 
 async function addImageSource() {
+  // Fresh each time: a file copied into images/ after the page loaded
+  // should be offered without a reload.
+  serverImageAssetsCache = null;
   const existing = await availableServerImages();
-  let url;
-  if (existing.length) {
-    const list = existing.map((/** @type {any} */ path, /** @type {any} */ index) => `${index + 1}: ${path}`).join("\n");
-    const answer = (prompt(t("prompt.image.urlOrExisting", { list }), "https://") || "").trim();
-    const index = Number.parseInt(answer, 10);
-    if (Number.isInteger(index) && index >= 1 && index <= existing.length) {
-      return registerServerImageAsset(existing[index - 1]);
-    }
-    url = answer;
-  } else {
-    url = (prompt(t("prompt.image.url"), "https://") || "").trim();
-  }
-  if (!url || url === "https://") return null;
+  const choice = await askImageSource($("#image-source-dialog"), { existing });
+  if (!choice) return null;
+  if ("path" in choice) return registerServerImageAsset(choice.path);
+  const url = choice.url;
   if (!isRemoteAsset(url)) {
     toast(t("toast.image.onlyHttpUrls"), true);
     return null;
@@ -8760,9 +8111,9 @@ function propertyControl(/** @type {any} */ property, /** @type {any} */ value, 
     control = document.createElement("select");
     control.append(new Option("—", ""));
     imageLibrary().forEach((/** @type {any} */ entry) => control.append(new Option(entry.id, entry.id)));
-    if (value && !imageEntry(value)) control.append(new Option(`${value} (fehlt)`, value));
+    if (value && !imageEntry(value)) control.append(new Option(t("common.missingValue", { value }), value));
     control.value = value ?? "";
-    control.append(new Option("＋ Neue Bildquelle …", ADD_IMAGE_OPTION));
+    control.append(new Option(t("properties.addImageSource"), ADD_IMAGE_OPTION));
   } else if (property.kind === "widget_ref") {
     control = document.createElement("select");
     control.append(new Option("—", ""));
@@ -8774,7 +8125,7 @@ function propertyControl(/** @type {any} */ property, /** @type {any} */ value, 
     }
     control.value = value ?? "";
   } else {
-    control = createBasicPropertyControl(document, property, value);
+    control = createBasicPropertyControl(document, property, value, t("properties.colorPlaceholder"));
     if (property.kind === "text_list") control.placeholder = t("dynprops.optionsPlaceholder");
   }
   control.id = `dynamic-${index}-${property.part}-${property.key}`;
@@ -8827,7 +8178,9 @@ async function updateDynamicProperty(/** @type {any} */ widget, /** @type {any} 
   // Layout and placement change where everything else sits, so the whole
   // canvas has to be recomputed rather than just this widget repainted.
   renderCanvas();
-  if (targetKind === "layout" || targetKind === "grid_cell") renderProperties();
+  // Only a different layout type changes which fields the panel shows;
+  // rebuilding it for every value took the focus away after each keystroke.
+  if (targetKind === "layout" && property.key === "type") renderProperties();
 }
 
 function updateSelectedWidget(/** @type {any} */ event) {
@@ -9552,14 +8905,19 @@ async function saveMergeDraft() {
       result = await merge(true);
     }
     const changed = [...result.replaced, ...result.appended];
-    toast(t("toast.mergeDraft.saved", { target, keys: changed.join(", ") }));
+    // Non-blocking notes - a block rewritten as a whole, a broken draft
+    // replaced - belong next to the success message, not in a log.
+    const notes = (result.issues || [])
+      .filter((/** @type {any} */ issue) => issue.severity !== "A")
+      .map((/** @type {any} */ issue) => issue.message);
+    toast([t("toast.mergeDraft.saved", { target, keys: changed.join(", ") }), ...notes].join("\n"));
     $("#yaml-dialog").close();
     $$(".tab").forEach((item) => item.classList.toggle("active", item.dataset.tab === "configurations"));
     $$(".view").forEach((view) => view.classList.toggle("active", view.id === "configurations"));
     $("#configurations").classList.remove("showing-list");
-    await loadConfigurations();
+    await configurationWorkspace.loadList();
     const entry = state.configurations.find((/** @type {any} */ item) => item.name === target);
-    if (entry) await loadConfiguration(entry);
+    if (entry) await configurationWorkspace.open(entry);
   } catch (/** @type {any} */ error) {
     toast(error.message, true, error.details);
   } finally {
@@ -9655,496 +9013,6 @@ function renderIssues(/** @type {any} */ container, /** @type {any} */ issues, c
     list.append(entry);
   });
   container.append(list);
-}
-
-function bindConfigurations() {
-  $("#refresh-configs").addEventListener("click", loadConfigurations);
-  $("#save-draft").addEventListener("click", saveDraft);
-  $("#check-yaml").addEventListener("click", checkYaml);
-  $("#validate-esphome").addEventListener("click", validateEspHome);
-  $("#show-diff").addEventListener("click", showDiff);
-  $("#merge-draft").addEventListener("click", openMergeDialog);
-  $("#publish").addEventListener("click", publishDraft);
-  $("#compile-config").addEventListener("click", compileConfiguration);
-  $("#install-config").addEventListener("click", installConfiguration);
-  $("#refresh-jobs").addEventListener("click", loadBuilderJobs);
-  $("#close-merge-dialog").addEventListener("click", () => $("#merge-dialog").close());
-  $("#cancel-merge").addEventListener("click", () => $("#merge-dialog").close());
-  $("#save-merge").addEventListener("click", saveMergedDraft);
-  const editor = $("#yaml-editor");
-  editor.addEventListener("input", updateYamlEditorUi);
-  editor.addEventListener("click", updateYamlCursorStatus);
-  editor.addEventListener("keyup", updateYamlCursorStatus);
-  editor.addEventListener("select", updateYamlCursorStatus);
-  editor.addEventListener("scroll", () => {
-    $("#yaml-line-numbers").scrollTop = editor.scrollTop;
-  });
-  editor.addEventListener("keydown", (/** @type {any} */ event) => {
-    if (event.key !== "Tab") return;
-    event.preventDefault();
-    const start = editor.selectionStart;
-    editor.setRangeText("  ", start, editor.selectionEnd, "end");
-    updateYamlEditorUi();
-  });
-  $("#yaml-search-next").addEventListener("click", () => findYamlMatch(1));
-  $("#yaml-search-previous").addEventListener("click", () => findYamlMatch(-1));
-  $("#yaml-search").addEventListener("input", () => findYamlMatch(0));
-  $("#yaml-search").addEventListener("keydown", (/** @type {any} */ event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    findYamlMatch(event.shiftKey ? -1 : 1);
-  });
-  // Phone layout only: list <-> detail is one pane at a time there, so this
-  // is what "leaving" the detail view means. A no-op above the breakpoint,
-  // where both panels already show side by side regardless of the class.
-  $("#back-to-configs").addEventListener("click", () => {
-    $("#configurations").classList.add("showing-list");
-  });
-}
-
-function updateYamlEditorUi() {
-  const editor = $("#yaml-editor");
-  $("#yaml-line-numbers").textContent = lineNumbers(editor.value);
-  state.yamlDirty = editorIsDirty(
-    state.activeConfig,
-    editor.value,
-    state.yamlLoadedContent,
-  );
-  const status = $("#yaml-dirty-status");
-  status.classList.toggle("dirty", state.yamlDirty);
-  status.textContent = !state.activeConfig
-    ? t("configs.noFileLoaded")
-    : state.yamlDirty
-      ? t("configs.unsavedChanges")
-      : state.hasDraft ? t("configs.savedDraft") : t("configs.activeState");
-  const badge = $("#yaml-state-badge");
-  badge.classList.toggle("hidden", !state.activeConfig);
-  badge.classList.toggle("active-state", Boolean(state.activeConfig) && !state.hasDraft);
-  badge.classList.toggle("draft-state", Boolean(state.activeConfig) && state.hasDraft);
-  badge.textContent = state.hasDraft ? t("configs.savedDraft") : t("configs.activeState");
-  updateYamlCursorStatus();
-}
-
-function updateYamlCursorStatus() {
-  const editor = $("#yaml-editor");
-  $("#yaml-cursor-status").textContent = t(
-    "configs.cursorStatus",
-    cursorPosition(editor.value, editor.selectionStart),
-  );
-}
-
-function findYamlMatch(/** @type {any} */ direction) {
-  const editor = $("#yaml-editor");
-  const query = $("#yaml-search").value;
-  const result = $("#yaml-search-result");
-  if (!query) {
-    result.textContent = "";
-    return;
-  }
-  const match = findMatch(editor.value, query, editor.selectionStart, direction);
-  if (!match.count) {
-    result.textContent = t("configs.searchNoMatch");
-    return;
-  }
-  editor.focus();
-  editor.setSelectionRange(match.index, match.index + query.length);
-  result.textContent = t("configs.searchMatchCount", { selected: match.selected + 1, count: match.count });
-  updateYamlCursorStatus();
-}
-
-async function loadConfigurations() {
-  try {
-    const result = await api("configurations");
-    state.configurations = result.configurations;
-    const list = $("#config-list");
-    list.replaceChildren();
-    list.classList.toggle("empty", result.configurations.length === 0);
-    if (!result.configurations.length) {
-      list.textContent = t("configs.noFilesFound");
-      return;
-    }
-    result.configurations.forEach((/** @type {any} */ configuration) => {
-      const button = document.createElement("button");
-      button.className = `config-item${state.activeConfig === configuration.name ? " active" : ""}`;
-      const name = document.createElement("span");
-      name.textContent = configuration.name;
-      const meta = document.createElement("small");
-      meta.textContent = `${Math.ceil(configuration.size / 1024)} KiB${configuration.has_draft ? t("configs.listDraftSuffix") : ""}`;
-      if (configuration.has_draft) meta.className = "draft-dot";
-      button.append(name, meta);
-      button.addEventListener("click", () => {
-        $("#configurations").classList.remove("showing-list");
-        loadConfiguration(configuration);
-      });
-      list.append(button);
-    });
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-async function loadConfiguration(/** @type {any} */ configuration) {
-  if (
-    state.yamlDirty
-    && state.activeConfig
-    && state.activeConfig !== configuration.name
-    && !confirm(t("confirm.yaml.discardAndLoad"))
-  ) return;
-  try {
-    const active = await api(`configurations/${encodedName(configuration.name)}`);
-    state.activeConfig = configuration.name;
-    state.activeRevision = active.revision;
-    state.hasDraft = configuration.has_draft;
-    let content = active.content;
-    if (configuration.has_draft) {
-      const draft = await api(`configurations/${encodedName(configuration.name)}/draft`);
-      content = draft.content;
-    }
-    $("#config-title").textContent = configuration.name;
-    setRevisionDisplay(active.revision);
-    $("#yaml-editor").value = content;
-    state.yamlLoadedContent = content;
-    state.yamlDirty = false;
-    $("#yaml-editor").disabled = !state.capabilities["configuration.write_draft"];
-    $("#yaml-search").disabled = false;
-    $("#yaml-search-previous").disabled = false;
-    $("#yaml-search-next").disabled = false;
-    $("#check-yaml").disabled = false;
-    $("#check-yaml").title = "";
-    updateDraftActionButtons();
-    updateBuilderButtons();
-    $("#config-output").classList.add("hidden");
-    updateYamlEditorUi();
-    await loadConfigurations();
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-async function saveDraft() {
-  if (!state.activeConfig) return;
-  try {
-    await api(`configurations/${encodedName(state.activeConfig)}/draft`, {
-      method: "PUT", body: JSON.stringify({ content: $("#yaml-editor").value }),
-    });
-    state.hasDraft = true;
-    state.yamlLoadedContent = $("#yaml-editor").value;
-    state.yamlDirty = false;
-    updateDraftActionButtons();
-    updateBuilderButtons();
-    updateYamlEditorUi();
-    toast(t("toast.draft.saved"));
-    await loadConfigurations();
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-// (line, column) are both 1-based, matching the YAML parser's own
-// convention and what the error message already tells the user to look for.
-function yamlOffsetForLineColumn(/** @type {any} */ text, /** @type {any} */ line, /** @type {any} */ column) {
-  const lines = text.split("\n");
-  let offset = 0;
-  for (let index = 0; index < Math.min(Math.max(line, 1) - 1, lines.length); index += 1) {
-    offset += lines[index].length + 1;
-  }
-  offset += Math.max(0, (Number(column) || 1) - 1);
-  return Math.min(offset, text.length);
-}
-
-async function checkYaml() {
-  if (!state.activeConfig) return;
-  try {
-    const source = state.hasDraft ? "draft" : "active";
-    const result = await api(`configurations/${encodedName(state.activeConfig)}/check-yaml?source=${source}`, { method: "POST" });
-    const output = $("#config-output");
-    output.classList.remove("diff-output");
-    output.textContent = result.valid
-      ? t("config.output.yamlValid", { revision: result.revision })
-      : t("config.output.yamlError", { line: result.line, column: result.column, error: result.error });
-    output.classList.remove("hidden");
-    if (!result.valid) {
-      const editor = $("#yaml-editor");
-      const offset = yamlOffsetForLineColumn(editor.value, result.line, result.column);
-      editor.focus();
-      editor.setSelectionRange(offset, offset);
-      updateYamlCursorStatus();
-    }
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-async function showDiff() {
-  if (!state.activeConfig || !state.hasDraft) return;
-  try {
-    const result = await api(`configurations/${encodedName(state.activeConfig)}/diff`);
-    const output = $("#config-output");
-    if (result.diff) renderUnifiedDiff(output, result.diff, t);
-    else {
-      output.classList.remove("diff-output");
-      output.textContent = t("config.output.noDifferences");
-    }
-    output.classList.remove("hidden");
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-async function openMergeDialog() {
-  if (!state.activeConfig || !state.hasDraft) return;
-  try {
-    const encoded = encodedName(state.activeConfig);
-    const [active, draft] = await Promise.all([
-      api(`configurations/${encoded}`),
-      api(`configurations/${encoded}/draft`),
-    ]);
-    state.activeRevision = active.revision;
-    setRevisionDisplay(active.revision);
-    $("#merge-config-name").textContent = state.activeConfig;
-    $("#merge-active").value = active.content;
-    $("#merge-draft-source").value = draft.content;
-    $("#merge-result").value = draft.content;
-    $("#merge-dialog").showModal();
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-async function saveMergedDraft() {
-  if (!state.activeConfig) return;
-  const content = $("#merge-result").value;
-  try {
-    await api(`configurations/${encodedName(state.activeConfig)}/draft`, {
-      method: "PUT", body: JSON.stringify({ content }),
-    });
-    state.hasDraft = true;
-    state.yamlLoadedContent = content;
-    state.yamlDirty = false;
-    $("#yaml-editor").value = content;
-    $("#merge-dialog").close();
-    updateDraftActionButtons();
-    updateBuilderButtons();
-    updateYamlEditorUi();
-    await loadConfigurations();
-    toast(t("toast.draft.mergedSaved"));
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-async function publishDraft() {
-  if (!state.activeConfig || !state.hasDraft) return;
-  if (!confirm(t("confirm.config.publish", { name: state.activeConfig }))) return;
-  try {
-    const result = await api(`configurations/${encodedName(state.activeConfig)}/publish`, {
-      method: "POST", body: JSON.stringify({ expected_revision: state.activeRevision }),
-    });
-    state.activeRevision = result.revision;
-    state.hasDraft = false;
-    state.yamlLoadedContent = $("#yaml-editor").value;
-    state.yamlDirty = false;
-    setRevisionDisplay(result.revision);
-    updateDraftActionButtons();
-    updateBuilderButtons();
-    updateYamlEditorUi();
-    toast(t("toast.config.published"));
-    await loadConfigurations();
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-// A full "sha256:<64 hex chars>" is diagnostic detail, not something anyone
-// reads at a glance next to the filename - short like a git commit, full
-// value still one hover away.
-function setRevisionDisplay(/** @type {any} */ revision) {
-  const node = $("#revision");
-  const short = String(revision || "").replace(/^sha256:/, "").slice(0, 7);
-  node.textContent = short;
-  node.title = revision || "";
-}
-
-// The pipeline toolbar has eight buttons whose disabled state depends on
-// three independent things - whether a config/draft exists, whether the
-// role has the capability, and (for builder jobs) whether one is already
-// running - none of which is visible from a plain greyed-out button. Every
-// disabled button gets a title naming the specific missing precondition.
-function updateDraftActionButtons() {
-  const hasConfig = Boolean(state.activeConfig);
-
-  const saveDraftButton = $("#save-draft");
-  const canWriteDraftAtAll = Boolean(state.capabilities["configuration.write_draft"]);
-  saveDraftButton.disabled = !hasConfig || !canWriteDraftAtAll;
-  saveDraftButton.title = !hasConfig ? t("configs.hint.noConfig")
-    : !canWriteDraftAtAll ? t("configs.hint.noPermission")
-    : "";
-
-  const showDiff = $("#show-diff");
-  showDiff.disabled = !state.hasDraft;
-  showDiff.title = !hasConfig ? t("configs.hint.noConfig")
-    : !state.hasDraft ? t("configs.hint.noDraft")
-    : "";
-
-  const mergeDraft = $("#merge-draft");
-  const canWriteDraft = Boolean(state.capabilities["configuration.write_draft"]);
-  mergeDraft.disabled = !state.hasDraft || !canWriteDraft;
-  mergeDraft.title = !hasConfig ? t("configs.hint.noConfig")
-    : !state.hasDraft ? t("configs.hint.noDraft")
-    : !canWriteDraft ? t("configs.hint.noPermission")
-    : "";
-
-  const publish = $("#publish");
-  const canPublish = Boolean(state.capabilities["configuration.publish"]);
-  publish.disabled = !state.hasDraft || !canPublish;
-  publish.title = !hasConfig ? t("configs.hint.noConfig")
-    : !state.hasDraft ? t("configs.hint.noDraft")
-    : !canPublish ? t("configs.hint.noPermission")
-    : "";
-}
-
-function updateBuilderButtons() {
-  const available = builderAvailability(state);
-  const hasConfig = Boolean(state.activeConfig);
-  const published = hasConfig && !state.hasDraft;
-
-  const validate = $("#validate-esphome");
-  validate.disabled = !available.validate;
-  validate.title = !hasConfig ? t("configs.hint.noConfig")
-    : !published ? t("configs.hint.publishFirst")
-    : !state.capabilities["configuration.validate_esphome"] ? t("configs.hint.noPermission")
-    : "";
-
-  const compile = $("#compile-config");
-  compile.disabled = !available.compile;
-  compile.title = !hasConfig ? t("configs.hint.noConfig")
-    : !published ? t("configs.hint.publishFirst")
-    : !state.capabilities["firmware.compile"] ? t("configs.hint.noPermission")
-    : state.builderRequestsRunning.has("compile") ? t("configs.hint.alreadyRunning")
-    : "";
-
-  const install = $("#install-config");
-  install.disabled = !available.install;
-  install.title = !hasConfig ? t("configs.hint.noConfig")
-    : !published ? t("configs.hint.publishFirst")
-    : !state.capabilities["firmware.upload"] ? t("configs.hint.noPermission")
-    : state.builderRequestsRunning.has("install") ? t("configs.hint.alreadyRunning")
-    : "";
-}
-
-async function validateEspHome() {
-  if (!state.activeConfig || state.hasDraft) return;
-  const output = $("#config-output");
-  output.classList.remove("diff-output");
-  output.textContent = t("config.output.validating");
-  output.classList.remove("hidden");
-  try {
-    const result = await builderController.validate(encodedName(state.activeConfig));
-    const lines = Array.isArray(result.output) ? result.output.join("\n") : "";
-    const validity = result.valid ? t("config.output.buildApprovalSuffix", { seconds: result.expires_in_seconds }) : "";
-    output.textContent = `${result.valid ? t("config.output.espValid") : t("config.output.espInvalid")}\nRevision: ${result.revision}${validity}\n\n${lines}`.trim();
-  } catch (/** @type {any} */ error) {
-    output.textContent = `${error.code || t("config.output.errorFallback")}: ${error.message}`;
-    toast(error.message, true, error.details);
-  }
-}
-
-function builderRequestKey(/** @type {any} */ operation) {
-  return builderRequest(state, operation, () => globalThis.crypto?.randomUUID?.()
-    || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-request`);
-}
-
-async function compileConfiguration() {
-  if (!state.activeConfig || state.hasDraft) return;
-  const request = builderRequestKey("compile");
-  state.builderRequestsRunning.add("compile");
-  updateBuilderButtons();
-  try {
-    const result = await builderController.compile(encodedName(state.activeConfig), request.key);
-    delete state.builderRequestKeys[request.slot];
-    state.builderJobs[result.job.job_id] = result.job;
-    renderBuilderJobs();
-    toast(result.idempotent_replay
-      ? t("toast.builder.jobRestored", { id: result.job.job_id })
-      : t("toast.builder.jobStarted", { id: result.job.job_id }));
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-  finally {
-    state.builderRequestsRunning.delete("compile");
-    updateBuilderButtons();
-  }
-}
-
-async function installConfiguration() {
-  if (!state.activeConfig || state.hasDraft) return;
-  if (!confirm(t("confirm.firmware.installOta", { name: state.activeConfig }))) return;
-  const request = builderRequestKey("install");
-  state.builderRequestsRunning.add("install");
-  updateBuilderButtons();
-  try {
-    const result = await builderController.install(encodedName(state.activeConfig), request.key);
-    delete state.builderRequestKeys[request.slot];
-    state.builderJobs[result.job.job_id] = result.job;
-    renderBuilderJobs();
-    toast(result.idempotent_replay ? `OTA-Job ${result.job.job_id} wiederhergestellt.` : `OTA-Job ${result.job.job_id} gestartet.`);
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-  finally {
-    state.builderRequestsRunning.delete("install");
-    updateBuilderButtons();
-  }
-}
-
-async function loadBuilderJobs() {
-  if (!state.capabilities["firmware.compile"]) return;
-  try {
-    state.builderJobs = replaceBuilderJobs(await builderController.jobs());
-    renderBuilderJobs();
-  } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-}
-
-function renderBuilderJobs() {
-  const panel = $("#builder-jobs");
-  const list = $("#builder-job-list");
-  const jobs = sortedBuilderJobs(state.builderJobs);
-  panel.classList.toggle("hidden", !state.capabilities["firmware.compile"]);
-  list.replaceChildren();
-  if (!jobs.length) {
-    list.textContent = t("configs.noJobs");
-    return;
-  }
-  jobs.forEach((job) => {
-    const row = document.createElement("div");
-    row.className = "builder-job";
-    const description = document.createElement("div");
-    const title = document.createElement("strong");
-    title.textContent = `${job.configuration || "—"} · ${job.job_type || t("configs.jobFallback")}`;
-    const meta = document.createElement("small");
-    meta.textContent = `${job.status || t("configs.statusUnknown")}${Number.isFinite(job.progress) ? ` · ${job.progress}%` : ""} · ${job.job_id}`;
-    description.append(title, meta);
-    if (job.last_output) {
-      const log = document.createElement("pre");
-      log.className = "builder-job-output";
-      log.textContent = job.last_output;
-      description.append(log);
-    }
-    row.append(description);
-    if (["queued", "running"].includes(job.status)) {
-      const cancel = document.createElement("button");
-      cancel.className = "button subtle compact";
-      cancel.textContent = t("configs.cancelJob");
-      cancel.addEventListener("click", async () => {
-        try {
-          await builderController.cancel(job.job_id);
-          await loadBuilderJobs();
-        } catch (/** @type {any} */ error) { toast(error.message, true, error.details); }
-      });
-      row.append(cancel);
-    }
-    list.append(row);
-  });
-}
-
-function connectBuilderEvents() {
-  if (!state.capabilities["firmware.compile"] || builderEventsClient?.socket) return;
-  builderEventsClient ||= createJsonSocket({
-    path: "jobs/events",
-    onOpen: (socket) => { state.builderSocket = socket; },
-    onClose: () => { state.builderSocket = null; },
-    onMessage: (rawPayload) => {
-      const payload = /** @type {any} */ (rawPayload);
-      if (payload.type === "resync_required") {
-        loadBuilderJobs();
-        return;
-      }
-      if (payload.type !== "builder_job" || !payload.data) return;
-      applyBuilderEvent(state.builderJobs, payload);
-      renderBuilderJobs();
-    },
-  });
-  state.builderSocket = builderEventsClient.connect();
 }
 
 function clamp(/** @type {any} */ value, /** @type {any} */ minimum, /** @type {any} */ maximum) {

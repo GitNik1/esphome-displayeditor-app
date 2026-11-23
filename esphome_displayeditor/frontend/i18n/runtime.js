@@ -51,6 +51,8 @@ export const t = runtime.t;
 
 /** @param {ParentNode} [root] */
 export function applyStaticTranslations(root = document) {
+  // Screen readers choose their voice by it; it said "de" in English too.
+  if (root === globalThis.document) globalThis.document.documentElement.lang = getLanguage();
   root.querySelectorAll("[data-i18n]").forEach((element) => {
     element.textContent = t(element.getAttribute("data-i18n") || "");
   });

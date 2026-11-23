@@ -1250,3 +1250,29 @@ def test_settings_loads_mcp_options_without_exposing_token(
     assert settings.mcp_allowed_hosts == ("display.local", "192.0.2.10")
     assert settings.mcp_allowed_origins == ("https://display.local",)
     assert settings.mcp_access_token not in repr(settings)
+
+
+def test_mcp_publish_refuses_a_draft_changed_since_review(tmp_path: Path) -> None:
+    settings = mcp_settings(tmp_path, mcp_access="project_write")
+    (tmp_path / "esphome").mkdir()
+    (tmp_path / "esphome" / "panel.yaml").write_text(
+        "esphome:\n  name: old\n", encoding="utf-8", newline="")
+    service = AssistantToolService(settings)
+    active = service.filesystem.read_config("panel.yaml")["revision"]
+    reviewed = service.filesystem.save_draft("panel.yaml", "esphome:\n  name: reviewed\n")["revision"]
+    service.filesystem.save_draft("panel.yaml", "esphome:\n  name: changed\n")
+
+    with pytest.raises(ApiError) as refused:
+        asyncio.run(service.firmware.publish("panel.yaml", active, identity="mcp:test",
+                                             expected_draft_revision=reviewed))
+    assert refused.value.error == "revision_conflict"
+    assert service.read_configuration("panel.yaml")["content"] == "esphome:\n  name: old\n"
+
+
+def test_mcp_non_ascii_bearer_token_is_rejected_not_a_server_error(tmp_path: Path) -> None:
+    """secrets.compare_digest raises TypeError for a non-ASCII str, which
+    turned an unauthenticated request with such a token into an HTTP 500."""
+    settings = mcp_settings(tmp_path)
+    with TestClient(create_mcp_app(settings), raise_server_exceptions=False) as client:
+        response = client.get("/mcp", headers={"Authorization": "Bearer täst".encode("latin-1")})
+        assert response.status_code == 401

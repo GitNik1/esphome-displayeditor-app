@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyBuilderEvent, builderAvailability, builderRequest, replaceBuilderJobs, sortedBuilderJobs } from "../../frontend/builder/model.js";
+import { applyBuilderEvent, builderAvailability, builderBlockedReason, builderRequest, replaceBuilderJobs, sortedBuilderJobs } from "../../frontend/builder/model.js";
 
 test("builder availability requires a published configuration and capabilities", () => {
   const state = { activeConfig: "panel.yaml", hasDraft: false, capabilities: { "configuration.validate_esphome": true, "firmware.compile": true, "firmware.upload": true }, builderRequestsRunning: new Set(["compile"]) };
@@ -26,4 +26,17 @@ test("builder job snapshots sort newest first and events merge", () => {
   applyBuilderEvent(jobs, { type: "builder_job", event: "job_output", data: { job_id: "old", line: "building" } });
   assert.equal(jobs.old.status, "running");
   assert.equal(jobs.old.last_output, "building");
+});
+
+test("a blocked builder names its reason instead of a missing permission", () => {
+  assert.equal(builderBlockedReason({ compatible: true, reason: "compatible" }), null);
+  assert.equal(builderBlockedReason(null), null);
+  assert.deepEqual(builderBlockedReason({ compatible: false, reason: "builder_disabled" }),
+    { key: "configs.hint.builderDisabled" });
+  assert.deepEqual(
+    builderBlockedReason({ compatible: false, reason: "unsupported_esphome_version", esphome_version: "2026.11.0" }),
+    { key: "configs.hint.builderUnsupported", values: { version: "2026.11.0" } },
+  );
+  assert.deepEqual(builderBlockedReason({ compatible: false, state: "unavailable", reason: "connection_failed" }),
+    { key: "configs.hint.builderUnavailable", values: { reason: "connection_failed" } });
 });

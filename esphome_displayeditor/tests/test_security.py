@@ -195,6 +195,29 @@ def test_rate_limiter_has_separate_write_budget() -> None:
     assert limiter.check("user", write=True, now=61).allowed
 
 
+def test_rate_limiter_gives_asset_reads_their_own_budget() -> None:
+    """A page full of images - or a missing animated-image frame requested
+    again and again - must not use up the budget saving depends on."""
+    limiter = RateLimiter(read_limit=2, write_limit=2, window_seconds=60, asset_limit=3)
+
+    for second in range(3):
+        assert limiter.check("user", write=False, asset=True, now=second).allowed
+    assert not limiter.check("user", write=False, asset=True, now=3).allowed
+    assert limiter.check("user", write=True, now=4).allowed
+    assert limiter.check("user", write=False, now=5).allowed
+
+
+def test_asset_flood_does_not_block_writes(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, api_limit=2)
+    client = TestClient(create_app(settings, serve_frontend=False),
+                        headers={"X-Remote-User-Id": "user"})
+
+    for _ in range(5):
+        assert client.get("/api/v1/designer/assets/read/images/missing.png").status_code == 404
+    assert client.put("/api/v1/configurations/display.yaml/draft",
+                      json={"content": "esphome:\n  name: x\n"}).status_code != 429
+
+
 def test_backend_enforces_roles_and_audits_denials(tmp_path: Path) -> None:
     settings = make_settings(
         tmp_path,
@@ -271,3 +294,23 @@ def test_production_app_rejects_non_ingress_source(tmp_path: Path, monkeypatch) 
     assert denied.status_code == 403
     assert denied.json()["error"] == "ingress_required"
     assert denied.headers["Cache-Control"] == "no-store"
+
+
+def test_container_health_check_from_loopback_is_answered(tmp_path: Path, monkeypatch) -> None:
+    """The Dockerfile HEALTHCHECK probes 127.0.0.1 from inside the container;
+    it was refused like any other non-Ingress client, so the container stayed
+    "unhealthy". Only that one read-only route is let through."""
+    monkeypatch.setenv("ESPHOME_CONFIG_ROOT", str(tmp_path / "esphome"))
+    monkeypatch.setenv("ESPHOME_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setenv("ESPHOME_OPTIONS_PATH", str(tmp_path / "missing-options.json"))
+    (tmp_path / "esphome").mkdir()
+    app = create_app(serve_frontend=False)
+
+    for host in ("127.0.0.1", "::1"):
+        loopback = TestClient(app, client=(host, 40000))
+        assert loopback.get("/api/v1/health").status_code == 200
+        assert loopback.get("/api/v1/system").status_code == 403
+        assert loopback.get("/api/v1/configurations").status_code == 403
+        assert loopback.post("/api/v1/health").status_code == 403
+    outside = TestClient(app, client=("192.168.1.20", 40000))
+    assert outside.get("/api/v1/health").status_code == 403

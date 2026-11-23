@@ -27,12 +27,17 @@ old whole-block replacement.
 
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from typing import Any
 
 import yaml
 
 from .designer_core.yamlexport import ESPHomeDumper
 from .designer_core.yamlimport import TaggedScalar, _ImportLoader, load_lvgl_yaml
+from .yaml_strict import load_yaml_strict
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class _Unpatchable(Exception):
@@ -54,7 +59,7 @@ def same_yaml_value(a: Any, b: Any) -> bool:
                 and all(same_yaml_value(a[key], b[key]) for key in a))
     if isinstance(a, list):
         return (isinstance(b, list) and len(a) == len(b)
-                and all(same_yaml_value(x, y) for x, y in zip(a, b)))
+                and all(same_yaml_value(x, y) for x, y in zip(a, b, strict=True)))
     if isinstance(a, TaggedScalar) or isinstance(b, TaggedScalar):
         if not (isinstance(a, TaggedScalar) and isinstance(b, TaggedScalar)) or a.tag != b.tag:
             return False
@@ -208,7 +213,7 @@ class _Patcher:
     def mapping(self, node: yaml.MappingNode, old: dict, new: dict, raw: dict) -> None:
         if len(old) != len(node.value):
             raise _Unpatchable("duplicate or merged keys")
-        entries = list(zip(old, node.value))
+        entries = list(zip(old, node.value, strict=True))
         column = entries[0][1][0].start_mark.column
         skip = self._delete_list_entry_leader(entries, new, column)
         for key, (key_node, value_node) in entries[skip:]:
@@ -363,7 +368,8 @@ def patch_top_level_block(lines: list[str], key: str, value: Any) -> list[str] |
         root = yaml.compose(text, Loader=_ImportLoader)
         old = load_lvgl_yaml(text).get(key)
         target = load_lvgl_yaml("".join(_dump({key: value}))).get(key)
-    except Exception:  # any doubt means falling back
+    except Exception as exc:  # noqa: BLE001 - any doubt means falling back
+        _LOGGER.debug("%s: cannot patch, rewriting the block (%s)", key, exc)
         return None
     if not isinstance(root, yaml.MappingNode) or len(root.value) != 1:
         return None
@@ -376,9 +382,68 @@ def patch_top_level_block(lines: list[str], key: str, value: Any) -> list[str] |
         if not patcher.descend(value_node, old, target, value, nested_below=0):
             return None
         patched = patcher.apply()
-        check = load_lvgl_yaml("".join(patched))
-    except Exception:  # _Unpatchable, or a bug: fall back
+        check = load_yaml_strict("".join(patched))
+    except Exception as exc:  # noqa: BLE001 - _Unpatchable, a repeated key, or a bug
+        _LOGGER.debug("%s: patch not applicable, rewriting the block (%s)", key, exc)
         return None
-    if set(check) != {key} or not same_yaml_value(check[key], target):
+    if not isinstance(check, dict) or set(check) != {key} or not same_yaml_value(check[key], target):
         return None
     return patched
+
+
+class YamlStructureError(ValueError):
+    """The document cannot be split into top-level blocks safely."""
+
+
+@dataclass(frozen=True)
+class TopLevelSpan:
+    #: Line index of the ``key:`` line.
+    start: int
+    #: One past the value's last line; trailing comments are not included.
+    end: int
+    key_node: yaml.Node
+    value_node: yaml.Node
+
+
+def top_level_spans(text: str) -> dict[str, TopLevelSpan]:
+    """Line ranges of the document's top-level keys, taken from the YAML
+    composer rather than guessed from indentation.
+
+    A range runs from the key's line to the last line of its value. Comment
+    and blank lines after that belong to no block, so a rewritten block
+    keeps them; a column-0 comment *inside* a value (a commented-out
+    property, say) stays inside it. The old line scanner ended a block at
+    such a comment, so a merge rewrote only the first part of ``lvgl:`` and
+    left the rest behind - every widget after it ended up defined twice.
+    """
+    lines = text.splitlines(keepends=True)
+    try:
+        root = yaml.compose(text, Loader=_ImportLoader)
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        where = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
+        reason = getattr(exc, "problem", None) or str(exc)
+        raise YamlStructureError(f"The file is not valid YAML{where}: {reason}") from exc
+    except RecursionError as exc:
+        raise YamlStructureError("The file is nested too deeply to edit.") from exc
+    if root is None:
+        return {}
+    if not isinstance(root, yaml.MappingNode) or root.flow_style:
+        raise YamlStructureError("The top level of the file is not a block mapping.")
+    patcher = _Patcher(lines, False)
+    starts = [key_node.start_mark.line for key_node, _value in root.value]
+    spans: dict[str, TopLevelSpan] = {}
+    for index, (key_node, value_node) in enumerate(root.value):
+        if not isinstance(key_node, yaml.ScalarNode) or key_node.tag == "tag:yaml.org,2002:merge":
+            continue
+        name = key_node.value
+        if name in spans:
+            raise YamlStructureError(f"Found '{name}:' more than once at the top level.")
+        start = key_node.start_mark.line
+        following = starts[index + 1] if index + 1 < len(starts) else len(lines)
+        # An alias points at a node written elsewhere; its lines are not ours.
+        written_here = value_node.start_mark.index >= key_node.end_mark.index
+        last = patcher.last_line(value_node) if written_here else start
+        spans[name] = TopLevelSpan(start, min(following, max(start + 1, last + 1)),
+                                   key_node, value_node)
+    return spans

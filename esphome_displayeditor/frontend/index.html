@@ -25,6 +25,13 @@
       <button id="external-change-dismiss" type="button" class="icon-button" data-i18n-attr="aria-label:external.dismiss" aria-label="Hinweis schließen">×</button>
     </div>
 
+    <div id="role-banner" class="role-banner hidden" role="status">
+      <span id="role-banner-message"></span>
+      <pre id="role-banner-snippet"></pre>
+      <button id="role-banner-copy" type="button" class="button primary compact" data-i18n="role.banner.copy">Snippet kopieren</button>
+      <button id="role-banner-dismiss" type="button" class="icon-button" data-i18n-attr="aria-label:role.banner.dismiss" aria-label="Hinweis schließen">×</button>
+    </div>
+
     <nav class="tabs" data-i18n-attr="aria-label:nav.ariaLabel" aria-label="Bereiche">
       <button class="tab active" data-tab="designer" data-i18n="nav.designer">Designer</button>
       <button class="tab" data-tab="configurations" data-i18n="nav.configurations">Konfigurationen</button>
@@ -256,18 +263,19 @@
             <div id="line-tool-group" class="toolbar-group hidden">
               <button id="tool-select" class="button subtle compact active" data-i18n-attr="title:glow.toolSelect" title="Auswahl (V)" data-i18n="glow.toolSelectLabel">Auswahl</button>
               <button id="tool-draw" class="button subtle compact" data-i18n-attr="title:glow.toolDraw" title="Linie zeichnen (P)" data-i18n="glow.toolDrawLabel">Linie zeichnen</button>
-              <button id="line-preview" class="button subtle compact" data-i18n-attr="title:glow.toolPreview" title="Fluss-Vorschau (F5)" data-i18n="glow.toolPreviewLabel">▶ Vorschau</button>
+              <button id="line-preview" class="button subtle compact" data-i18n-attr="title:glow.toolPreview" title="Fluss-Vorschau" data-i18n="glow.toolPreviewLabel">▶ Vorschau</button>
               <button id="line-delete" class="button danger compact" data-i18n-attr="title:glow.toolDeleteSelected" title="Ausgewählte Linie löschen" data-i18n="glow.toolDeleteLabel" disabled>Löschen</button>
               <button id="line-done" class="button subtle compact" data-i18n-attr="title:glow.toolDone" title="Zurück zu Widgets" data-i18n="glow.toolDoneLabel">✓ Fertig</button>
             </div>
             <div class="toolbar-group">
               <button id="undo" class="button subtle" data-i18n-attr="title:toolbar.undo" title="Rückgängig (Strg+Z)" disabled>↶</button>
-              <button id="redo" class="button subtle" data-i18n-attr="title:toolbar.redo" title="Wiederholen (Strg+Y)" disabled>↷</button>
+              <button id="redo" class="button subtle" data-i18n-attr="title:toolbar.redo" title="Wiederholen (Strg+Y oder Strg+Umschalt+Z)" disabled>↷</button>
             <button id="open-viewer" class="button subtle" data-i18n-attr="title:toolbar.viewer" title="Schreibgeschützte Browser-Vorschau öffnen">Viewer</button>
             <button id="new-project" class="button subtle" data-i18n="toolbar.new">Neu</button>
             <button id="open-project" class="button subtle" data-i18n="toolbar.open">Öffnen</button>
             <button id="import-yaml" class="button subtle" data-i18n-attr="title:toolbar.importYaml" title="Bestehende ESPHome-Konfiguration einlesen"><span data-i18n="toolbar.importYamlLabel">YAML importieren</span></button>
-              <button id="save-project" class="button subtle" data-i18n="toolbar.download">Download</button>
+              <button id="toolbar-save" class="button subtle" data-i18n="toolbar.save" data-i18n-attr="title:toolbar.saveTitle" title="In App speichern (Strg+S)">Speichern</button>
+              <button id="save-project" class="button subtle" data-i18n="toolbar.download" data-i18n-attr="title:toolbar.downloadTitle" title="Projektdatei herunterladen (Strg+Umschalt+S)">Download</button>
             <button id="export-project" class="button primary" data-i18n="toolbar.exportYaml">YAML erzeugen</button>
             <input id="project-file" class="hidden" type="file" accept=".lvgldesign,application/json">
             </div>
@@ -881,7 +889,7 @@
 
       <section id="system" class="view system-view">
         <div class="system-grid">
-          <div class="system-card"><small data-i18n="system.status">STATUS</small><h2 data-i18n="system.heading">System und Fähigkeiten</h2><pre id="system-json" data-i18n="system.loading">Wird geladen …</pre></div>
+          <div class="system-card"><small data-i18n="system.status">STATUS</small><h2 data-i18n="system.heading">System und Fähigkeiten</h2><dl id="system-summary" class="system-summary"><dt data-i18n="system.loading">Wird geladen …</dt></dl><div id="system-capabilities" class="system-capabilities"></div><details class="system-raw"><summary data-i18n="system.rawDetails">Rohdaten (JSON)</summary><pre id="system-json"></pre></details></div>
           <section id="revision-feed-card" class="system-card revision-feed-card hidden" aria-labelledby="revision-feed-heading">
             <div class="mcp-token-heading">
               <div><h2 id="revision-feed-heading" data-i18n="revisions.feed.title">Letzte Änderungen</h2></div>
@@ -1124,6 +1132,41 @@
       </div>
     </dialog>
 
+    <dialog id="text-prompt-dialog" class="text-prompt-dialog" aria-labelledby="text-prompt-title">
+      <div class="dialog-heading"><h2 id="text-prompt-title" data-role="title"></h2></div>
+      <label><span data-role="label"></span> <input data-role="value" maxlength="128" autocomplete="off"></label>
+      <p class="hint issue-error" data-role="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="button subtle" data-action="cancel" data-i18n="dialog.common.cancel">Abbrechen</button>
+        <button type="button" class="button primary" data-action="ok" data-i18n="dialog.common.ok">OK</button>
+      </div>
+    </dialog>
+
+    <dialog id="image-source-dialog" class="image-source-dialog" aria-labelledby="image-source-title">
+      <div class="dialog-heading"><h2 id="image-source-title" data-i18n="dialog.imageSource.title">Neue Bildquelle</h2></div>
+      <label data-role="existing-label"><span data-i18n="dialog.imageSource.existing">Vorhandenes Bild im Ordner images/</span>
+        <select data-role="existing" size="6"></select>
+      </label>
+      <label><span data-i18n="dialog.imageSource.url">… oder Bild-URL (http/https)</span>
+        <input data-role="url" type="url" placeholder="https://" autocomplete="off">
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="button subtle" data-action="cancel" data-i18n="dialog.common.cancel">Abbrechen</button>
+        <button type="button" class="button primary" data-action="apply" data-i18n="dialog.imageSource.apply">Übernehmen</button>
+      </div>
+    </dialog>
+
+    <dialog id="save-conflict-dialog" class="save-conflict-dialog" aria-labelledby="save-conflict-title">
+      <div class="dialog-heading"><h2 id="save-conflict-title" data-i18n="dialog.saveConflict.title">Gespeicherte Fassung ist neuer</h2></div>
+      <p class="hint" data-role="message"></p>
+      <label><span data-i18n="dialog.saveConflict.newName">Neuer Name</span> <input data-role="new-name" maxlength="128" autocomplete="off"></label>
+      <div class="dialog-actions">
+        <button type="button" class="button subtle" data-action="cancel" data-i18n="dialog.saveConflict.cancel">Abbrechen</button>
+        <button type="button" class="button subtle" data-action="rename" data-i18n="dialog.saveConflict.saveAs">Unter neuem Namen speichern</button>
+        <button type="button" class="button danger compact" data-action="overwrite" data-i18n="dialog.saveConflict.overwrite">Überschreiben</button>
+      </div>
+    </dialog>
+
     <dialog id="merge-dialog" class="merge-dialog">
       <div class="dialog-heading">
         <div><h2 data-i18n="dialog.merge.title">YAML zusammenführen</h2><small id="merge-config-name"></small></div>
@@ -1214,10 +1257,10 @@
             <button id="viewer-zoom-in" class="button subtle compact" data-i18n-attr="title:toolbar.viewerZoomIn" title="Vergrößern">+</button>
             <button id="viewer-fit" class="button subtle compact" data-i18n="dialog.viewer.fit">Einpassen</button>
             <button id="viewer-zoom-100" class="button subtle compact">1:1</button>
-            <label class="viewer-renderer"><span>Renderer</span>
+            <label class="viewer-renderer"><span data-i18n="dialog.viewer.renderer">Renderer</span>
               <select id="viewer-renderer">
-                <option value="html">HTML (Standard)</option>
-                <option value="wasm">LVGL 9 / WASM (Experiment)</option>
+                <option value="html" data-i18n="dialog.viewer.rendererHtml">HTML (Standard)</option>
+                <option value="wasm" data-i18n="dialog.viewer.rendererWasm">LVGL 9 / WASM (Experiment)</option>
               </select>
             </label>
             <label class="viewer-rotation"><span data-i18n="dialog.viewer.rotation">Rotation</span>
@@ -1291,7 +1334,7 @@
       </div>
     </dialog>
 
-    <div id="toast" role="status" aria-live="polite"></div>
+    <div id="toast" class="toast-region"></div>
     <script type="module" src="app.js?v=0.401.0"></script>
   </body>
 </html>

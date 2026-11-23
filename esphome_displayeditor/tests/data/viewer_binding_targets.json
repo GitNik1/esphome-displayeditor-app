@@ -1,0 +1,14 @@
+{
+  "label": ["text"],
+  "textarea": ["text"],
+  "slider": ["value"],
+  "bar": ["value"],
+  "arc": ["value"],
+  "switch": ["state_checked"],
+  "checkbox": ["state_checked"],
+  "dropdown": ["selected_index"],
+  "roller": ["selected_index"],
+  "button": [],
+  "image": [],
+  "obj": []
+}

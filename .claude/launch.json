@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "4173", "--directory", "esphome_displayeditor/frontend"],
       "port": 4173
+    },
+    {
+      "name": "esphome-backend-dev",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["esphome_displayeditor/scripts/dev_server.py", "--port", "8099"],
+      "port": 8099
     }
   ]
 }

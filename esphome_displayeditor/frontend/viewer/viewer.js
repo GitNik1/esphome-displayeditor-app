@@ -292,9 +292,13 @@ export class ViewerController {
     if (this.rendererMode === "wasm") {
       const metrics = this.wasmMetrics;
       this.status.textContent = metrics
-        ? `LVGL ${metrics.manifest?.lvgl_version || "9"} / WASM · ${Math.round(metrics.startupMs || 0)} ms Start · ${Math.round((metrics.wasmBytes || 0) / 1024)} KiB · ${metrics.supportedObjects || 0} Objekte · ${metrics.unsupported?.length || 0} nicht unterstützt`
-        : "LVGL 9 / WASM · experimenteller Renderer wird geladen …";
-      this.status.title = metrics?.unsupported?.length ? `Nicht unterstützt: ${metrics.unsupported.join(", ")}` : "";
+        ? t("viewer.wasm.metrics", {
+          version: metrics.manifest?.lvgl_version || "9", startup: Math.round(metrics.startupMs || 0),
+          size: Math.round((metrics.wasmBytes || 0) / 1024), objects: metrics.supportedObjects || 0,
+          unsupported: metrics.unsupported?.length || 0,
+        })
+        : t("viewer.wasm.loading");
+      this.status.title = metrics?.unsupported?.length ? t("viewer.wasm.unsupported", { types: metrics.unsupported.join(", ") }) : "";
       return;
     }
     this.status.textContent = warningCount
@@ -767,7 +771,7 @@ export class ViewerController {
     const page = (this.project?.pages || []).find((/** @type {any} */ entry) => entry.id === id);
     if (!page || page.id === this.runtime.activePageId) return false;
     this.runtime.activePageId = page.id;
-    if (record) this.recordEvent("state", `Seite: ${page.id}`);
+    if (record) this.recordEvent("state", t("viewer.event.page", { id: page.id }));
     this.render();
     return true;
   }
@@ -778,7 +782,7 @@ export class ViewerController {
     const page = navigatePage(this.project, this.runtime, direction);
     if (!page || page.id === this.runtime.activePageId) return false;
     this.runtime.activePageId = page.id;
-    this.recordEvent("state", `Seite: ${page.id}`);
+    this.recordEvent("state", t("viewer.event.page", { id: page.id }));
     this.render();
     return true;
   }
@@ -941,7 +945,7 @@ export class ViewerController {
     this.display.style.height = `${height}px`;
     const canvas = document.createElement("canvas");
     canvas.className = "viewer-wasm-canvas";
-    canvas.setAttribute("aria-label", "Experimentelle LVGL-9-WebAssembly-Vorschau");
+    canvas.setAttribute("aria-label", t("viewer.wasm.canvasLabel"));
     this.display.replaceChildren(canvas);
     this.wasmRenderer?.stop();
     this.wasmRenderer = new LvglWasmRenderer(canvas, { onEvent: (event) => this.handleWasmEvent(event) });
@@ -957,7 +961,7 @@ export class ViewerController {
       this.refreshStatus();
     } catch (error) {
       if (generation !== this.renderGeneration || this.rendererMode !== "wasm") return;
-      this.recordEvent("warning", `LVGL/WASM nicht verfügbar: ${error instanceof Error ? error.message : String(error)}`);
+      this.recordEvent("warning", t("viewer.wasm.unavailable", { error: error instanceof Error ? error.message : String(error) }));
       this.rendererMode = "html";
       if (this.rendererControl) this.rendererControl.value = "html";
       this.render();

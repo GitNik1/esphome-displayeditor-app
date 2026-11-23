@@ -6,6 +6,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..viewer_bindings import VIEWER_BINDING_TARGETS
+
 _WIDGET_ID = r"^[A-Za-z_][A-Za-z0-9_]*$"
 _DEVICE_ID = r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
 _ENTITY_ID = r"^[a-z0-9_]+:[A-Za-z0-9_.:-]+$"
@@ -18,7 +20,7 @@ class StrictViewerBindingModel(BaseModel):
 class SetViewerBindingOperation(StrictViewerBindingModel):
     op: Literal["set_viewer_binding"]
     widget_id: str = Field(pattern=_WIDGET_ID, max_length=128)
-    target: Literal["text", "value", "state_checked"]
+    target: Literal[VIEWER_BINDING_TARGETS]
     device_id: str = Field(pattern=_DEVICE_ID, max_length=63)
     entity_id: str = Field(pattern=_ENTITY_ID, max_length=193)
     value_format: str = Field(default="{state}", max_length=128)
@@ -29,7 +31,7 @@ class SetViewerBindingOperation(StrictViewerBindingModel):
 class RemoveViewerBindingOperation(StrictViewerBindingModel):
     op: Literal["remove_viewer_binding"]
     widget_id: str = Field(pattern=_WIDGET_ID, max_length=128)
-    target: Literal["text", "value", "state_checked"]
+    target: Literal[VIEWER_BINDING_TARGETS]
 
 
 ViewerBindingOperation = Annotated[

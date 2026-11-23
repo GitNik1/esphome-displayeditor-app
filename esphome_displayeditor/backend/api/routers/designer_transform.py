@@ -7,15 +7,12 @@ from fastapi import APIRouter, Query, Request, Response
 
 from ...audit import AuditStore
 from ...designer import DesignerService
+from ...draft_merge import merge_for_draft
 from ...errors import ApiError
 from ...filesystem import FilesystemBackend
+from ..drafts import expected_draft_revision
 from ...lvgl_bundle import build_project_zip
-from ...lvgl_merge import (
-    DisplayTakeoverRequired,
-    MergeError,
-    build_project_yaml_for_bundle,
-    merge_project_into_yaml,
-)
+from ...lvgl_merge import build_project_yaml_for_bundle
 from ...entity_bindings import parse_custom_binding_yaml
 from ...viewer_scenarios import parse_viewer_scenarios
 from ...designer_core.yamlimport import LvglImportError
@@ -38,17 +35,17 @@ def create_designer_transform_router(
     router = APIRouter(prefix="/api/v1/designer", tags=["designer transform"])
 
     @router.get("/schemas")
-    async def schemas(language: str = Query(default="de", pattern="^(de|en)$")) -> dict:
+    def schemas(language: str = Query(default="de", pattern="^(de|en)$")) -> dict:
         return designer.schemas(language)
 
     @router.post("/projects/validate")
-    async def validate(body: DesignerProjectRequest) -> dict:
+    def validate(body: DesignerProjectRequest) -> dict:
         project, issues = designer.validate(body.project)
         return {"valid": not any(issue["severity"] == "error" for issue in issues),
                 "issues": issues, "project": designer.project_payload(project)}
 
     @router.post("/bindings/custom-yaml/validate")
-    async def validate_custom_binding_yaml(body: CustomBindingYamlRequest) -> dict:
+    def validate_custom_binding_yaml(body: CustomBindingYamlRequest) -> dict:
         try:
             action, normalized = parse_custom_binding_yaml(body.content)
         except LvglImportError as exc:
@@ -56,7 +53,7 @@ def create_designer_transform_router(
         return {"valid": True, "action": action, "yaml": normalized}
 
     @router.post("/viewer-scenarios/validate")
-    async def validate_viewer_scenarios(body: ViewerScenariosRequest) -> dict:
+    def validate_viewer_scenarios(body: ViewerScenariosRequest) -> dict:
         try:
             scenarios = parse_viewer_scenarios(body.content)
         except LvglImportError as exc:
@@ -64,11 +61,11 @@ def create_designer_transform_router(
         return {"valid": True, "scenarios": scenarios}
 
     @router.post("/projects/export-yaml")
-    async def export_yaml(body: DesignerProjectRequest) -> dict:
+    def export_yaml(body: DesignerProjectRequest) -> dict:
         return designer.export_yaml(body.project)
 
     @router.post("/projects/export-zip")
-    async def export_zip(body: DesignerProjectRequest) -> Response:
+    def export_zip(body: DesignerProjectRequest) -> Response:
         ensure_capability_available("designer.export_yaml")
         project, issues = designer.validate(body.project)
         if any(issue["severity"] == "error" for issue in issues):
@@ -89,7 +86,7 @@ def create_designer_transform_router(
         return Response(content=bundle.content, media_type="application/zip", headers=headers)
 
     @router.post("/projects/merge-draft")
-    async def merge_draft(body: MergeDraftRequest, request: Request) -> dict:
+    def merge_draft(body: MergeDraftRequest, request: Request) -> dict:
         user_id = require_capability(request, "configuration.write_draft")
         ensure_capability_available("designer.export_yaml")
         project, issues = designer.validate(body.project)
@@ -97,26 +94,15 @@ def create_designer_transform_router(
             raise ApiError("invalid_project", "Project validation failed.", 422,
                            {"issues": issues})
         try:
-            existing = filesystem.read_draft(body.target)["content"]
+            draft = filesystem.read_draft(body.target)["content"]
         except ApiError as exc:
             if exc.error != "draft_not_found":
                 raise
-            existing = filesystem.read_config(body.target)["content"]
-        try:
-            merged = merge_project_into_yaml(
-                project, existing,
-                display_takeover="comment" if body.confirm_display_takeover else "ask",
-            )
-        except DisplayTakeoverRequired as exc:
-            raise ApiError("display_takeover_required", str(exc), 409,
-                           {"displays": exc.conflicts}) from exc
-        except MergeError as exc:
-            raise ApiError("merge_failed", str(exc), 422) from exc
-        blocking = [issue for issue in merged.issues if issue.severity == "A"]
-        if blocking:
-            raise ApiError("invalid_project", "Project validation failed.", 422,
-                           {"issues": [{"severity": issue.severity,
-                                        "message": issue.message} for issue in blocking]})
+            draft = None
+        merged, _base = merge_for_draft(
+            project, draft, filesystem.read_config(body.target)["content"],
+            confirm_display_takeover=body.confirm_display_takeover,
+        )
         old_revision = None
         try:
             try:
@@ -124,14 +110,18 @@ def create_designer_transform_router(
             except ApiError as exc:
                 if exc.error != "draft_not_found":
                     raise
-            result = filesystem.save_draft(body.target, merged.content)
+            result = filesystem.save_draft(
+                body.target, merged.content,
+                expected_draft_revision=expected_draft_revision(body))
         except ApiError as exc:
             _record(audit, user_id, body.target, old_revision, None, exc.error)
             raise
         _record(audit, user_id, body.target, old_revision, result["revision"], "success")
         return {"revision": result["revision"], "replaced": merged.replaced_keys,
                 "appended": merged.appended_keys,
-                "display_takeover": merged.display_takeover}
+                "display_takeover": merged.display_takeover,
+                "issues": [{"severity": issue.severity, "message": issue.message}
+                           for issue in merged.issues[:100]]}
 
     return router
 

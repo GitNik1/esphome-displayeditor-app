@@ -68,3 +68,15 @@ test("binding cleanup and paste compatibility share target validation", () => {
   assert.equal(canPasteRuntimeBinding(widget, valid), true);
   assert.equal(canPasteRuntimeBinding(widget, invalid), false);
 });
+
+test("editor targets match the shared contract with the backend", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const contract = JSON.parse(await readFile(new URL("../data/viewer_binding_targets.json", import.meta.url), "utf-8"));
+  for (const [widgetType, targets] of Object.entries(contract)) {
+    assert.deepEqual(
+      runtimeTargets({ widget_type: widgetType }, translate).map((target) => target.value),
+      targets,
+      widgetType,
+    );
+  }
+});

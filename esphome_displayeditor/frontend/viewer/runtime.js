@@ -45,11 +45,29 @@ export function runtimeBoolean(value) {
   return null;
 }
 
+/**
+ * The option a select-like state means for a dropdown/roller. Home
+ * Assistant's and ESPHome's `select` entities report the option *text*;
+ * a numeric state still works as an index. Null when neither fits.
+ * @param {unknown} state @param {unknown} options
+ */
+export function runtimeSelectedIndex(state, options) {
+  const labels = Array.isArray(options) ? options.map((option) => String(option)) : [];
+  const text = String(state ?? "").trim();
+  const exact = labels.indexOf(text);
+  if (exact >= 0) return exact;
+  const folded = labels.findIndex((label) => label.trim().toLowerCase() === text.toLowerCase());
+  if (folded >= 0) return folded;
+  const number = text === "" ? Number.NaN : Number(text);
+  return Number.isInteger(number) && number >= 0 && (!labels.length || number < labels.length) ? number : null;
+}
+
 /** @param {DynamicRecord | null | undefined} entity @param {string} target
  * @param {DynamicRecord | null} [runtimeState] */
 export function entityMatchesRuntimeTarget(entity, target, runtimeState = null) {
   if (!entity || target === "text") return Boolean(entity);
   const type = String(entity.type || "").toLowerCase();
+  if (target === "selected_index" && ["select", "text_sensor"].includes(type)) return true;
   if (target === "value" || target === "selected_index") {
     if (["sensor", "number"].includes(type)) return true;
     const value = Number(runtimeState?.state);
@@ -111,7 +129,10 @@ export function applyRuntimeBinding(project, source, binding, runtimeState, { de
   if (!runtimeState) return false;
   let next;
   if (target === "text") next = formatRuntimeValue(runtimeState.state, binding.value_format);
-  else if (target === "value" || target === "selected_index") {
+  else if (target === "selected_index") {
+    next = runtimeSelectedIndex(runtimeState.state, widget.properties.options);
+    if (next === null) return false;
+  } else if (target === "value") {
     next = Number(runtimeState.state);
     if (!Number.isFinite(next)) return false;
   } else {

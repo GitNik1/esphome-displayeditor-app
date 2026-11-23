@@ -1,6 +1,6 @@
 // @ts-check
 
-import { viewerImageSource } from "./assets.js";
+import { assetLoadFailed, markAssetLoadFailed, viewerImageSource } from "./assets.js";
 import { arcPoint, describeViewerArc, numericWidgetRange, viewerBarGeometry } from "./geometry.js";
 import { meterLineGeometry, meterScales, meterTickGeometry, meterTickStyle, meterValueAngle } from "./meter.js";
 import { applyViewerPartStyle } from "./dom-style.js";
@@ -11,22 +11,21 @@ const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 /** @param {any} project @param {any} widget @param {unknown} sourceId */
 export function renderViewerImage(project, widget, sourceId) {
   const source = viewerImageSource(project, sourceId);
-  if (!source) {
-    const fallback = document.createElement("span");
-    fallback.className = "viewer-image-fallback";
-    fallback.textContent = `${sourceId || widget.id} ⚠`;
-    return fallback;
-  }
+  const fallback = () => {
+    const element = document.createElement("span");
+    element.className = "viewer-image-fallback";
+    element.textContent = `${sourceId || widget.id} ⚠`;
+    return element;
+  };
+  if (!source || assetLoadFailed(source)) return fallback();
   const image = document.createElement("img");
   image.className = "viewer-image";
   image.src = source;
   image.alt = "";
   image.draggable = false;
   image.addEventListener("error", () => {
-    const fallback = document.createElement("span");
-    fallback.className = "viewer-image-fallback";
-    fallback.textContent = `${sourceId || widget.id} ⚠`;
-    image.replaceWith(fallback);
+    markAssetLoadFailed(source);
+    image.replaceWith(fallback());
   });
   return image;
 }

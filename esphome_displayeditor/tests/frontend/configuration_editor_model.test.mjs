@@ -6,6 +6,7 @@ import {
   editorIsDirty,
   findMatch,
   lineNumbers,
+  offsetForLineColumn,
 } from "../../frontend/configurations/editor-model.js";
 
 test("lineNumbers mirrors all editor rows", () => {
@@ -32,4 +33,12 @@ test("findMatch navigates forward, backward and wraps", () => {
   assert.deepEqual(findMatch("Alpha beta alpha", "missing", 0, 1), {
     count: 0, selected: -1, index: -1,
   });
+});
+
+test("offsetForLineColumn finds a 1-based position and stays inside the text", () => {
+  const content = "esphome:\n  name: x\nbroken: [\n";
+  assert.equal(offsetForLineColumn(content, 1, 1), 0);
+  assert.equal(offsetForLineColumn(content, 3, 3), "esphome:\n  name: x\n".length + 2);
+  assert.equal(offsetForLineColumn(content, 0, 0), 0);
+  assert.equal(offsetForLineColumn(content, 99, 99), content.length);
 });

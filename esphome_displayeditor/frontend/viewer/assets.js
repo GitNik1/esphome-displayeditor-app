@@ -5,6 +5,26 @@ import { fontFamilyId, resolvedFontFamily } from "../layout.js";
 export const VIEWER_FONT_LOADED_EVENT = "esphome-viewer-font-loaded";
 /** @type {Map<string, "loading" | "loaded" | "failed">} */
 const fontLoadState = new Map();
+/** Image URLs that failed to load in this page view. A failed response is
+ * not cached by the browser, so without this every re-render - and every
+ * frame of an animated image - asks the server again, until the API's own
+ * rate limit refuses everything else too. */
+const failedAssetUrls = new Set();
+
+/** @param {string} url */
+export function assetLoadFailed(url) {
+  return failedAssetUrls.has(url);
+}
+
+/** @param {string} url */
+export function markAssetLoadFailed(url) {
+  failedAssetUrls.add(url);
+}
+
+/** After an upload the missing file may exist now. */
+export function forgetFailedAssets() {
+  failedAssetUrls.clear();
+}
 
 /** @param {unknown} filePath @param {string} [pathname] */
 export function resolveViewerAssetUrl(filePath, pathname = window.location.pathname) {

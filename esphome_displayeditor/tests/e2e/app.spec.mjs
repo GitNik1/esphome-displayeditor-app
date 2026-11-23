@@ -51,6 +51,156 @@ test("adds a widget and supports undo and redo", async ({ page }) => {
   await expect(page.locator("#canvas .canvas-widget")).toHaveCount(1);
 });
 
+test("saving over a newer stored version asks instead of failing", async ({ page }) => {
+  await page.getByRole("button", { name: /Label/ }).click();
+  await page.locator("#project-name").evaluate((input) => {
+    input.closest("details").open = true;
+  });
+  await page.locator("#project-name").fill("display.lvgldesign");
+  await page.locator("#save-server-project").click();
+
+  const dialog = page.locator("#save-conflict-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("[data-role=new-name]")).toHaveValue("display_2.lvgldesign");
+  await dialog.locator("[data-action=overwrite]").click();
+
+  await expect(dialog).toBeHidden();
+  await expect(page.locator("#toast")).toContainText(/saved|gespeichert/);
+  // First try without a revision, then the overwrite with the stored one.
+  expect(apiControl.saves).toEqual([null, "sha256:bbb"]);
+});
+
+test("a restored autosave saves under its own name without a conflict", async ({ page }) => {
+  await page.addInitScript((saved) => {
+    window.localStorage.setItem("designer.autosave.v1", JSON.stringify(saved));
+  }, {
+    project, projectName: "display.lvgldesign", projectRevision: "sha256:bbb",
+    nameField: "display.lvgldesign", savedAt: Date.now(),
+  });
+  page.on("dialog", (dialog) => dialog.accept());  // "restore the autosave?"
+  await page.goto("/");
+  await expect(page.locator("#project-name")).toHaveValue("display.lvgldesign");
+
+  await page.locator("#project-name").evaluate((input) => {
+    input.closest("details").open = true;
+  });
+  await page.locator("#save-server-project").click();
+
+  await expect(page.locator("#save-conflict-dialog")).toBeHidden();
+  await expect(page.locator("#toast")).toContainText(/saved|gespeichert/);
+  expect(apiControl.saves).toEqual(["sha256:bbb"]);
+});
+
+test("notifications keep unread errors, announce them and follow open dialogs", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const { createNotifications } = await import("/shell/notifications.js");
+    const region = document.createElement("div");
+    document.body.append(region);
+    const notes = createNotifications({ region, closeLabel: () => "close", detailsLabel: () => "details" });
+    notes.show("Speichern fehlgeschlagen", { error: true, details: { code: 1 } });
+    notes.show("Gespeichert");
+    const dialog = document.createElement("dialog");
+    document.body.append(dialog);
+    dialog.showModal();
+    notes.show("Im Dialog", { error: true });
+    const insideDialog = dialog.contains(region);
+    const closed = new Promise((resolve) => dialog.addEventListener("close", resolve, { once: true }));
+    dialog.close();
+    await closed;  // "close" is dispatched as a task, not during close()
+    return {
+      insideDialog,
+      backInBody: region.parentElement === document.body,
+      items: [...region.children].map((item) => [
+        item.getAttribute("role"), item.querySelector(".toast-message").textContent,
+      ]),
+    };
+  });
+  expect(result.insideDialog).toBe(true);
+  expect(result.backInBody).toBe(true);
+  // A later success notice no longer replaces the unread error.
+  expect(result.items).toEqual([
+    ["alert", "Speichern fehlgeschlagen"], ["status", "Gespeichert"], ["alert", "Im Dialog"],
+  ]);
+});
+
+test("a viewer sees their user id and a user_roles snippet", async ({ page }) => {
+  await page.route("**/api/v1/system", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ access_level: "write", user: { id: "0123abcd", role: "viewer", name: "gast" } }),
+  }));
+  await page.route("**/api/v1/capabilities", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ capabilities: { "designer.project": true, "designer.project_write": false } }),
+  }));
+  await page.reload();
+
+  await expect(page.locator("#role-banner")).toBeVisible();
+  await expect(page.locator("#role-banner-snippet")).toContainText('user_id: "0123abcd"');
+  await page.getByRole("button", { name: "System" }).click();
+  await expect(page.locator("#system-summary")).toContainText("gast · viewer");
+});
+
+test("the last opened project is opened again after a reload", async ({ page }) => {
+  await openStoredProject(page);
+  await page.reload();
+  await expect(page.locator("#health")).toHaveClass(/ok/);
+  await expect(page.locator("#project-name")).toHaveValue("display.lvgldesign");
+  await expect(page.locator("#open-revisions")).toBeEnabled();
+});
+
+test("the toolbar save button saves into the app storage", async ({ page }) => {
+  await openStoredProject(page);
+  await page.getByRole("button", { name: /Label/ }).click();
+  await page.locator("#toolbar-save").click();
+  await expect(page.locator("#toast")).toContainText(/saved|gespeichert/);
+  expect(apiControl.saves).toEqual(["sha256:bbb"]);
+});
+
+test("a save conflict can be resolved under a new name", async ({ page }) => {
+  await page.locator("#project-name").evaluate((input) => {
+    input.closest("details").open = true;
+  });
+  await page.locator("#project-name").fill("display.lvgldesign");
+  await page.locator("#save-server-project").click();
+  const dialog = page.locator("#save-conflict-dialog");
+  await dialog.locator("[data-role=new-name]").fill("kopie");
+  await dialog.locator("[data-action=rename]").click();
+
+  await expect(page.locator("#project-name")).toHaveValue("kopie.lvgldesign");
+  await expect(page.locator("#save-server-project")).toBeEnabled();
+});
+
+test("Shift+Ctrl+Z redoes, and Ctrl+Z inside a field stays in the field", async ({ page }) => {
+  await page.getByRole("button", { name: /Label/ }).click();
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(1);
+  await page.locator("#canvas").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(0);
+  await page.keyboard.press("Control+Shift+Z");
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(1);
+
+  await page.locator("#canvas .canvas-widget").first().click();
+  await page.locator("#prop-x").focus();
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(1);
+});
+
+test("selecting a widget after undo keeps the redo step", async ({ page }) => {
+  await page.getByRole("button", { name: /Label/ }).click();
+  await page.getByRole("button", { name: /Label/ }).click();
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(2);
+  await page.locator("#undo").click();
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(1);
+
+  // A click is a pointer-down that *might* start a drag; it used to commit
+  // an undo step on the spot and throw the redo stack away.
+  await page.locator("#canvas .canvas-widget").first().click();
+  await page.locator("#prop-x").focus();
+  await expect(page.locator("#redo")).toBeEnabled();
+  await page.locator("#redo").click();
+  await expect(page.locator("#canvas .canvas-widget")).toHaveCount(2);
+});
+
 test("inspects, names, locks and restores an earlier version", async ({ page }) => {
   page.on("dialog", (dialog) => dialog.accept());
   // The project toolbar lives in a collapsed <details>.

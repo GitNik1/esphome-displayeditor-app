@@ -10,7 +10,7 @@ from typing import Any
 from ..audit import AuditStore
 from ..errors import ApiError
 from ..filesystem import FilesystemBackend, revision_for
-from ..lvgl_merge import DisplayTakeoverRequired, MergeError, merge_project_into_yaml
+from ..draft_merge import merge_for_draft
 from ..project_locks import project_file_lock
 from ..project_store import ProjectStore
 from ..settings import Settings
@@ -75,7 +75,6 @@ class ConfigurationDraftMutationService:
                 actual_draft_revision,
                 target="configuration_draft",
             )
-            base_content = draft["content"] if draft else active["content"]
             project, issues = self.projects.designer.validate(loaded["project"])
             if any(issue["severity"] == "error" for issue in issues):
                 raise ApiError(
@@ -84,34 +83,13 @@ class ConfigurationDraftMutationService:
                     422,
                     {"issues": issues[:100]},
                 )
-            try:
-                merged = merge_project_into_yaml(
-                    project, base_content,
-                    display_takeover="comment" if confirm_display_takeover else "ask",
-                )
-            except DisplayTakeoverRequired as exc:
-                raise ApiError(
-                    "display_takeover_required",
-                    f"{exc} Ask the user, then propose again with "
-                    "confirm_display_takeover=true.",
-                    409,
-                    {"displays": exc.conflicts},
-                ) from exc
-            except MergeError as exc:
-                raise ApiError("merge_failed", str(exc), 422) from exc
-            blocking = [issue for issue in merged.issues if issue.severity == "A"]
-            if blocking:
-                raise ApiError(
-                    "invalid_project",
-                    "Project merge contains blocking issues.",
-                    422,
-                    {
-                        "issues": [
-                            {"severity": issue.severity, "message": issue.message}
-                            for issue in blocking[:100]
-                        ]
-                    },
-                )
+            merged, base_content = merge_for_draft(
+                project,
+                draft["content"] if draft else None,
+                active["content"],
+                confirm_display_takeover=confirm_display_takeover,
+                takeover_hint="Ask the user, then propose again with confirm_display_takeover=true.",
+            )
             content_bytes = len(merged.content.encode("utf-8"))
             if content_bytes > self.settings.max_file_size:
                 raise ApiError(

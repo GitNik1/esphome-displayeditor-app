@@ -20,6 +20,27 @@ export function pushHistory(undo, project, limit = 50) {
 }
 
 /**
+ * Turn a snapshot taken *before a possible change* into an undo step - only
+ * if the project really differs from it now. Selecting a widget or focusing
+ * a field takes such a snapshot just in case; committing it right away
+ * emptied the redo stack on a mere click and pushed steps that undid
+ * nothing.
+ * @param {string[]} undo @param {string[]} redo
+ * @param {string | null} pending serialized snapshot, or null
+ * @param {unknown} currentProject @param {number} [limit]
+ * @returns {{undo: string[], redo: string[], committed: boolean}}
+ */
+export function commitPendingUndo(undo, redo, pending, currentProject, limit = 50) {
+  if (pending === null || pending === JSON.stringify(currentProject)) {
+    return { undo, redo, committed: false };
+  }
+  const next = [...undo];
+  if (next[next.length - 1] !== pending) next.push(pending);
+  while (next.length > limit) next.shift();
+  return { undo: next, redo: [], committed: true };
+}
+
+/**
  * @template T
  * @param {string[]} undo @param {string[]} redo @param {T} currentProject
  * @returns {{project: T, undo: string[], redo: string[]} | null}

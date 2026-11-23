@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ApiError
+from .sqlite_support import use_write_ahead_log
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,7 +100,9 @@ class ProjectRevisionStore:
 
     def _initialize(self) -> None:
         with closing(self._connect()) as connection, connection:
+            # auto_vacuum only takes effect before the first table exists.
             connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
+            use_write_ahead_log(connection)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS project_revisions (

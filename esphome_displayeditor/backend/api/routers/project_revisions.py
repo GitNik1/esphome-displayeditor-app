@@ -36,7 +36,7 @@ def create_project_revisions_router(
     router = APIRouter(prefix="/api/v1/designer", tags=["project revisions"])
 
     @router.get("/revisions")
-    async def get_feed(
+    def get_feed(
         request: Request, limit: int = Query(default=50, ge=1, le=PROJECT_REVISION_FEED_LIMIT)
     ) -> dict:
         ensure_capability_available("designer.project")
@@ -58,7 +58,7 @@ def create_project_revisions_router(
         return {"limit": limit, "events": events}
 
     @router.get("/projects/{name}/revisions")
-    async def list_revisions(name: str, request: Request) -> dict:
+    def list_revisions(name: str, request: Request) -> dict:
         ensure_capability_available("designer.project")
         expose_actors = role_allows(request_identity(request)[1], "administrator")
         current = projects.current_revision(name)
@@ -94,7 +94,7 @@ def create_project_revisions_router(
         }
 
     @router.get("/projects/{name}/revisions/{revision_id}")
-    async def read_revision(name: str, revision_id: int, request: Request) -> dict:
+    def read_revision(name: str, revision_id: int, request: Request) -> dict:
         ensure_capability_available("designer.project")
         expose_actors = role_allows(request_identity(request)[1], "administrator")
         raw, metadata = _content(revisions, name, revision_id)
@@ -107,7 +107,7 @@ def create_project_revisions_router(
         }
 
     @router.get("/projects/{name}/revisions/{revision_id}/diff")
-    async def diff_revision(
+    def diff_revision(
         name: str, revision_id: int, against: str = Query(default="current")
     ) -> dict:
         ensure_capability_available("designer.project")
@@ -146,7 +146,7 @@ def create_project_revisions_router(
         }
 
     @router.patch("/projects/{name}/revisions/{revision_id}")
-    async def annotate_revision(
+    def annotate_revision(
         name: str,
         revision_id: int,
         body: AnnotateProjectRevisionRequest,
@@ -182,7 +182,7 @@ def create_project_revisions_router(
         return _public(result, expose_actor=True)
 
     @router.post("/projects/{name}/revisions/{revision_id}/restore")
-    async def restore_revision(
+    def restore_revision(
         name: str,
         revision_id: int,
         body: RestoreProjectRevisionRequest,

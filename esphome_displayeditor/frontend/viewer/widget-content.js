@@ -149,9 +149,17 @@ export function renderViewerWidgetContent(project, widget, timers, activeStates 
     const frames = Array.isArray(widget.properties?.src) ? widget.properties.src : [];
     const holder = document.createElement("span");
     holder.className = "viewer-animimg";
+    // Every frame is created once and only shown or hidden per tick; a new
+    // <img> per tick re-requested each frame for as long as the viewer ran.
+    holder.replaceChildren(...(frames.length ? frames : [undefined])
+      .map((/** @type {unknown} */ frame) => renderViewerImage(project, widget, frame)));
     let index = 0;
     const showFrame = () => {
-      holder.replaceChildren(renderViewerImage(project, widget, frames[index]));
+      // By position, not by element: a frame that fails to load replaces
+      // its <img> with a fallback in the same place.
+      [...holder.children].forEach((child, position) => {
+        /** @type {HTMLElement} */ (child).style.display = position === index ? "" : "none";
+      });
       index = frames.length ? (index + 1) % frames.length : 0;
     };
     showFrame();

@@ -1,48 +1,30 @@
 from __future__ import annotations
 
 import asyncio
-import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ...errors import ApiError
 from ...runtime import DeviceManager
-from ...security import RateLimiter
-from ...settings import Settings, capabilities
 
 
 def create_runtime_events_router(
     *,
     runtime: DeviceManager,
-    settings: Settings,
-    rate_limiter: RateLimiter,
-    allow_direct_access: bool,
-    trusted_ingress_hosts: set[str],
+    authorize_websocket: Callable[[WebSocket, str], Awaitable[str | None]],
     viewer_snapshot: Callable[[], dict[str, Any]],
     viewer_event: Callable[[dict[str, Any]], dict[str, Any] | None],
 ) -> APIRouter:
     router = APIRouter(prefix="/api/v1", tags=["runtime events"])
 
     async def authorize(websocket: WebSocket) -> str | None:
-        if not runtime.enabled:
+        # The shared check comes first, so a client outside Ingress does not
+        # learn whether the device runtime is switched on.
+        user_id = await authorize_websocket(websocket, "device.states")
+        if user_id is not None and not runtime.enabled:
             await websocket.close(code=4403, reason="capability_unavailable")
-            return None
-        client_host = websocket.client.host if websocket.client else "unknown"
-        if not allow_direct_access and client_host not in trusted_ingress_hosts:
-            await websocket.close(code=4403, reason="ingress_required")
-            return None
-        user_id = websocket.headers.get("X-Remote-User-Id", "").strip() or None
-        if not user_id and os.getenv("ESPHOME_ALLOW_ANONYMOUS_WRITE") == "1":
-            user_id, role = "local-development", "administrator"
-        else:
-            role = settings.role_for(user_id)
-        if not user_id or not capabilities(settings, role).get("device.states", False):
-            await websocket.close(code=4403, reason="permission_denied")
-            return None
-        if not rate_limiter.check(user_id, write=False).allowed:
-            await websocket.close(code=4429, reason="rate_limit_exceeded")
             return None
         return user_id
 

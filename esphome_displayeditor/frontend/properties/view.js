@@ -5,8 +5,9 @@ import { LIST_KINDS } from "./model.js";
 /** @typedef {{kind: string, default?: unknown, enum_values?: string[]}} PropertySchema */
 /** @param {Pick<Document, "createElement">} document
  * @param {PropertySchema} property @param {any} value
+ * @param {string} [colorPlaceholder] shown in empty colour fields
  * @returns {HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement} */
-export function createBasicPropertyControl(document, property, value) {
+export function createBasicPropertyControl(document, property, value, colorPlaceholder = "RRGGBB oder Farb-ID") {
   /** @type {HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement} */
   let control;
   if (property.kind === "bool") {
@@ -41,7 +42,7 @@ export function createBasicPropertyControl(document, property, value) {
     if (property.kind === "float") control.step = "any";
     control.value = String(value ?? "");
     if (property.default !== null) control.placeholder = String(property.default);
-    if (property.kind === "color") control.placeholder = "RRGGBB oder Farb-ID";
+    if (property.kind === "color") control.placeholder = colorPlaceholder;
   }
   return control;
 }

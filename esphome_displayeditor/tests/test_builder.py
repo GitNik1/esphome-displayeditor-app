@@ -91,7 +91,10 @@ def make_settings(tmp_path: Path, *, access_level: str = "write_with_builder") -
 def test_compatibility_matrix_is_fail_closed() -> None:
     assert evaluate("1.0.0", "2026.6.0").compatible
     assert evaluate("1.0.0", "2026.8.99").compatible
-    assert not evaluate("1.0.0", "2026.9.0").compatible
+    assert evaluate("1.0.0", "2026.10.0").compatible
+    assert evaluate("1.0.0", "2026.10.3").compatible
+    assert not evaluate("1.0.0", "2026.11.0").compatible
+    assert not evaluate("1.0.0", "2026.5.9").compatible
     assert not evaluate("1.0.0", "dev").compatible
     assert not evaluate("", "2026.7.0").compatible
 

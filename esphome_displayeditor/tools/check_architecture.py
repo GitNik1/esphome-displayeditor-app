@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
 def check_frontend_boundaries() -> list[str]:
     errors: list[str] = []
-    pure_roots = ("actions", "builder", "devices", "project", "properties", "runtime", "state")
+    pure_roots = ("actions", "builder", "designer", "devices", "project", "properties", "runtime", "state", "system")
     forbidden = ("document.", "window.", "new WebSocket(")
     for root in pure_roots:
         for path in (FRONTEND / root).glob("*.js"):
@@ -52,23 +52,48 @@ def check_backend_syntax() -> list[str]:
     return []
 
 
-def check_mcp_module_line_limit() -> list[str]:
-    """MCP-UMSETZUNGSPLAN.md §3 caps production modules at 500 lines.
+MODULE_LINE_LIMIT = 500
 
-    Scoped to backend/assistant_tools and backend/mcp - the modules that
-    commitment actually covers - rather than the whole backend tree, which
-    has long-standing files (e.g. designer_core/*) predating that rule.
-    """
+#: Modules that were already above the limit when it was extended from
+#: backend/assistant_tools and backend/mcp (MCP-UMSETZUNGSPLAN.md §3) to every
+#: production module. They may shrink - lower the number when they do - but
+#: never grow; the composition root app.js is being split up step by step.
+OVERSIZED_BASELINE = {
+    "frontend/app.js": 9028,
+    "frontend/viewer/viewer.js": 1001,
+    "frontend/layout.js": 521,
+    "backend/entity_bindings.py": 934,
+    "backend/designer.py": 770,
+    "backend/lvgl_merge.py": 696,
+    "backend/filesystem.py": 625,
+}
+
+#: Generated or copied code: the MDI glyph catalog and translation tables,
+#: the Emscripten build, and designer_core (a byte copy of the desktop app).
+LINE_LIMIT_EXEMPT = (
+    "frontend/mdi-glyphs.js",
+    "frontend/i18n.js",
+    "frontend/viewer-wasm/lvgl-wasm.js",
+    "backend/designer_core/",
+)
+
+
+def check_module_line_limits() -> list[str]:
     errors: list[str] = []
-    for directory in ("assistant_tools", "mcp"):
-        for path in sorted((ROOT / "backend" / directory).glob("*.py")):
-            if path.name == "__init__.py":
-                continue
-            line_count = len(path.read_text(encoding="utf-8").splitlines())
-            if line_count > 500:
-                errors.append(
-                    f"{path.relative_to(ROOT)} exceeds 500 lines ({line_count})"
-                )
+    paths = [*sorted((ROOT / "backend").rglob("*.py")), *sorted(FRONTEND.rglob("*.js"))]
+    for path in paths:
+        relative = path.relative_to(ROOT).as_posix()
+        if path.name == "__init__.py" or relative.startswith(LINE_LIMIT_EXEMPT):
+            continue
+        line_count = len(path.read_text(encoding="utf-8").splitlines())
+        limit = OVERSIZED_BASELINE.get(relative, MODULE_LINE_LIMIT)
+        if line_count > limit:
+            kind = "grew past its baseline" if relative in OVERSIZED_BASELINE else "exceeds"
+            errors.append(f"{relative} {kind} {limit} lines ({line_count})")
+        elif relative in OVERSIZED_BASELINE and line_count < limit:
+            # A ratchet only holds if it follows the file down; otherwise the
+            # lines just removed could quietly grow back.
+            errors.append(f"{relative} shrank to {line_count} lines - lower its baseline ({limit})")
     return errors
 
 
@@ -77,7 +102,7 @@ def main() -> int:
         check_frontend_boundaries()
         + check_strict_frontend_modules()
         + check_backend_syntax()
-        + check_mcp_module_line_limit()
+        + check_module_line_limits()
     )
     if errors:
         print("Architecture violations:")

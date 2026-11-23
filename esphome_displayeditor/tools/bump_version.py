@@ -198,7 +198,7 @@ def bump_version(
         path = root / target.relative_path
         text = contents[path]
 
-        def replace(match: re.Match[str]) -> str:
+        def replace(match: re.Match[str], target: VersionTarget = target) -> str:
             if match.group(2) != str(current):
                 raise VersionError(
                     f"Unerwartete Version {match.group(2)} in {target.relative_path}."

@@ -5,15 +5,21 @@ from __future__ import annotations
 import difflib
 import hashlib
 import os
-import tempfile
 from pathlib import Path, PurePosixPath
+from stat import S_ISREG
+from typing import Any
 
 import yaml
 from yaml.constructor import ConstructorError
 
+from .atomic_files import write_atomic
 from .errors import ApiError
 from .project_locks import project_file_lock
 from .settings import Settings
+
+#: "Do not check the draft's revision" - distinct from None, which means
+#: "there must be no draft yet".
+DRAFT_UNCHECKED: Any = object()
 
 
 class _EspHomeLoader(yaml.SafeLoader):
@@ -238,6 +244,32 @@ class FilesystemBackend:
         content = self._read(draft, missing_error="draft_not_found")
         return {"name": relative.as_posix(), "content": content, "revision": revision_for(content)}
 
+    def _asset_target(self, name: str) -> tuple[PurePosixPath, Path, int]:
+        relative = self._relative(name, suffixes=set(_ASSET_CONTENT_TYPES))
+        limit = (
+            min(self.settings.request_max_size, 16 * 1024 * 1024)
+            if relative.suffix.lower() in self._allowed_font_asset_suffixes
+            else self.settings.max_file_size
+        )
+        self._assert_access(relative, write=False)
+        return relative, self._resolve(self.root, relative), limit
+
+    def asset_etag(self, name: str) -> str:
+        """A validator for the asset's current version - modification time
+        and size from one ``lstat``, so a browser revalidating an image it
+        already has is answered without reading the file. Same path checks
+        as ``read_asset``."""
+        _relative, target, _limit = self._asset_target(name)
+        try:
+            info = os.stat(target, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            raise ApiError("asset_not_found", "Asset was not found.", 404) from exc
+        except OSError as exc:
+            raise ApiError("invalid_path", "Asset could not be opened safely.") from exc
+        if not S_ISREG(info.st_mode):
+            raise ApiError("invalid_path", "Path is not a regular file.")
+        return f'"{info.st_mtime_ns:x}-{info.st_size:x}"'
+
     def read_asset(self, name: str) -> tuple[bytes, str]:
         """Read an image or font an imported config references by a local
         path, e.g. ``images/panel_bg.png`` or ``fonts/OpenSans-Regular.ttf``.
@@ -249,14 +281,7 @@ class FilesystemBackend:
         broader path is safe - traversal, symlinks and hidden segments are
         still rejected by ``_relative``/``_resolve``, same as everywhere else.
         """
-        relative = self._relative(name, suffixes=set(_ASSET_CONTENT_TYPES))
-        limit = (
-            min(self.settings.request_max_size, 16 * 1024 * 1024)
-            if relative.suffix.lower() in self._allowed_font_asset_suffixes
-            else self.settings.max_file_size
-        )
-        self._assert_access(relative, write=False)
-        target = self._resolve(self.root, relative)
+        relative, target, limit = self._asset_target(name)
         try:
             descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         except FileNotFoundError as exc:
@@ -279,14 +304,33 @@ class FilesystemBackend:
                 os.close(descriptor)
         return content, _ASSET_CONTENT_TYPES[relative.suffix.lower()]
 
-    def save_draft(self, name: str, content: str) -> dict:
+    def save_draft(
+        self, name: str, content: str, *, expected_draft_revision: Any = DRAFT_UNCHECKED
+    ) -> dict:
+        """Write a draft. With ``expected_draft_revision`` (None: "there was
+        no draft") the write is refused if the draft changed meanwhile."""
         relative, _, draft = self._paths(name)
         self._assert_access(relative, write=True)
         self._validate_content_size(content)
         with self._configuration_lock(relative):
+            self._require_draft_revision(draft, expected_draft_revision)
             draft.parent.mkdir(parents=True, exist_ok=True)
-            self._atomic_write(draft, content)
+            write_atomic(draft, content.encode("utf-8"))
         return {"name": relative.as_posix(), "revision": revision_for(content)}
+
+    def _require_draft_revision(self, draft: Path, expected: Any) -> None:
+        if expected is DRAFT_UNCHECKED:
+            return
+        actual = (revision_for(self._read(draft, missing_error="draft_not_found"))
+                  if draft.exists() else None)
+        if actual != expected:
+            raise ApiError(
+                "revision_conflict",
+                "The configuration draft changed after it was loaded.",
+                409,
+                {"target": "configuration_draft", "expected_revision": expected,
+                 "actual_revision": actual},
+            )
 
     def save_draft_checked(
         self,
@@ -333,7 +377,7 @@ class FilesystemBackend:
                     },
                 )
             draft.parent.mkdir(parents=True, exist_ok=True)
-            self._atomic_write(draft, content)
+            write_atomic(draft, content.encode("utf-8"))
             verified = self._read(draft, missing_error="draft_not_found")
             if verified != content:
                 raise ApiError(
@@ -388,10 +432,18 @@ class FilesystemBackend:
             }
         return {"valid": True, "revision": document["revision"], "error": None}
 
-    def publish(self, name: str, expected_revision: str) -> dict:
+    def publish(
+        self, name: str, expected_revision: str, *, expected_draft_revision: Any = DRAFT_UNCHECKED
+    ) -> dict:
+        """Make the draft active. ``expected_draft_revision`` is the draft the
+        user reviewed: a draft changed since (another tab, an MCP client) is
+        refused instead of being published unseen."""
         relative, active, draft = self._paths(name)
         self._assert_access(relative, write=True)
         with self._configuration_lock(relative):
+            if expected_draft_revision is not DRAFT_UNCHECKED and expected_draft_revision is None:
+                expected_draft_revision = DRAFT_UNCHECKED  # publishing needs a draft anyway
+            self._require_draft_revision(draft, expected_draft_revision)
             current = self._read(active, missing_error="configuration_not_found")
             current_revision = revision_for(current)
             if current_revision != expected_revision:
@@ -414,7 +466,7 @@ class FilesystemBackend:
                     422,
                     {"error": str(exc), "line": line, "column": column},
                 )
-            self._atomic_write(active, content)
+            write_atomic(active, content.encode("utf-8"))
             verified = self._read(active, missing_error="configuration_not_found")
             new_revision = revision_for(verified)
             if new_revision != revision_for(content):
@@ -504,7 +556,7 @@ class FilesystemBackend:
                     409,
                 )
 
-        self._atomic_write_bytes(target, content)
+        write_atomic(target, content)
         return {
             "path": f"{self._assets_subdir}/{relative.as_posix()}",
             "size": len(content),
@@ -544,7 +596,7 @@ class FilesystemBackend:
                     409,
                 )
 
-        self._atomic_write_bytes(target, content)
+        write_atomic(target, content)
         return {
             "path": f"{self._font_assets_subdir}/{relative.as_posix()}",
             "size": len(content),
@@ -571,62 +623,3 @@ class FilesystemBackend:
                 mark.column + 1 if mark is not None else None,
             )
 
-    @staticmethod
-    def _atomic_write_bytes(path: Path, content: bytes) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_name: str | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                dir=path.parent,
-                prefix=f".{path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                temporary_name = handle.name
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_name, path)
-            temporary_name = None
-        finally:
-            if temporary_name:
-                try:
-                    Path(temporary_name).unlink()
-                except FileNotFoundError:
-                    pass
-
-    @staticmethod
-    def _atomic_write(path: Path, content: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_name: str | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                newline="",
-                dir=path.parent,
-                prefix=f".{path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                temporary_name = handle.name
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_name, path)
-            temporary_name = None
-            try:
-                directory_fd = os.open(path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
-            except OSError:
-                pass
-        finally:
-            if temporary_name:
-                try:
-                    Path(temporary_name).unlink()
-                except FileNotFoundError:
-                    pass

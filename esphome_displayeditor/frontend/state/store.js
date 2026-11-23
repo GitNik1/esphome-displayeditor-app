@@ -25,6 +25,8 @@ export function createInitialState() {
     selectedWidgets: new Set(),
     activeConfig: null,
     activeRevision: null,
+    /** The draft the configuration editor is based on, see configurations/workspace.js. */
+    draftRevision: null,
     configurations: [],
     hasDraft: false,
     yamlLoadedContent: "",

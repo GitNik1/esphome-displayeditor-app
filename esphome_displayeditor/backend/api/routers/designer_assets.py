@@ -33,7 +33,7 @@ def create_designer_assets_router(
     router = APIRouter(prefix="/api/v1/designer", tags=["designer assets"])
 
     @router.get("/assets/images")
-    async def list_images() -> dict:
+    def list_images() -> dict:
         ensure_capability_available("designer.asset_read")
         return {"images": filesystem.list_image_assets()}
 
@@ -113,11 +113,16 @@ def create_designer_assets_router(
         )
 
     @router.get("/assets/read/{name:path}")
-    async def read_asset(name: str) -> Response:
+    def read_asset(name: str, request: Request) -> Response:
         ensure_capability_available("designer.asset_read")
+        # Cached, but revalidated on every use: an upload replaces a file
+        # under the same name, so a max-age would show a stale image.
+        etag = filesystem.asset_etag(name)
+        headers = {"Cache-Control": "private, no-cache", "ETag": etag}
+        if request.headers.get("If-None-Match") == etag:
+            return Response(status_code=304, headers=headers)
         content, content_type = filesystem.read_asset(name)
-        return Response(content=content, media_type=content_type,
-                        headers={"Cache-Control": "no-store"})
+        return Response(content=content, media_type=content_type, headers=headers)
 
     return router
 

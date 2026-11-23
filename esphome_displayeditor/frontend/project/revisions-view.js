@@ -85,3 +85,25 @@ export function groupFeedByDay(events) {
   });
   return groups;
 }
+
+/** @typedef {"current" | number | null} CompareTarget */
+
+/** A comparison target from a select's value: "current" or a version id.
+ * @param {string} value @returns {CompareTarget} */
+export function parseCompareTarget(value) {
+  return value === "current" ? "current" : Number(value);
+}
+
+/** A version's time for the history, in the UI language; unparseable
+ * values are shown as they are, missing ones as a dash.
+ * @param {string | number | null | undefined} value @param {string} language
+ * @param {boolean} [dateOnly] */
+export function formatRevisionDate(value, language, dateOnly = false) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return new Intl.DateTimeFormat(language === "de" ? "de-CH" : "en-GB", {
+    dateStyle: "medium",
+    ...(dateOnly ? {} : { timeStyle: "short" }),
+  }).format(parsed);
+}

@@ -340,3 +340,43 @@ def test_firmware_service_never_validates_or_builds_secrets_yaml(
     assert not any(
         args.get("configuration") == "secrets.yaml" for _cmd, args in adapter.commands
     )
+
+
+def test_mcp_publish_waits_for_a_running_firmware_job(tmp_path: Path) -> None:
+    """The web API refused to publish while a job ran; MCP published anyway.
+    Both go through the shared FirmwareWorkflow now."""
+    settings = builder_settings(tmp_path)
+    adapter = FakeBuilderAdapter()
+    manager = BuilderManager(settings, adapter=adapter)  # type: ignore[arg-type]
+    service = AssistantToolService(settings, builder=manager)
+    active = service.filesystem.read_config("display.yaml")["revision"]
+    service.filesystem.save_draft("display.yaml", "esphome:\n  name: next\n")
+    adapter.jobs.append({"job_id": "job-9", "configuration": "display.yaml",
+                         "job_type": "compile", "status": "running"})
+
+    async def run() -> None:
+        await manager.start()
+        try:
+            with pytest.raises(ApiError) as refused:
+                await service.firmware.publish("display.yaml", active, identity="mcp:one")
+            assert refused.value.error == "job_already_running"
+            adapter.jobs[-1]["status"] = "success"
+            published = await service.firmware.publish("display.yaml", active, identity="mcp:one")
+            assert published["revision"] != active
+        finally:
+            await manager.stop()
+
+    asyncio.run(run())
+
+
+def test_mcp_publish_never_touches_secrets(tmp_path: Path) -> None:
+    import dataclasses
+
+    settings = dataclasses.replace(builder_settings(tmp_path), protect_sensitive_paths=False)
+    (settings.config_root / "secrets.yaml").write_text("wifi_password: x\n", encoding="utf-8")
+    service = AssistantToolService(settings)
+
+    with pytest.raises(ApiError) as refused:
+        asyncio.run(service.firmware.publish("secrets.yaml", "sha256:" + "0" * 64,
+                                             identity="mcp:one"))
+    assert refused.value.error == "secrets_file_protected"
