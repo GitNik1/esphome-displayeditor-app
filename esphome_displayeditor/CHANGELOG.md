@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.402.0
+
 - **Publishing waits until the editor's edits are saved.** Publishing sends
   the saved draft, but it was possible with unsaved edits in the editor -
   which were afterwards shown as saved although they were in neither the
