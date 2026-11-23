@@ -67,7 +67,7 @@ appearing in the app log.
 
 Builder operations are available only with `access_level: write_with_builder`.
 `builder_url` must point to a local ESPHome Device Builder. The app accepts
-only ESPHome 2026.6 through 2026.10 and fails closed for every other version
+only ESPHome 2026.6 through 2026.11 and fails closed for every other version
 or protocol response. Filesystem and Native API functions remain available
 when the builder is unavailable.
 

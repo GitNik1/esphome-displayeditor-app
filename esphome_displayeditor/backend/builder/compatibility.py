@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 _VERSION = re.compile(r"^(\d{4})\.(\d{1,2})\.(\d+)(?:[.-].*)?$")
 _MIN_ESPHOME = (2026, 6, 0)
-_MAX_ESPHOME_EXCLUSIVE = (2026, 11, 0)
+_MAX_ESPHOME_EXCLUSIVE = (2026, 12, 0)
 
 
 @dataclass(frozen=True)
@@ -19,7 +19,7 @@ class CompatibilityResult:
 
 
 def evaluate(server_version: str, esphome_version: str) -> CompatibilityResult:
-    """Accept only the known ESPHome 2026.6-2026.10 window; fail closed otherwise."""
+    """Accept only the known ESPHome 2026.6-2026.11 window; fail closed otherwise."""
     if not server_version.strip():
         return CompatibilityResult(False, None, "missing_server_version")
     match = _VERSION.fullmatch(esphome_version.strip())

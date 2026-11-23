@@ -358,6 +358,37 @@ def _classify_widget_body(node: WidgetNode, body: dict[str, Any],
             states[key] = _classify_style_dict(value, issues, sub_path)
             continue
 
+        if key == "dropdown_list" and node.widget_type == "dropdown" and isinstance(value, dict):
+            rest = {}
+            for sub_key, sub_value in value.items():
+                if sub_key in ("selected", "scrollbar") and isinstance(sub_value, dict):
+                    node.style_tree[sub_key] = _classify_style_dict(
+                        sub_value, issues, f"{sub_path}.{sub_key}")
+                elif sub_key in LVGL_STYLE_KEYS and not _tag_in(sub_value):
+                    node.style_tree.setdefault("list", {})[sub_key] = (
+                        _normalise_color(sub_value) if sub_key.endswith("_color") else sub_value)
+                else:
+                    rest[sub_key] = sub_value
+            if rest:
+                issues.append(ImportIssue(
+                    "C", f"Dropdown list keys {sorted(rest)} preserved but not editable.",
+                    sub_path, node.id))
+                node.extra[key] = rest
+            continue
+
+        if (key == "state" and "state_checked" in content_keys and isinstance(value, dict)
+                and isinstance(value.get("checked"), bool)):
+            # ``state: {checked: true}`` is the editor's "initial state: on";
+            # any other state flag is kept verbatim next to it.
+            node.properties["state_checked"] = value["checked"]
+            rest = {k: v for k, v in value.items() if k != "checked"}
+            if rest:
+                issues.append(ImportIssue(
+                    "C", f"State flags {sorted(rest)} preserved but not editable.",
+                    sub_path, node.id))
+                node.extra[key] = rest
+            continue
+
         if key in STYLE_PARTS and isinstance(value, dict):
             node.style_tree[key] = _classify_style_dict(value, issues, sub_path)
             continue

@@ -148,7 +148,8 @@ def test_addon_checkbox_export_and_import_without_changing_core(tmp_path: Path) 
     exported = service.export_yaml(project)["yaml"]
     assert "checkbox:" in exported
     assert "text: Night mode" in exported
-    assert "state_checked: true" in exported
+    assert "state_checked" not in exported
+    assert yaml.safe_load(exported)["lvgl"]["widgets"][0]["checkbox"]["state"] == {"checked": True}
     imported = service.import_yaml(f"lvgl:\n{exported.split('lvgl:', 1)[1]}")
     assert imported["valid"]
     widgets = {item["id"]: item for item in imported["project"]["widgets"]}

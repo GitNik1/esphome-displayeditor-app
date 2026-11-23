@@ -121,10 +121,10 @@
   against one shared test fixture. A dropdown/roller follows a `select`
   entity by its option *text* (as Home Assistant and ESPHome report it);
   numeric states still work as an index.
-- **The ESPHome Device Builder works with ESPHome 2026.9 and 2026.10.** The
+- **The ESPHome Device Builder works with ESPHome 2026.9 through 2026.11.** The
   compatibility check accepted only 2026.6 to 2026.8, so "ESPHome prüfen",
   "Kompilieren" and "OTA installieren" (and the matching MCP tools) were
-  unavailable with current ESPHome. It now accepts 2026.6 to 2026.10 and
+  unavailable with current ESPHome. It now accepts 2026.6 to 2026.11 and
   still refuses every other version.
 - When those buttons are unavailable because of the builder - not connected,
   not reachable, an unsupported ESPHome version - their tooltip now says so,
@@ -199,6 +199,27 @@
 - Messages raised while a dialog is open - a failed "Als Entwurf speichern",
   for example - now appear inside that dialog instead of behind it, and notes
   about the merge are shown with the success message.
+- Checked against ESPHome 2026.11.0: generated YAML validates the same as on
+  2026.9 and 2026.10.
+- Fixed: a switch's or checkbox's initial state was written as
+  `state_checked: true`, which ESPHome rejects. It is now written as
+  `state: {checked: true}` and read back from there; other state flags
+  next to it are preserved.
+- Fixed: a dropdown's open direction offered `UP`/`DOWN`, which ESPHome
+  rejects; it now offers `BOTTOM`/`TOP`/`LEFT`/`RIGHT`, and a stored
+  `DOWN`/`UP` is written as `BOTTOM`/`TOP`. The styles of the opened list
+  (`selected`, `scrollbar` and the list itself) are written under
+  `dropdown_list:` instead of on the dropdown, and read back from there; the
+  dropdown also offers its `indicator` part.
+- Fixed: an OTA install reported `completed` as soon as the firmware was
+  compiled, even when flashing then failed. The Device Builder answers
+  `firmware/install` with its compile job and runs the upload as a second
+  job that depends on it; jobs now carry `dependent_jobs` and a
+  `chain_status` that only completes once the upload has (REST, assistant
+  and MCP). The job list shows an install as one row
+  (`compile → upload`), cancels whichever step is running, and names the
+  build server when a paired remote builder compiled it. Verified against
+  Device Builder 1.28.1 with ESPHome 2026.11.0.
 
 ## 0.401.0
 

@@ -11,6 +11,50 @@ from .adapter import BuilderAdapterError, DeviceBuilderWebSocketAdapter, sanitiz
 from .compatibility import evaluate
 
 
+TERMINAL_JOB_STATUSES = frozenset(
+    {"success", "succeeded", "completed", "done", "failed", "error", "cancelled", "canceled"}
+)
+_UNSUCCESSFUL_JOB_STATUSES = frozenset({"failed", "error", "cancelled", "canceled"})
+_DEPENDENT_JOB_FIELDS = ("job_id", "job_type", "status", "exit_code", "failure_reason", "progress")
+
+
+def _status(job: dict[str, Any]) -> str:
+    return str(job.get("status", "")).strip().lower()
+
+
+def chain_status(job: dict[str, Any], dependents: list[dict[str, Any]]) -> str:
+    """Status of a job together with the jobs waiting on it.
+
+    ``firmware/install`` answers with its COMPILE job; the upload is a second
+    job whose ``depends_on`` names it. The compile job alone reports
+    ``completed`` before - or even when - the upload fails, so an install is
+    only done once every dependent job is.
+    """
+    own = _status(job)
+    if own in _UNSUCCESSFUL_JOB_STATUSES or own not in TERMINAL_JOB_STATUSES:
+        return own
+    states = [_status(dependent) for dependent in dependents]
+    pending = next((state for state in states if state not in TERMINAL_JOB_STATUSES), None)
+    if pending is not None:
+        return pending or "queued"
+    return next((state for state in states if state in _UNSUCCESSFUL_JOB_STATUSES), own)
+
+
+def with_dependents(job: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    """``job`` plus ``dependent_jobs`` (a summary of each job that depends on
+    it) and ``chain_status`` (see chain_status)."""
+    dependents = [
+        other for other in jobs
+        if other.get("job_id") != job.get("job_id") and other.get("depends_on") == job.get("job_id")
+    ]
+    out = dict(job)
+    out["dependent_jobs"] = [
+        {key: dependent.get(key) for key in _DEPENDENT_JOB_FIELDS} for dependent in dependents
+    ]
+    out["chain_status"] = chain_status(job, dependents)
+    return out
+
+
 class BuilderManager:
     def __init__(
         self,
@@ -147,6 +191,11 @@ class BuilderManager:
     async def jobs(self) -> list[dict[str, Any]]:
         await self.ensure_available()
         assert self.adapter is not None
+        result = await self._raw_jobs()
+        return [with_dependents(job, result) for job in result]
+
+    async def _raw_jobs(self) -> list[dict[str, Any]]:
+        assert self.adapter is not None
         result = (await self.adapter.command("firmware/get_jobs")).result
         if not isinstance(result, list) or not all(isinstance(item, dict) for item in result):
             raise ApiError("builder_protocol_error", "The Device Builder returned invalid jobs.", 502)
@@ -160,7 +209,7 @@ class BuilderManager:
             raise ApiError("job_not_found", "The Device Builder job was not found.", 404)
         if not isinstance(result, dict):
             raise ApiError("builder_protocol_error", "The Device Builder returned an invalid job.", 502)
-        return result
+        return with_dependents(result, await self._raw_jobs())
 
     async def cancel(self, job_id: str) -> None:
         await self.ensure_available()

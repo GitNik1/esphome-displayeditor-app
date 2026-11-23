@@ -318,3 +318,39 @@ def test_a_default_the_user_chose_replaces_the_source_value(tmp_path: Path) -> N
 
     assert "CENTER" not in merged
     assert load_yaml_strict(merged)["lvgl"]["widgets"][1]["label"].get("align", "TOP_LEFT") == "TOP_LEFT"
+def test_lines_commented_out_at_column_zero_stay_inside_the_lvgl_block() -> None:
+    from backend.designer_core.yamlimport import import_esphome_yaml
+
+    existing = (
+        "display:\n"
+        "  - platform: test\n"
+        "    id: d\n"
+        "lvgl:\n"
+        "  displays: [d]\n"
+        "  widgets:\n"
+        "    - obj:\n"
+        "        id: left_menu\n"
+        "        pad_all: 0\n"
+        "#        pad_left: 6\n"
+        "\n"
+        "        layout:\n"
+        "          type: FLEX\n"
+        "#          pad_row: 8\n"
+        "        widgets:\n"
+        "          - label:\n"
+        "              id: l1\n"
+        "              text: A\n"
+        "# trailing note before the next key\n"
+        "logger:\n"
+    )
+    project = import_esphome_yaml(existing).project
+    unchanged = merge_project_into_yaml(project, existing, display_takeover="comment")
+    assert unchanged.content == existing
+
+    project.find_widget("l1").properties["text"] = "B"
+    edited = merge_project_into_yaml(project, existing, display_takeover="comment").content
+    assert edited.count("layout:") == 1
+    assert edited.count("- label:") == 1
+    assert "text: B" in edited
+    assert "#        pad_left: 6\n" in edited
+    assert edited.endswith("# trailing note before the next key\nlogger:\n")

@@ -40,3 +40,28 @@ test("a blocked builder names its reason instead of a missing permission", () =>
   assert.deepEqual(builderBlockedReason({ compatible: false, state: "unavailable", reason: "connection_failed" }),
     { key: "configs.hint.builderUnavailable", values: { reason: "connection_failed" } });
 });
+
+test("an install groups its upload job and reports the upload's outcome", async () => {
+  const { builderJobGroups, builderChainStatus } = await import("../../frontend/builder/model.js");
+  const jobs = replaceBuilderJobs([
+    { job_id: "c1", job_type: "compile", status: "completed", created_at: "2026-11-23T10:00" },
+    { job_id: "u1", job_type: "upload", status: "running", depends_on: "c1", created_at: "2026-11-23T10:01" },
+    { job_id: "solo", job_type: "compile", status: "completed", created_at: "2026-11-23T09:00" },
+  ]);
+  let groups = builderJobGroups(jobs);
+  assert.deepEqual(groups.map((group) => group.job.job_id), ["c1", "solo"]);
+  assert.equal(groups[0].status, "running");
+  assert.equal(groups[0].active?.job_id, "u1");
+  assert.deepEqual(groups[0].dependents.map((job) => job.job_id), ["u1"]);
+  assert.equal(groups[1].active, null);
+
+  applyBuilderEvent(jobs, { type: "builder_job", event: "job_changed", data: { job_id: "u1", status: "failed" } });
+  groups = builderJobGroups(jobs);
+  assert.equal(groups[0].status, "failed");
+  assert.equal(groups[0].active, null);
+
+  assert.equal(builderChainStatus({ job_id: "c", status: "failed" }, [{ job_id: "u", status: "queued" }]), "failed");
+  // An upload whose compile job is not in the list stays visible on its own.
+  const orphan = replaceBuilderJobs([{ job_id: "u2", status: "failed", depends_on: "gone" }]);
+  assert.deepEqual(builderJobGroups(orphan).map((group) => group.job.job_id), ["u2"]);
+});
